@@ -1,22 +1,69 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 typedef unsigned char U1;
 typedef unsigned short U2;
 
 #define TOKEN_MAX 32
+#define LABEL_MAX 100
+#define FIXUP_MAX 100
+#define INVALID_ADDR 0xFFFF
 
 FILE* InputFile;
 U2 CurrentLine;
 U1 CurrentChar;
 char TokenText[TOKEN_MAX+1];
 U1 TokenLen;
+U2 CurrentAddress;
+
+struct Label {
+    char Name[TOKEN_MAX+1];
+    U2 Address;
+    U2 Fixup;
+};
+
+struct Fixup {
+    U2 Address;
+    U2 Next;
+};
+
+struct Label Labels[LABEL_MAX];
+struct Fixup Fixups[FIXUP_MAX];
+U2 NumLabels;
+U2 FreeFixup;
+
+enum {
+    OP_REG,
+    OP_LIT,
+    OP_MEM,
+} OperandType;
+U2 OperandValue;
+
+enum {
+    R_AL, R_CL, R_DL, R_BL, R_AH, R_CH, R_DH, R_BH,
+    R_AX, R_CX, R_DX, R_BX, R_SP, R_BP, R_SI, R_DI,
+    R_ES, R_CS, R_SS, R_DS,
+    R_INVALID
+};
+
+const char RegNames[][3] = {
+    "AL", "CL", "DL", "BL", "AH", "CH", "DH", "BH",
+    "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI",
+    "ES", "CS", "SS", "DS",
+};
 
 void Error(const char* msg)
 {
     fprintf(stderr, "Line %u: %s (Current token: \"%s\")\n", CurrentLine, msg, TokenText);
     exit(1);
+}
+
+void OutputByte(U1 b)
+{
+    printf("Output 0x%02X\n", b);
+    ++CurrentAddress;
 }
 
 void ReadNext(void)
@@ -46,10 +93,16 @@ void SkipWS(void)
     }
 }
 
+void MoveNext(void)
+{
+    ReadNext();
+    SkipWS();
+}
+
 void GetToken(void)
 {
     TokenLen = 0;
-    while (CurrentChar && CurrentChar != ',' && CurrentChar > ' ') {
+    while (CurrentChar == '.' || CurrentChar == ':' || (CurrentChar >= '0' && CurrentChar <= '9') || (CurrentChar >= 'A' && CurrentChar <= 'Z') || (CurrentChar >= 'a' && CurrentChar <= 'z')) {
         if (TokenLen < TOKEN_MAX) {
             TokenText[TokenLen++] = CurrentChar >= 'a' && CurrentChar <= 'z' ? CurrentChar + 'A' - 'a' : CurrentChar;
         }
@@ -64,8 +117,7 @@ void ExpectComma(void)
     if (CurrentChar != ',') {
         Error("Comma expected");
     }
-    ReadNext();
-    SkipWS();
+    MoveNext();
 }
 
 U2 GetNumber(void)
@@ -99,30 +151,75 @@ U2 GetNumber(void)
     return num;
 }
 
-void GetOperand(void)
+struct Label* FindLabel(const char* text)
 {
-    if (CurrentChar == '\'') {
-        ReadNext();
-        U2 lit = CurrentChar;
-        U1 litSize = 1;
-        ReadNext();
-        if (CurrentChar != '\'') {
-            lit |= CurrentChar << 8;
-            ReadNext();
-            ++litSize;
+    for (int i = 0; i < NumLabels; ++i) {
+        if (!strcmp(Labels[i].Name, text)) {
+            return &Labels[i];
         }
-        if (CurrentChar != '\'') {
-            Error("Invalid character literal");
-        }
-        ReadNext();
-        SkipWS();
-        printf("Ignoring character literal 0x%0.*X\n", litSize*2, lit);
-        return;
     }
+    return NULL;
+}
 
-    GetToken();
-    if (!strcmp(TokenText, "BYTE") || !strcmp(TokenText, "WORD")) {
-        GetToken();
+void RetireLabel(U2 index)
+{
+    assert(index < NumLabels);
+    printf("Retiring %s\n", Labels[index].Name);
+    if (Labels[index].Address == INVALID_ADDR) {
+        Error("Undefined label");
+    }
+    if (index < NumLabels-1) {
+        Labels[index] = Labels[NumLabels-1];
+    }
+    --NumLabels;
+}
+
+struct Label* NewLabel(void)
+{
+    assert(!FindLabel(TokenText));
+    if (NumLabels == LABEL_MAX) {
+        Error("Too many labels");
+    }
+    struct Label* l = &Labels[NumLabels++];
+    strcpy(l->Name, TokenText);
+    l->Address = INVALID_ADDR;
+    l->Fixup = INVALID_ADDR;
+    return l;
+}
+
+struct Label* FindOrMakeLabel(void)
+{
+    struct Label* l = FindLabel(TokenText);
+    return l ? l :  NewLabel();
+}
+
+void AddFixup(struct Label* l)
+{
+    assert(l);
+    if (FreeFixup == INVALID_ADDR) {
+        Error("Too many fixups");
+    }
+    printf("Adding fixup for %s\n", l->Name);
+    const U2 idx = FreeFixup;
+    struct Fixup* f = &Fixups[idx];
+    FreeFixup = f->Next;
+    f->Next = l->Fixup;
+    f->Address = 0x1234; // TODO   
+    l->Fixup = idx;
+}
+
+void ResolveFixups(struct Label* l) {
+    U2 lastidx = INVALID_ADDR;
+    for (U2 idx = l->Fixup; idx != INVALID_ADDR;) {
+        struct Fixup* f = &Fixups[idx];
+        printf("TODO: Actually resolve fixup of %s at %04X to %04X\n", l->Name, f->Address, l->Address);
+        lastidx = idx;
+        idx = f->Next;
+    }
+    if (lastidx != INVALID_ADDR) {
+        assert(Fixups[lastidx].Next == INVALID_ADDR);
+        Fixups[lastidx].Next = FreeFixup;
+        FreeFixup = lastidx;
     }
 }
 
@@ -130,13 +227,126 @@ void DefineLabel(void)
 {
     --TokenLen;
     TokenText[TokenLen] = '\0';
-    printf("Ignoring label \"%s\"\n", TokenText);
+
+    if (TokenText[0] != '.') {
+        // Retire local labels
+        for (U2 index = 0; index < NumLabels;) {
+            if (Labels[index].Name[0] == '.') {
+                RetireLabel(index);
+            } else {
+                ++index;
+            }
+        }
+    }
+
+    struct Label* l = FindLabel(TokenText);
+    if (l) {
+        if (l->Address != INVALID_ADDR) {
+            Error("Duplicate label");
+        }
+        l->Address = CurrentAddress;
+        ResolveFixups(l);
+    } else {
+        l = NewLabel();
+        l->Address = CurrentAddress;
+    }
+}
+
+void PrintOperand(void)
+{
+    switch (OperandType) {
+    case OP_REG:
+        assert(OperandValue < R_INVALID);
+        printf("%s", RegNames[OperandValue]);
+        break;
+    case OP_LIT:
+        printf("0x%04X", OperandValue);
+        break;
+    case OP_MEM:
+        printf("[0x%04X]", OperandValue);
+        break;
+    default:
+        assert(0);
+    }
+}
+
+void GetOperandMem(void)
+{
+    assert(CurrentChar == '[');
+    OperandType = OP_MEM;
+    MoveNext();
+    GetToken();
+    struct Label* l = FindOrMakeLabel();
+    if (l->Address != INVALID_ADDR) {
+        OperandValue = l->Address;
+    } else {
+        OperandValue = 0;
+        AddFixup(l);
+    }
+    if (CurrentChar != ']') {
+        Error("Expected ]");
+    }
+    MoveNext();
+}
+
+void GetOperand(void)
+{
+    if (CurrentChar == '\'') {
+        OperandType = OP_LIT;
+        ReadNext();
+        OperandValue = CurrentChar;
+        ReadNext();
+        if (CurrentChar != '\'') {
+            OperandValue |= CurrentChar << 8;
+            ReadNext();
+        }
+        if (CurrentChar != '\'') {
+            Error("Invalid character literal");
+        }
+        MoveNext();
+    } else if (CurrentChar >= '0' && CurrentChar <= '9') {
+        OperandType  = OP_LIT;
+        OperandValue = GetNumber();
+    } else if (CurrentChar == '[') {
+        GetOperandMem();
+    } else {
+        GetToken();
+
+        for (U1 r = 0; r < sizeof(RegNames)/sizeof(*RegNames); ++r) {
+            if (!strcmp(TokenText, RegNames[r])) {
+                OperandType = OP_REG;
+                OperandValue = r;
+                return;
+            }
+        }
+
+        if (!strcmp(TokenText, "BYTE") || !strcmp(TokenText, "WORD")) {
+            if (CurrentChar != '[') {
+                Error("Expected [");
+            }
+            GetOperandMem();
+            return;
+        }
+
+        OperandType = OP_LIT;
+
+        struct Label* l = FindOrMakeLabel();
+        if (l->Address != INVALID_ADDR) {
+            OperandValue = l->Address;
+        } else {
+            OperandValue = 0;
+            AddFixup(l);
+        }
+    }
 }
 
 void DirectiveOrg(void)
 {
     const U2 org = GetNumber();
-    printf("Ignoring ORG 0x%04X\n", org);
+    if (org < CurrentAddress) {
+        Error("Invalid ORG (moving backwards)");
+    }
+    CurrentAddress = org;
 }
 
 void DirectiveDx(U1 size)
@@ -154,8 +364,7 @@ void DirectiveDx(U1 size)
                 ReadNext();
             }
             printf("\n");
-            ReadNext();
-            SkipWS();
+            MoveNext();
         } else if (CurrentChar >= '0' && CurrentChar <= '9') {
             const U2 n = GetNumber();
             printf("  %X\n", n);
@@ -166,8 +375,7 @@ void DirectiveDx(U1 size)
         if (CurrentChar != ',') {
             break;
         }
-        ReadNext();
-        SkipWS();
+        MoveNext();
     }
 }
 
@@ -190,17 +398,20 @@ void InstIgnore1(void)
 {
     printf("Ignoring %s ", TokenText);
     GetOperand();
-    printf("%s\n", TokenText);
+    PrintOperand();
+    printf("\n");
 }
 
 void InstIgnore2(void)
 {
     printf("Ignoring %s ", TokenText);
     GetOperand();
-    printf("%s, ", TokenText);
+    PrintOperand();
     ExpectComma();
+    printf(", ");
     GetOperand();
-    printf("%s\n", TokenText);
+    PrintOperand();
+    printf("\n");
 }
 
 static const struct {
@@ -286,8 +497,7 @@ void ParserInit(const char* filename)
         exit(1);
     }
     CurrentLine = 1;
-    CurrentChar = ' ';
-    SkipWS();
+    MoveNext();
 }
 
 void ParserFini(void)
@@ -298,14 +508,30 @@ void ParserFini(void)
 
 int main()
 {
-    ParserInit("../old2/sasm.asm");
+    for (int i = 0; i < FIXUP_MAX - 1; ++i) {
+        Fixups[i].Next = i + 1;
+    }
+    Fixups[FIXUP_MAX-1].Next = INVALID_ADDR;
+    ParserInit("../tests/t01.asm");
     for (;;) {
         GetToken();
         if (!TokenLen) {
             break;
         }
-        printf("%3u: Token: \"%s\"\n", CurrentLine, TokenText);
         Dispatch();
     }
+    // Make sure all labels have been defined
+    while (NumLabels) {
+        RetireLabel(0);
+    }
     ParserFini();
+#ifndef NDEBUG
+    int FixupFreeCnt = 0;
+    for (int i = 0; i < FIXUP_MAX; ++i) {
+        assert(FreeFixup < FIXUP_MAX);
+        struct Fixup* f = &Fixups[FreeFixup];
+        FreeFixup = f->Next;
+        f->Next = INVALID_ADDR;
+    }
+#endif
 }
