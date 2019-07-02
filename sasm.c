@@ -9,6 +9,7 @@ typedef unsigned short U2;
 #define TOKEN_MAX 32
 #define LABEL_MAX 100
 #define FIXUP_MAX 100
+#define OUTPUT_MAX 0x1000
 #define INVALID_ADDR 0xFFFF
 
 FILE* InputFile;
@@ -17,6 +18,8 @@ U1 CurrentChar;
 char TokenText[TOKEN_MAX+1];
 U1 TokenLen;
 U2 CurrentAddress;
+U1 OutputBuffer[OUTPUT_MAX];
+U2 OutputOffset;
 
 struct Label {
     char Name[TOKEN_MAX+1];
@@ -33,6 +36,7 @@ struct Label Labels[LABEL_MAX];
 struct Fixup Fixups[FIXUP_MAX];
 U2 NumLabels;
 U2 FreeFixup;
+struct Fixup* CurrentFixup;
 
 enum {
     OP_REG,
@@ -62,7 +66,10 @@ void Error(const char* msg)
 
 void OutputByte(U1 b)
 {
-    printf("Output 0x%02X\n", b);
+    if (b == OUTPUT_MAX) {
+        Error("Output overflow");
+    }
+    OutputBuffer[OutputOffset++] = b;
     ++CurrentAddress;
 }
 
@@ -199,20 +206,31 @@ void AddFixup(struct Label* l)
     if (FreeFixup == INVALID_ADDR) {
         Error("Too many fixups");
     }
+    if (CurrentFixup) {
+        Error("Too many fixups for instruction");
+    }
     printf("Adding fixup for %s\n", l->Name);
     const U2 idx = FreeFixup;
-    struct Fixup* f = &Fixups[idx];
-    FreeFixup = f->Next;
-    f->Next = l->Fixup;
-    f->Address = 0x1234; // TODO   
+    CurrentFixup = &Fixups[idx];
+    FreeFixup = CurrentFixup->Next;
+    CurrentFixup->Next = l->Fixup;
     l->Fixup = idx;
 }
 
-void ResolveFixups(struct Label* l) {
+void AddU2(U1* d, U2 a)
+{
+    const U2 x = (d[0]|d[1]<<8)+a;
+    d[0] = x & 0xff;
+    d[1] = x >> 8;
+}
+
+void ResolveFixups(struct Label* l)
+{
     U2 lastidx = INVALID_ADDR;
     for (U2 idx = l->Fixup; idx != INVALID_ADDR;) {
         struct Fixup* f = &Fixups[idx];
-        printf("TODO: Actually resolve fixup of %s at %04X to %04X\n", l->Name, f->Address, l->Address);
+        assert(f->Address < OutputOffset);
+        AddU2(&OutputBuffer[f->Address], l->Address);
         lastidx = idx;
         idx = f->Next;
     }
@@ -221,6 +239,15 @@ void ResolveFixups(struct Label* l) {
         Fixups[lastidx].Next = FreeFixup;
         FreeFixup = lastidx;
     }
+}
+
+void FixupIsHere(void)
+{
+    if (!CurrentFixup) {
+        Error("No fixup active?");
+    }
+    CurrentFixup->Address = OutputOffset;
+    CurrentFixup = NULL;
 }
 
 void DefineLabel(void)
@@ -349,28 +376,35 @@ void DirectiveOrg(void)
     CurrentAddress = org;
 }
 
+void OutputDx(U1 size, U2 val)
+{
+    OutputByte(val&0xff);
+    if (size != 1) {
+        assert(size == 2);
+        OutputByte(val>>8);
+    } else {
+        assert((val>>8) == 0);
+    }
+}
+
 void DirectiveDx(U1 size)
 {
-    printf("Ignoring D%c\n", size==2?'W':'B');
     for (;;){
         if (CurrentChar == '\'') {
-            printf(" Raw chars:");
             ReadNext();
             while (CurrentChar != '\'') {
                 if (CurrentChar < 0x20) {
                     Error("Unterminated literal");
                 }
-                printf(" %02X", CurrentChar);
+                OutputDx(size, CurrentChar);
                 ReadNext();
             }
-            printf("\n");
             MoveNext();
         } else if (CurrentChar >= '0' && CurrentChar <= '9') {
-            const U2 n = GetNumber();
-            printf("  %X\n", n);
+            OutputDx(size, GetNumber());
         } else {
             GetToken();
-            printf("  %s\n", TokenText);
+            Error("Not implemented in DirectiveDx");
         }
         if (CurrentChar != ',') {
             break;
@@ -414,6 +448,42 @@ void InstIgnore2(void)
     printf("\n");
 }
 
+void InstINT(void)
+{
+    const U2 i = GetNumber();
+    if (i > 0xff) {
+        Error("Interrupt no. out of range");
+    }
+    OutputByte(0xCD);
+    OutputByte(i&0xff);
+}
+
+void InstMOV(void)
+{
+    GetOperand();
+    ExpectComma();
+    const U1 op1Type = OperandType;
+    const U2 op1Val  = OperandValue;
+    GetOperand();
+    if (op1Type != OP_REG || OperandType != OP_LIT) {
+        Error("Not implemented: MOV <non-reg>, <non-lit>");
+    }
+    if (op1Val >= R_ES) {
+        Error("Cannot move literal to sreg");
+    }
+    OutputByte(0xB0 + op1Val);
+    if (CurrentFixup) {
+        if (op1Val < R_AX) {
+            Error("Invalid dest reg. when fixup needed");
+        }
+        FixupIsHere();
+    }
+    OutputByte(OperandValue&0xff);
+    if (op1Val >= R_AX) {
+        OutputByte(OperandValue>>8);
+    }
+}
+
 static const struct {
     const char* text;
     void (*func)(void);
@@ -425,9 +495,9 @@ static const struct {
     { "CLC", &InstIgnore0 },
     { "STC", &InstIgnore0 },
     { "CALL", &InstIgnore1 },
-    { "INT", &InstIgnore1 },
+    { "INT", &InstINT },
     { "RET", &InstIgnore0 },
-    { "MOV", &InstIgnore2 },
+    { "MOV", &InstMOV },
     { "MOVZX", &InstIgnore2 },
     { "INC", &InstIgnore1 },
     { "DEC", &InstIgnore1 },
@@ -484,6 +554,9 @@ void Dispatch(void)
     for (unsigned i = 0; i < sizeof(DispatchList)/sizeof(*DispatchList); ++i) {
         if (!strcmp(TokenText, DispatchList[i].text)) {
             DispatchList[i].func();
+            if (CurrentFixup) {
+                Error("Fixup not handled");
+            }
             return;
         }
     }
@@ -512,7 +585,7 @@ int main()
         Fixups[i].Next = i + 1;
     }
     Fixups[FIXUP_MAX-1].Next = INVALID_ADDR;
-    ParserInit("../tests/t01.asm");
+    ParserInit("../tests/t02.asm");
     for (;;) {
         GetToken();
         if (!TokenLen) {
@@ -534,4 +607,10 @@ int main()
         f->Next = INVALID_ADDR;
     }
 #endif
+    FILE* OutputFile = fopen("out.com", "wb");
+    if (!OutputFile) {
+        Error("Could not open output file");
+    }
+    fwrite(OutputBuffer, 1, OutputOffset, OutputFile);
+    fclose(OutputFile);
 }
