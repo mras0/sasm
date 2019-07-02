@@ -14,6 +14,7 @@ typedef unsigned short U2;
 
 FILE* InputFile;
 U2 CurrentLine;
+U2 NumNewLines;
 U1 CurrentChar;
 char TokenText[TOKEN_MAX+1];
 U1 TokenLen;
@@ -42,8 +43,8 @@ enum {
     OP_REG,
     OP_LIT,
     OP_MEM,
-} OperandType;
-U2 OperandValue;
+} OperandType, OperandLType;
+U2 OperandValue, OperandLValue;
 
 enum {
     R_AL, R_CL, R_DL, R_BL, R_AH, R_CH, R_DH, R_BH,
@@ -73,6 +74,12 @@ void OutputByte(U1 b)
     ++CurrentAddress;
 }
 
+void OutputWord(U2 w)
+{
+    OutputByte(w & 0xff);
+    OutputByte(w >> 8);
+}
+
 void ReadNext(void)
 {
     int c = fgetc(InputFile);
@@ -80,7 +87,7 @@ void ReadNext(void)
         CurrentChar = 0;
         return;
     } else if (c == '\n') {
-        ++CurrentLine;
+        ++NumNewLines;
     }
     CurrentChar = (U1)c;
 }
@@ -367,6 +374,25 @@ void GetOperand(void)
     }
 }
 
+void MoveToOperandL(void)
+{
+    OperandLType  = OperandType;
+    OperandLValue = OperandValue;
+    // TODO: CurrentFixup
+}
+
+void HandleRel16(void)
+{
+    GetOperand();
+    if (OperandType != OP_LIT) {
+        Error("Expected literal");
+    }
+    if (CurrentFixup) {
+        FixupIsHere();
+    }
+    OutputWord((U2)(OperandValue - (CurrentAddress + 2)));
+}
+
 void DirectiveOrg(void)
 {
     const U2 org = GetNumber();
@@ -423,6 +449,7 @@ void DirectiveDw(void)
     DirectiveDx(2);
 }
 
+#if 0
 void InstIgnore0(void)
 {
     printf("Ignoring %s\n", TokenText);
@@ -447,6 +474,7 @@ void InstIgnore2(void)
     PrintOperand();
     printf("\n");
 }
+#endif
 
 void InstINT(void)
 {
@@ -458,30 +486,126 @@ void InstINT(void)
     OutputByte(i&0xff);
 }
 
-void InstMOV(void)
+void Get2Operands(void)
 {
     GetOperand();
+    MoveToOperandL();
     ExpectComma();
-    const U1 op1Type = OperandType;
-    const U2 op1Val  = OperandValue;
     GetOperand();
-    if (op1Type != OP_REG || OperandType != OP_LIT) {
+}
+
+void OutputRR(U1 inst)
+{
+    if (OperandLValue/8 != OperandValue/8) {
+        Error("Invalid register sizes");
+    }
+    OutputByte(inst | (OperandLValue/8 ? 1 : 0)); // 16 or 8-bit?
+    OutputByte(0xc0 | (OperandLValue&7) | (OperandValue&7)<<3);
+}
+
+void InstMOV(void)
+{
+    Get2Operands();
+    if (OperandLType == OP_REG && OperandType == OP_REG) {
+        OutputRR(0x88);
+        return;
+    }
+    if (OperandLType != OP_REG || OperandType != OP_LIT) {
         Error("Not implemented: MOV <non-reg>, <non-lit>");
     }
-    if (op1Val >= R_ES) {
+    if (OperandLValue >= R_ES) {
         Error("Cannot move literal to sreg");
     }
-    OutputByte(0xB0 + op1Val);
+    OutputByte(0xB0 + OperandLValue);
     if (CurrentFixup) {
-        if (op1Val < R_AX) {
+        if (OperandLValue < R_AX) {
             Error("Invalid dest reg. when fixup needed");
         }
         FixupIsHere();
     }
     OutputByte(OperandValue&0xff);
-    if (op1Val >= R_AX) {
+    if (OperandLValue >= R_AX) {
         OutputByte(OperandValue>>8);
     }
+}
+
+void InstAND(void)
+{
+    Get2Operands();
+    if (OperandLType == OP_REG && OperandType == OP_REG) {
+        OutputRR(0x20);
+        return;
+    }
+    Error("Not implemented AND with non-reg arguments");
+}
+
+void InstCALL(void)
+{
+    OutputByte(0xE8);
+    HandleRel16();
+}
+
+void InstPUSHA(void)
+{
+    OutputByte(0x60);
+}
+
+void InstPOPA(void)
+{
+    OutputByte(0x61);
+}
+
+void InstPUSH(void)
+{
+    GetOperand();
+    if (OperandType != OP_REG) {
+        Error("Not implemented PUSH imm");
+    }
+    if (OperandValue < R_AX) {
+        Error("Cannot push 8-bit register");
+    }
+    if (OperandValue >= R_ES) {
+        Error("Not implemented: push s-reg");
+    }
+    OutputByte(0x50 | (OperandValue & 7));
+}
+
+void InstPOP(void)
+{
+    GetOperand();
+    if (OperandType != OP_REG || OperandValue < R_AX || OperandValue >= R_ES) {
+        Error("Invalid/unsupported POP");
+    }
+    OutputByte(0x58 | (OperandValue & 7));
+}
+
+void InstRET(void)
+{
+    OutputByte(0xC3);
+}
+
+void InstLODSB(void)
+{
+    OutputByte(0xAC);
+}
+
+void InstJMP(void)
+{
+    // TODO: Use EB for known short jumps
+    OutputByte(0xE9);
+    HandleRel16();
+}
+
+void HandleJcc(U1 cc) {
+    // TODO: Use 0x70 | cc if known short jump
+    assert(cc < 16);
+    OutputWord(0x800F | cc<<8);
+    HandleRel16();
+}
+
+void InstJZ(void)
+{
+    HandleJcc(4);
 }
 
 static const struct {
@@ -492,57 +616,44 @@ static const struct {
     { "DB", &DirectiveDb },
     { "DW", &DirectiveDw },
 
-    { "CLC", &InstIgnore0 },
-    { "STC", &InstIgnore0 },
-    { "CALL", &InstIgnore1 },
+    { "CALL", &InstCALL },
     { "INT", &InstINT },
-    { "RET", &InstIgnore0 },
-    { "MOV", &InstMOV },
-    { "MOVZX", &InstIgnore2 },
-    { "INC", &InstIgnore1 },
-    { "DEC", &InstIgnore1 },
-    { "ADD", &InstIgnore2 },
-    { "AND", &InstIgnore2 },
-    { "CMP", &InstIgnore2 },
-    { "SUB", &InstIgnore2 },
-    { "OR",  &InstIgnore2 },
-    { "XOR", &InstIgnore2 },
-    { "XCHG", &InstIgnore2 },
-    { "ROL", &InstIgnore2 },
-    { "SHL", &InstIgnore2 },
-    { "MUL", &InstIgnore1 },
-    { "DIV", &InstIgnore1 },
-    { "PUSHA", &InstIgnore0 },
-    { "POPA", &InstIgnore0 },
-    { "PUSH", &InstIgnore1 },
-    { "POP", &InstIgnore1 },
-    { "LODSB", &InstIgnore0 },
-    { "STOSB", &InstIgnore0 },
-    { "LOOP", &InstIgnore1 },
-    { "JMP", &InstIgnore1 },
-    { "JO" , &InstIgnore1 },
-    { "JNO", &InstIgnore1 },
-    { "JC" , &InstIgnore1 },
-    { "JNC", &InstIgnore1 },
-    { "JZ" , &InstIgnore1 },
-    { "JNZ", &InstIgnore1 },
-    { "JNA", &InstIgnore1 },
-    { "JA" , &InstIgnore1 },
-    { "JS" , &InstIgnore1 },
-    { "JNS", &InstIgnore1 },
-    { "JPE", &InstIgnore1 },
-    { "JPO", &InstIgnore1 },
-    { "JL" , &InstIgnore1 },
-    { "JNL", &InstIgnore1 },
-    { "JNG", &InstIgnore1 },
-    { "JG" , &InstIgnore1 },
-    { "JB" , &InstIgnore1 },
-    { "JBE", &InstIgnore1 },
-    { "JA" , &InstIgnore1 },
-    { "JAE", &InstIgnore1 },
-    { "JE" , &InstIgnore1 },
-    { "JNE", &InstIgnore1 },
+    { "RET", &InstRET },
 
+    { "MOV", &InstMOV },
+    { "AND", &InstAND },
+
+    { "PUSHA", &InstPUSHA },
+    { "POPA", &InstPOPA },
+    { "PUSH", &InstPUSH },
+    { "POP", &InstPOP },
+
+    { "LODSB", &InstLODSB},
+
+    { "JMP", &InstJMP },
+//    { "JO" , &InstIgnore1 },
+//    { "JNO", &InstIgnore1 },
+//    { "JC" , &InstIgnore1 },
+//    { "JNC", &InstIgnore1 },
+    { "JZ" , &InstJZ },
+    { "JE" , &InstJZ },
+//    { "JNE", &InstIgnore1 },
+//    { "JNZ", &InstIgnore1 },
+//    { "JNA", &InstIgnore1 },
+//    { "JA" , &InstIgnore1 },
+//    { "JS" , &InstIgnore1 },
+//    { "JNS", &InstIgnore1 },
+//    { "JPE", &InstIgnore1 },
+//    { "JPO", &InstIgnore1 },
+//    { "JL" , &InstIgnore1 },
+//    { "JNL", &InstIgnore1 },
+//    { "JNG", &InstIgnore1 },
+//    { "JG" , &InstIgnore1 },
+//    { "JB" , &InstIgnore1 },
+//    { "JBE", &InstIgnore1 },
+//    { "JA" , &InstIgnore1 },
+//    { "JAE", &InstIgnore1 },
+    
 };
 
 void Dispatch(void)
@@ -569,6 +680,11 @@ void ParserInit(const char* filename)
         fprintf(stderr, "Error opening %s\n", filename);
         exit(1);
     }
+    for (int i = 0; i < FIXUP_MAX - 1; ++i) {
+        Fixups[i].Next = i + 1;
+    }
+    Fixups[FIXUP_MAX-1].Next = INVALID_ADDR;
+    FreeFixup = 0;
     CurrentLine = 1;
     MoveNext();
 }
@@ -579,14 +695,16 @@ void ParserFini(void)
     InputFile = NULL;
 }
 
-int main()
+int main(int argc, char* argv[])
 {
-    for (int i = 0; i < FIXUP_MAX - 1; ++i) {
-        Fixups[i].Next = i + 1;
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s input-file\n", argv[0]);
+        return 1;
     }
-    Fixups[FIXUP_MAX-1].Next = INVALID_ADDR;
-    ParserInit("../tests/t02.asm");
+    ParserInit(argv[1]);
     for (;;) {
+        CurrentLine += NumNewLines;
+        NumNewLines = 0;
         GetToken();
         if (!TokenLen) {
             break;
