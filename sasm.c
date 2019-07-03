@@ -1,10 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <assert.h>
 
+typedef signed char S1;
 typedef unsigned char U1;
 typedef unsigned short U2;
+typedef short S2;
 
 #define TOKEN_MAX 32
 #define LABEL_MAX 100
@@ -178,10 +181,11 @@ struct Label* FindLabel(const char* text)
 void RetireLabel(U2 index)
 {
     assert(index < NumLabels);
-    printf("Retiring %s\n", Labels[index].Name);
+    //printf("Retiring %s\n", Labels[index].Name);
     if (Labels[index].Address == INVALID_ADDR) {
         Error("Undefined label");
     }
+    assert(Labels[index].Fixup == INVALID_ADDR);
     if (index < NumLabels-1) {
         Labels[index] = Labels[NumLabels-1];
     }
@@ -216,7 +220,7 @@ void AddFixup(struct Label* l)
     if (CurrentFixup) {
         Error("Too many fixups for instruction");
     }
-    printf("Adding fixup for %s\n", l->Name);
+    //printf("Adding fixup for %s\n", l->Name);
     const U2 idx = FreeFixup;
     CurrentFixup = &Fixups[idx];
     FreeFixup = CurrentFixup->Next;
@@ -233,6 +237,7 @@ void AddU2(U1* d, U2 a)
 
 void ResolveFixups(struct Label* l)
 {
+    assert(l->Address != INVALID_ADDR);
     U2 lastidx = INVALID_ADDR;
     for (U2 idx = l->Fixup; idx != INVALID_ADDR;) {
         struct Fixup* f = &Fixups[idx];
@@ -242,9 +247,10 @@ void ResolveFixups(struct Label* l)
         idx = f->Next;
     }
     if (lastidx != INVALID_ADDR) {
-        assert(Fixups[lastidx].Next == INVALID_ADDR);
+        assert(Fixups[lastidx].Next == INVALID_ADDR && l->Fixup != INVALID_ADDR);
         Fixups[lastidx].Next = FreeFixup;
-        FreeFixup = lastidx;
+        FreeFixup = l->Fixup;
+        l->Fixup = INVALID_ADDR;
     }
 }
 
@@ -261,6 +267,7 @@ void DefineLabel(void)
 {
     --TokenLen;
     TokenText[TokenLen] = '\0';
+    //printf("Defining %s\n", TokenText);
 
     if (TokenText[0] != '.') {
         // Retire local labels
@@ -494,6 +501,34 @@ void Get2Operands(void)
     GetOperand();
 }
 
+void OutputImm16(void)
+{
+    OutputWord(OperandValue);
+}
+
+void OutputImm8(void)
+{
+    if ((U1)OperandValue > 255) {
+        Error("8-bit immediate out of range");
+    }
+    OutputByte(OperandValue & 0xff);
+}
+
+void OutputImm(bool is16bit)
+{
+    if (CurrentFixup) {
+        if (!is16bit) {
+            Error("Invalid immediate with fixup");
+        }
+        FixupIsHere();
+    }
+    if (is16bit) {
+        OutputImm16();
+    } else {
+        OutputImm8();
+    }
+}
+
 void OutputRR(U1 inst)
 {
     if (OperandLValue/8 != OperandValue/8) {
@@ -517,26 +552,40 @@ void InstMOV(void)
         Error("Cannot move literal to sreg");
     }
     OutputByte(0xB0 + OperandLValue);
-    if (CurrentFixup) {
-        if (OperandLValue < R_AX) {
-            Error("Invalid dest reg. when fixup needed");
-        }
-        FixupIsHere();
-    }
-    OutputByte(OperandValue&0xff);
-    if (OperandLValue >= R_AX) {
-        OutputByte(OperandValue>>8);
-    }
+    OutputImm(OperandLValue >= R_AX);
 }
 
-void InstAND(void)
+void InstALU(U1 base)
 {
     Get2Operands();
     if (OperandLType == OP_REG && OperandType == OP_REG) {
-        OutputRR(0x20);
+        OutputRR(base);
         return;
+    } else if (OperandLType == OP_REG && OperandType == OP_LIT) {
+        if (OperandLValue == R_AL) {
+            OutputByte(base + 4);
+            OutputImm8();
+            return;
+        }
     }
     Error("Not implemented AND with non-reg arguments");
+}
+
+void InstADD(void) { InstALU(0x00); }
+void InstAND(void) { InstALU(0x20); }
+void InstCMP(void) { InstALU(0x38); }
+
+void InstROL(void)
+{
+    Get2Operands();
+    if (OperandLType == OP_REG && OperandType == OP_LIT) {
+        const bool is16bit = OperandLValue/8==1;
+        OutputByte(0xc0 | (is16bit?1:0));
+        OutputByte(0xc0 | (0<<8) | (OperandLValue&7));
+        OutputImm8();
+        return;
+    }
+    Error("Not implemented: ROL");
 }
 
 void InstCALL(void)
@@ -603,10 +652,22 @@ void HandleJcc(U1 cc) {
     HandleRel16();
 }
 
-void InstJZ(void)
-{
-    HandleJcc(4);
-}
+void InstJO(void)   { HandleJcc(0x0); }
+void InstJNO(void)  { HandleJcc(0x1); }
+void InstJC(void)   { HandleJcc(0x2); }
+void InstJNC(void)  { HandleJcc(0x3); }
+void InstJZ(void)   { HandleJcc(0x4); }
+void InstJNZ(void)  { HandleJcc(0x5); }
+void InstJNA(void)  { HandleJcc(0x6); }
+void InstJA(void)   { HandleJcc(0x7); }
+void InstJS(void)   { HandleJcc(0x8); }
+void InstJNS(void)  { HandleJcc(0x9); }
+void InstJPE(void)  { HandleJcc(0xa); }
+void InstJPO(void)  { HandleJcc(0xb); }
+void InstJL(void)   { HandleJcc(0xc); }
+void InstJNL(void)  { HandleJcc(0xd); }
+void InstJNG(void)  { HandleJcc(0xe); }
+void InstJG(void)   { HandleJcc(0xf); }
 
 static const struct {
     const char* text;
@@ -616,12 +677,16 @@ static const struct {
     { "DB", &DirectiveDb },
     { "DW", &DirectiveDw },
 
+    { "MOV", &InstMOV },
+    { "ADD", &InstADD },
+    { "AND", &InstAND },
+    { "CMP", &InstCMP },
+
+    { "ROL", &InstROL },
+
     { "CALL", &InstCALL },
     { "INT", &InstINT },
     { "RET", &InstRET },
-
-    { "MOV", &InstMOV },
-    { "AND", &InstAND },
 
     { "PUSHA", &InstPUSHA },
     { "POPA", &InstPOPA },
@@ -631,28 +696,23 @@ static const struct {
     { "LODSB", &InstLODSB},
 
     { "JMP", &InstJMP },
-//    { "JO" , &InstIgnore1 },
-//    { "JNO", &InstIgnore1 },
-//    { "JC" , &InstIgnore1 },
-//    { "JNC", &InstIgnore1 },
-    { "JZ" , &InstJZ },
-    { "JE" , &InstJZ },
-//    { "JNE", &InstIgnore1 },
-//    { "JNZ", &InstIgnore1 },
-//    { "JNA", &InstIgnore1 },
-//    { "JA" , &InstIgnore1 },
-//    { "JS" , &InstIgnore1 },
-//    { "JNS", &InstIgnore1 },
-//    { "JPE", &InstIgnore1 },
-//    { "JPO", &InstIgnore1 },
-//    { "JL" , &InstIgnore1 },
-//    { "JNL", &InstIgnore1 },
-//    { "JNG", &InstIgnore1 },
-//    { "JG" , &InstIgnore1 },
-//    { "JB" , &InstIgnore1 },
-//    { "JBE", &InstIgnore1 },
-//    { "JA" , &InstIgnore1 },
-//    { "JAE", &InstIgnore1 },
+    { "JO" , &InstJO  },
+    { "JNO", &InstJNO },
+    { "JC" , &InstJC  },
+    { "JNC", &InstJNC },
+    { "JZ" , &InstJZ  },
+    { "JNZ", &InstJNZ },
+    { "JNA", &InstJNA },
+    { "JBE", &InstJNA },
+    { "JA" , &InstJA  },
+    { "JS" , &InstJS  },
+    { "JNS", &InstJNS },
+    { "JPE", &InstJPE },
+    { "JPO", &InstJPO },
+    { "JL" , &InstJL  },
+    { "JNL", &InstJNL },
+    { "JNG", &InstJNG },
+    { "JG" , &InstJG  },
     
 };
 
@@ -717,6 +777,7 @@ int main(int argc, char* argv[])
     }
     ParserFini();
 #ifndef NDEBUG
+    // Chek for leaks
     int FixupFreeCnt = 0;
     for (int i = 0; i < FIXUP_MAX; ++i) {
         assert(FreeFixup < FIXUP_MAX);
