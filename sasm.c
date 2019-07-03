@@ -555,6 +555,17 @@ void InstMOV(void)
     OutputImm(OperandLValue >= R_AX);
 }
 
+void InstXCHG(void)
+{
+    Get2Operands();
+    if (OperandLType == OP_REG && OperandType == OP_REG) {
+        // TODO: Could use 0x90+r if either operand is AX
+        OutputRR(0x86);
+        return;
+    }
+    Error("Invalid/unsupported operands to XCHG");
+}
+
 void InstALU(U1 base)
 {
     Get2Operands();
@@ -572,7 +583,12 @@ void InstALU(U1 base)
 }
 
 void InstADD(void) { InstALU(0x00); }
+void InstOR(void)  { InstALU(0x08); }
+void InstADC(void) { InstALU(0x10); }
+void InstSBB(void) { InstALU(0x18); }
 void InstAND(void) { InstALU(0x20); }
+void InstSUB(void) { InstALU(0x28); }
+void InstXOR(void) { InstALU(0x30); }
 void InstCMP(void) { InstALU(0x38); }
 
 void InstROL(void)
@@ -586,6 +602,21 @@ void InstROL(void)
         return;
     }
     Error("Not implemented: ROL");
+}
+
+void InstDIV(void)
+{
+    GetOperand();
+    if (OperandType != OP_REG || OperandValue >= R_ES) {
+        Error("Not implemented: DIV <non-small-reg>");
+    }
+    OutputByte(0xF6 | (OperandValue/8==1));
+    OutputByte(0xC0 | (6<<3) | (OperandValue&7));
+}
+
+void InstMUL(void)
+{
+    Error("Not implemented: MUL");
 }
 
 void InstCALL(void)
@@ -607,16 +638,25 @@ void InstPOPA(void)
 void InstPUSH(void)
 {
     GetOperand();
-    if (OperandType != OP_REG) {
-        Error("Not implemented PUSH imm");
+    if (OperandType == OP_REG) {
+        if (OperandValue < R_AX) {
+            Error("Cannot push 8-bit register");
+        }
+        if (OperandValue >= R_ES) {
+            Error("Not implemented: push s-reg");
+        }
+        OutputByte(0x50 | (OperandValue & 7));
+    } else if (OperandType == OP_LIT) {
+        if (OperandValue > 0xff) {
+            OutputByte(0x68);
+            OutputImm16();
+        } else {
+            OutputByte(0x6A);
+            OutputImm8();
+        }
+    } else {
+        Error("Invalid / unsupported argument to PUSH");
     }
-    if (OperandValue < R_AX) {
-        Error("Cannot push 8-bit register");
-    }
-    if (OperandValue >= R_ES) {
-        Error("Not implemented: push s-reg");
-    }
-    OutputByte(0x50 | (OperandValue & 7));
 }
 
 void InstPOP(void)
@@ -678,11 +718,21 @@ static const struct {
     { "DW", &DirectiveDw },
 
     { "MOV", &InstMOV },
+    { "XCHG", &InstXCHG },
+
     { "ADD", &InstADD },
+    { "OR" , &InstOR  },
+    { "ADC", &InstADC },
+    { "SBB", &InstSBB },
     { "AND", &InstAND },
+    { "SUB", &InstSUB },
+    { "XOR", &InstXOR },
     { "CMP", &InstCMP },
 
     { "ROL", &InstROL },
+
+    { "DIV", &InstDIV },
+    { "MUL", &InstMUL },
 
     { "CALL", &InstCALL },
     { "INT", &InstINT },
