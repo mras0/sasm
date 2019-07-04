@@ -62,6 +62,9 @@ const char RegNames[][3] = {
     "ES", "CS", "SS", "DS",
 };
 
+#ifdef _MSC_VER
+__declspec(noreturn)
+#endif
 void Error(const char* msg)
 {
     fprintf(stderr, "Line %u: %s (Current token: \"%s\")\n", CurrentLine, msg, TokenText);
@@ -836,10 +839,27 @@ int main(int argc, char* argv[])
         f->Next = INVALID_ADDR;
     }
 #endif
-    FILE* OutputFile = fopen("out.com", "wb");
+    int l = strlen(argv[1]);
+    char* outfname = malloc(l + 4);
+    if (!outfname) {
+        Error("Out of memory");
+    }
+    strcpy(outfname, argv[1]);
+    for (int i = l-1;;--i) {
+        if (i == 0 || outfname[i] == '\\' || outfname[i] == '/') {
+            strcpy(&outfname[l], ".com");
+            break;
+        } else if (outfname[i] == '.') {
+            strcpy(&outfname[i], ".com");
+            break;
+        }
+    }
+    printf("Writing %s\n", outfname);
+    FILE* OutputFile = fopen(outfname, "wb");
     if (!OutputFile) {
         Error("Could not open output file");
     }
     fwrite(OutputBuffer, 1, OutputOffset, OutputFile);
     fclose(OutputFile);
+    free(outfname);
 }
