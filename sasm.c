@@ -109,6 +109,15 @@ U1 GetChar(void)
     return c;
 }
 
+bool TryGet(U1 ch)
+{
+    if (CurrentChar == ch) {
+        ReadNext();
+        return true;
+    }
+    return false;
+}
+
 void SkipWS(void)
 {
     for (;;) {
@@ -153,7 +162,7 @@ bool IsTokenNumber(void)
 void GetToken(void)
 {
     TokenLen = 0;
-    while (CurrentChar == '.' || CurrentChar == ':' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
+    while (CurrentChar == '.' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
         if (TokenLen < TOKEN_MAX) {
             TokenText[TokenLen++] = ToUpper(CurrentChar);
         }
@@ -230,6 +239,7 @@ void RetireLabel(U2 index)
     assert(index < NumLabels);
     //printf("Retiring %s\n", Labels[index].Name);
     if (Labels[index].Address == INVALID_ADDR) {
+        printf("Label: \"%s\"\n", Labels[index].Name);
         Error("Undefined label");
     }
     assert(Labels[index].Fixup == INVALID_ADDR);
@@ -317,10 +327,6 @@ void FixupIsHere(void)
 
 void DefineLabel(void)
 {
-    --TokenLen;
-    TokenText[TokenLen] = '\0';
-    //printf("Defining %s\n", TokenText);
-
     if (TokenText[0] != '.') {
         // Retire local labels
         for (U2 index = 0; index < NumLabels;) {
@@ -481,11 +487,20 @@ void GetOperandMem(void)
     U2 Disp  = 0;
 
     do {
+    redo:
         if (GetRegOrNumber()) {
             if (OperandType == OP_LIT) {
                 Disp += OperandValue;
             } else {
                 assert(OperandType == OP_REG);
+                if (OperandValue >= R_ES) {
+                    // Segmnet override
+                    assert(OperandValue <= R_DS);
+                    OutputByte(0x26 | (OperandValue-R_ES)<<3);
+                    Expect(':');
+                    goto redo;
+                }
+
                 ModRM = CombineModrmWithReg(ModRM);
                 if (ModRM == 0xFF) {
                     Error("Invalid register combination for memory operand");
@@ -520,7 +535,7 @@ void GetOperandMem(void)
 
 void GetOperand(void)
 {
-    if (TryConsume('\'')) {
+    if (TryGet('\'')) {
         OperandType = OP_LIT;
         OperandValue = GetChar();
         if (!TryConsume('\'')) {
@@ -574,7 +589,7 @@ void OutputDx(U1 size, U2 val)
 void DirectiveDx(U1 size)
 {
     do {
-        if (TryConsume('\'')) {
+        if (TryGet('\'')) {
             while (!TryConsume('\'')) {
                 const U1 c = GetChar();
                 if (c < 0x20) {
@@ -657,10 +672,10 @@ void OutputModRM(U1 r)
 
 void OutputRR(U1 inst)
 {
-    if (OperandLValue/8 != OperandValue/8) {
+    if (!!(OperandLValue/8) != !!(OperandValue/8)) {
         Error("Invalid register sizes");
     }
-    OutputByte(inst | (OperandLValue/8 ? 1 : 0)); // 16 or 8-bit?
+    OutputByte(inst | (OperandValue/8 == 1 ? 1 : 0)); // 16 or 8-bit?
     OutputByte(0xc0 | (OperandLValue&7) | (OperandValue&7)<<3);
 }
 
@@ -703,28 +718,64 @@ void InstMOV(void)
 {
     Get2Operands();
     // TODO: Use optimized opcodes when moving to from AL/AX
-    if (OperandLType == OP_REG && OperandType == OP_REG) {
-        OutputRR(0x88);
-        return;
-    } else if (OperandLType < OP_REG && OperandType == OP_REG) {
-        OutputMR(0x88);
-        return;
-    } else if (OperandLType == OP_REG && OperandType < OP_REG) {
-        OutputRM(0x8A);
-        return;
-    } else if (OperandLType < OP_REG && OperandType == OP_LIT) {
-        OutputMImm(0xC6, 0);
-        return;
+
+    if (OperandLType == OP_REG) {
+        // LHS is register
+        if (OperandType == OP_REG) {
+            // MOV reg, reg
+            if (OperandLValue < R_ES) {
+                // LHS isn't an Sreg
+                if (OperandValue < R_ES) {
+                    // mov reg, reg
+                    OutputRR(0x88);
+                } else {
+                    // Mov reg, sreg
+                    if (OperandLValue < R_AX || OperandLValue > R_DI) {
+                        goto Invalid;
+                    }
+                    OutputRR(0x8c);
+                }
+            } else {
+                if (OperandValue < R_AX || OperandValue >= R_ES) {
+                    goto Invalid;
+                }
+                SwapOperands();
+                OutputRR(0x8e);
+            }
+        } else  if (OperandType == OP_LIT) {
+            // MOV reg, imm
+            if (OperandLValue >= R_ES) {
+                goto Invalid;
+            }
+            OutputByte(0xB0 + OperandLValue);
+            OutputImm(OperandLValue >= R_AX);
+        } else {
+            assert(OperandValue < OP_REG);
+            // MOV reg, mem
+            if (OperandLValue >= R_ES) {
+                Error("TODO: 0x8E in MOV Sreg, mem16");
+            }
+            OutputRM(0x8A);
+        }
+    } else if (OperandLType < OP_REG) {
+        // LHS is memory
+        if (OperandType == OP_REG) {
+            // MOV mem, reg
+            if (OperandValue >= R_ES) {
+                Error("Not implemented: MOV mem, Sreg");
+            }
+            OutputMR(0x88);
+        } else if (OperandType == OP_LIT) {
+            // mov mem, lit
+            OutputMImm(0xC6, 0);
+        } else {
+            goto Invalid;
+        }
+    } else {
+Invalid:
+        PrintInstr("MOV", 2);
+        Error("Invalid instruction");
     }
-    if (OperandLType != OP_REG || OperandType != OP_LIT) {
-        PrintInstr("MOV", true);
-        Error("Not implemented: MOV <non-reg>, <non-lit>");
-    }
-    if (OperandLValue >= R_ES) {
-        Error("Cannot move literal to sreg");
-    }
-    OutputByte(0xB0 + OperandLValue);
-    OutputImm(OperandLValue >= R_AX);
 }
 
 void InstMOVZX(void)
@@ -850,9 +901,11 @@ void InstPUSH(void)
             Error("Cannot push 8-bit register");
         }
         if (OperandValue >= R_ES) {
-            Error("Not implemented: push s-reg");
+            assert(OperandValue <= R_DS);
+            OutputByte(0x06 | (OperandValue-R_ES)<<3);
+        } else {
+            OutputByte(0x50 | (OperandValue & 7));
         }
-        OutputByte(0x50 | (OperandValue & 7));
     } else if (OperandType == OP_LIT) {
         if (OperandValue > 0xff) {
             OutputByte(0x68);
@@ -869,10 +922,15 @@ void InstPUSH(void)
 void InstPOP(void)
 {
     GetOperand();
-    if (OperandType != OP_REG || OperandValue < R_AX || OperandValue >= R_ES) {
+    if (OperandType != OP_REG || OperandValue < R_AX) {
         Error("Invalid/unsupported POP");
     }
-    OutputByte(0x58 | (OperandValue & 7));
+    if (OperandValue >= R_ES) {
+        assert(OperandValue <= R_DS && OperandValue != R_CS);
+        OutputByte(0x07 | (OperandValue-R_ES)<<3);
+    } else {
+        OutputByte(0x58 | (OperandValue & 7));
+    }
 }
 
 void HandleRel16(void)
@@ -1022,7 +1080,7 @@ static const struct {
 
 void Dispatch(void)
 {
-    if (TokenLen > 1 && TokenText[TokenLen-1] == ':') {
+    if (TryConsume(':')) {
         DefineLabel();
         return;
     }
