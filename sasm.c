@@ -595,16 +595,6 @@ void DirectiveDx(U1 size)
     } while (TryConsume(','));
 }
 
-void DirectiveDb(void)
-{
-    DirectiveDx(1);
-}
-
-void DirectiveDw(void)
-{
-    DirectiveDx(2);
-}
-
 void InstINT(void)
 {
     const U2 i = GetNumber();
@@ -792,16 +782,6 @@ void InstIncDec(bool dec)
     Error("TODO");
 }
 
-void InstINC(void)
-{
-    InstIncDec(0);
-}
-
-void InstDEC(void)
-{
-    InstIncDec(1);
-}
-
 void InstALU(U1 base)
 {
     assert(((base & 7) | (base >> 6)) == 0);
@@ -836,15 +816,6 @@ void InstALU(U1 base)
     Error("Not implemented ALU with non-reg arguments");
 }
 
-void InstADD(void) { InstALU(0x00); }
-void InstOR(void)  { InstALU(0x08); }
-void InstADC(void) { InstALU(0x10); }
-void InstSBB(void) { InstALU(0x18); }
-void InstAND(void) { InstALU(0x20); }
-void InstSUB(void) { InstALU(0x28); }
-void InstXOR(void) { InstALU(0x30); }
-void InstCMP(void) { InstALU(0x38); }
-
 void InstROT(U1 r)
 {
     assert(r < 8);
@@ -860,14 +831,6 @@ void InstROT(U1 r)
     Error("Not implemented");
 }
 
-void InstROL(void) { InstROT(0); }
-void InstROR(void) { InstROT(1); }
-void InstRCL(void) { InstROT(2); }
-void InstRCR(void) { InstROT(3); }
-void InstSHL(void) { InstROT(4); }
-void InstSHR(void) { InstROT(5); }
-void InstSAR(void) { InstROT(7); }
-
 void InstMulDiv(U1 r)
 {
     assert(r >= 4 && r < 8);
@@ -877,21 +840,6 @@ void InstMulDiv(U1 r)
     }
     OutputByte(0xF6 | (OperandValue/8==1));
     OutputByte(0xC0 | (r<<3) | (OperandValue&7));
-}
-
-void InstMUL(void)  { InstMulDiv(4); }
-void InstIMUL(void) { InstMulDiv(5); }
-void InstDIV(void)  { InstMulDiv(6); }
-void InstIDIV(void) { InstMulDiv(7); }
-
-void InstPUSHA(void)
-{
-    OutputByte(0x60);
-}
-
-void InstPOPA(void)
-{
-    OutputByte(0x61);
 }
 
 void InstPUSH(void)
@@ -926,13 +874,6 @@ void InstPOP(void)
     }
     OutputByte(0x58 | (OperandValue & 7));
 }
-
-void InstRET(void)   { OutputByte(0xC3); }
-void InstLODSB(void) { OutputByte(0xAC); }
-void InstSTOSB(void) { OutputByte(0xAA); }
-void InstCLC(void)   { OutputByte(0xF8); }
-void InstSTC(void)   { OutputByte(0xF9); }
-void InstNOP(void)   { OutputByte(0x90); }
 
 void HandleRel16(void)
 {
@@ -992,101 +933,92 @@ void HandleJcc(U1 cc) {
     }
 }
 
-void InstJO(void)   { HandleJcc(0x0); }
-void InstJNO(void)  { HandleJcc(0x1); }
-void InstJC(void)   { HandleJcc(0x2); }
-void InstJNC(void)  { HandleJcc(0x3); }
-void InstJZ(void)   { HandleJcc(0x4); }
-void InstJNZ(void)  { HandleJcc(0x5); }
-void InstJNA(void)  { HandleJcc(0x6); }
-void InstJA(void)   { HandleJcc(0x7); }
-void InstJS(void)   { HandleJcc(0x8); }
-void InstJNS(void)  { HandleJcc(0x9); }
-void InstJPE(void)  { HandleJcc(0xa); }
-void InstJPO(void)  { HandleJcc(0xb); }
-void InstJL(void)   { HandleJcc(0xc); }
-void InstJNL(void)  { HandleJcc(0xd); }
-void InstJNG(void)  { HandleJcc(0xe); }
-void InstJG(void)   { HandleJcc(0xf); }
+#define JO   0x0
+#define JNO  0x1
+#define JC   0x2
+#define JNC  0x3
+#define JZ   0x4
+#define JNZ  0x5
+#define JNA  0x6
+#define JA   0x7
+#define JS   0x8
+#define JNS  0x9
+#define JPE  0xa
+#define JPO  0xb
+#define JL   0xc
+#define JNL  0xd
+#define JNG  0xe
+#define JG   0xf
 
 static const struct {
-    const char* text;
-    void (*func)(void);
+    const char text[6];
+    void (*func)();
+    U1 arg;
 } DispatchList[] = {
-    { "ORG", &DirectiveOrg },
-    { "DB", &DirectiveDb },
-    { "DW", &DirectiveDw },
-
-    { "MOV", &InstMOV },
-    { "MOVZX", &InstMOVZX },
-    { "XCHG", &InstXCHG },
-
-    { "INC", &InstINC },
-    { "DEC", &InstDEC },
-
-    { "ADD", &InstADD },
-    { "OR" , &InstOR  },
-    { "ADC", &InstADC },
-    { "SBB", &InstSBB },
-    { "AND", &InstAND },
-    { "SUB", &InstSUB },
-    { "XOR", &InstXOR },
-    { "CMP", &InstCMP },
-
-    { "ROL", &InstROL },
-    { "ROR", &InstROR },
-    { "RCL", &InstRCL },
-    { "RCR", &InstRCR },
-    { "SHL", &InstSHL },
-    { "SHR", &InstSHR },
-    { "SAR", &InstSAR },
-
-    { "DIV", &InstDIV },
-    { "IDIV", &InstIDIV },
-    { "MUL", &InstMUL },
-    { "IMUL", &InstIMUL },
-
-    { "INT", &InstINT },
-    { "RET", &InstRET },
-    { "NOP", &InstNOP },
-
-    { "PUSHA", &InstPUSHA },
-    { "POPA", &InstPOPA },
-    { "PUSH", &InstPUSH },
-    { "POP", &InstPOP },
-
-    { "LODSB", &InstLODSB},
-    { "STOSB", &InstSTOSB},
-
-    { "CLC", &InstCLC },
-    { "STC", &InstSTC },
-
-    { "CALL", &InstCALL },
-    { "JMP", &InstJMP },
-    { "JO" , &InstJO  },
-    { "JNO", &InstJNO },
-    { "JC" , &InstJC  },
-    { "JB" , &InstJC  },
-    { "JNC", &InstJNC },
-    { "JNB", &InstJNC },
-    { "JAE", &InstJNC },
-    { "JZ" , &InstJZ  },
-    { "JE" , &InstJZ  },
-    { "JNZ", &InstJNZ },
-    { "JNE", &InstJNZ },
-    { "JNA", &InstJNA },
-    { "JBE", &InstJNA },
-    { "JA" , &InstJA  },
-    { "JS" , &InstJS  },
-    { "JNS", &InstJNS },
-    { "JPE", &InstJPE },
-    { "JPO", &InstJPO },
-    { "JL" , &InstJL  },
-    { "JNL", &InstJNL },
-    { "JNG", &InstJNG },
-    { "JG" , &InstJG  },
-    
-};
+//  { "12345" , &Directive12345 , 0x12 }
+    { "ORG"   , &DirectiveOrg   , 0x00 },
+    { "DB"    , &DirectiveDx    , 0x01 },
+    { "DW"    , &DirectiveDx    , 0x02 },
+    { "MOV"   , &InstMOV        , 0x00 },
+    { "MOVZX" , &InstMOVZX      , 0x00 },
+    { "XCHG"  , &InstXCHG       , 0x00 },
+    { "INC"   , &InstIncDec     , 0x00 },
+    { "DEC"   , &InstIncDec     , 0x01 },
+    { "ADD"   , &InstALU        , 0x00 },
+    { "OR"    , &InstALU        , 0x08 },
+    { "ADC"   , &InstALU        , 0x10 },
+    { "SBB"   , &InstALU        , 0x18 },
+    { "AND"   , &InstALU        , 0x20 },
+    { "SUB"   , &InstALU        , 0x28 },
+    { "XOR"   , &InstALU        , 0x30 },
+    { "CMP"   , &InstALU        , 0x38 },
+    { "ROL"   , &InstROT        , 0x00 },
+    { "ROR"   , &InstROT        , 0x01 },
+    { "RCL"   , &InstROT        , 0x02 },
+    { "RCR"   , &InstROT        , 0x03 },
+    { "SHL"   , &InstROT        , 0x04 },
+    { "SHR"   , &InstROT        , 0x05 },
+    { "SAR"   , &InstROT        , 0x07 },
+    { "MUL"   , &InstMulDiv     , 0x04 },
+    { "IMUL"  , &InstMulDiv     , 0x05 },
+    { "DIV"   , &InstMulDiv     , 0x06 },
+    { "IDIV"  , &InstMulDiv     , 0x07 },
+    { "INT"   , &InstINT        , 0x00 },
+    { "RET"   , &OutputByte     , 0xC3 },
+    { "NOP"   , &OutputByte     , 0x90 },
+    { "PUSHA" , &OutputByte     , 0x60 },
+    { "POPA"  , &OutputByte     , 0x61 },
+    { "PUSH"  , &InstPUSH       , 0x00 },
+    { "POP"   , &InstPOP        , 0x00 },
+    { "STOSB" , &OutputByte     , 0xAA },
+    { "LODSB" , &OutputByte     , 0xAC },
+    { "CLC"   , &OutputByte     , 0xF8 },
+    { "STC"   , &OutputByte     , 0xF9 },
+    { "CALL"  , &InstCALL       , 0x00 },
+    { "JMP"   , &InstJMP        , 0x00 },
+    { "JO"    , &HandleJcc      , JO   },
+    { "JNO"   , &HandleJcc      , JNO  },
+    { "JC"    , &HandleJcc      , JC   },
+    { "JB"    , &HandleJcc      , JC   },
+    { "JNC"   , &HandleJcc      , JNC  },
+    { "JNB"   , &HandleJcc      , JNC  },
+    { "JAE"   , &HandleJcc      , JNC  },
+    { "JZ"    , &HandleJcc      , JZ   },
+    { "JE"    , &HandleJcc      , JZ   },
+    { "JNZ"   , &HandleJcc      , JNZ  },
+    { "JNE"   , &HandleJcc      , JNZ  },
+    { "JNA"   , &HandleJcc      , JNA  },
+    { "JBE"   , &HandleJcc      , JNA  },
+    { "JA"    , &HandleJcc      , JA   },
+    { "JS"    , &HandleJcc      , JS   },
+    { "JNS"   , &HandleJcc      , JNS  },
+    { "JPE"   , &HandleJcc      , JPE  },
+    { "JPO"   , &HandleJcc      , JPO  },
+    { "JL"    , &HandleJcc      , JL   },
+    { "JNL"   , &HandleJcc      , JNL  },
+    { "JNG"   , &HandleJcc      , JNG  },
+    { "JG"    , &HandleJcc      , JG   },
+    };
 
 void Dispatch(void)
 {
@@ -1097,7 +1029,7 @@ void Dispatch(void)
     ExplicitSize = 0xFF;
     for (unsigned i = 0; i < sizeof(DispatchList)/sizeof(*DispatchList); ++i) {
         if (!strcmp(TokenText, DispatchList[i].text)) {
-            DispatchList[i].func();
+            DispatchList[i].func(DispatchList[i].arg);
             if (CurrentFixup) {
                 Error("Fixup not handled");
             }
