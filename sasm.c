@@ -683,14 +683,29 @@ void OutputMR(U1 inst)
     OutputModRM(OperandValue&7);
 }
 
+void OutputRM(U1 inst)
+{
+    U1 tempT = OperandLType;
+    U2 tempV = OperandLValue;
+    OperandLType = OperandType;
+    OperandLValue = OperandValue;
+    OperandType = tempT;
+    OperandValue = tempV;
+    OutputMR(inst);
+}
+
 void InstMOV(void)
 {
     Get2Operands();
+    // TODO: Use optimized opcodes when moving to from AL/AX
     if (OperandLType == OP_REG && OperandType == OP_REG) {
         OutputRR(0x88);
         return;
     } else if (OperandLType < OP_REG && OperandType == OP_REG) {
         OutputMR(0x88);
+        return;
+    } else if (OperandLType == OP_REG && OperandType < OP_REG) {
+        OutputRM(0x8A);
         return;
     } else if (OperandLType < OP_REG && OperandType == OP_LIT) {
         if (ExplicitSize == 0xFF) {
