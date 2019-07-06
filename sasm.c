@@ -232,6 +232,11 @@ void AddFixup(struct Label* l)
     l->Fixup = idx;
 }
 
+bool IsShort(U2 num)
+{
+    return (S2)num <= 127 && (S2)num >= -128;
+}
+
 void AddU2(U1* d, U2 a)
 {
     const U2 x = (d[0]|d[1]<<8)+a;
@@ -453,7 +458,7 @@ void GetOperandMem(void)
     } else if (CurrentFixup) {
         ModRM |= 0x80; // Disp16
     } else if (Disp) {
-        if ((S2)Disp <= 127 && (S2)Disp >= -128) {
+        if (IsShort(Disp)) {
             ModRM |= 0x40; // Disp8
         } else {
             ModRM |= 0x80; // Disp16
@@ -513,17 +518,6 @@ void MoveToOperandL(void)
     OperandLType  = OperandType;
     OperandLValue = OperandValue;
     // TODO: CurrentFixup
-}
-
-void HandleRel16(void)
-{
-    if (OperandType != OP_LIT) {
-        Error("Expected literal");
-    }
-    if (CurrentFixup) {
-        FixupIsHere();
-    }
-    OutputWord((U2)(OperandValue - (CurrentAddress + 2)));
 }
 
 void DirectiveOrg(void)
@@ -863,21 +857,6 @@ void InstIMUL(void) { InstMulDiv(5); }
 void InstDIV(void)  { InstMulDiv(6); }
 void InstIDIV(void) { InstMulDiv(7); }
 
-void InstCALL(void)
-{
-    GetOperand();
-    if (OperandType == OP_REG) {
-        if (OperandValue/8 != 1) {
-            Error("Invalid register operand to CALL");
-        }
-        OutputByte(0xFF);
-        OutputByte(0xC0 | (2<<3) | (OperandValue&7));
-        return;
-    }
-    OutputByte(0xE8);
-    HandleRel16();
-}
-
 void InstPUSHA(void)
 {
     OutputByte(0x60);
@@ -926,21 +905,64 @@ void InstLODSB(void) { OutputByte(0xAC); }
 void InstSTOSB(void) { OutputByte(0xAA); }
 void InstCLC(void)   { OutputByte(0xF8); }
 void InstSTC(void)   { OutputByte(0xF9); }
+void InstNOP(void)   { OutputByte(0x90); }
+
+void HandleRel16(void)
+{
+    if (OperandType != OP_LIT) {
+        Error("Expected literal");
+    }
+    if (CurrentFixup) {
+        FixupIsHere();
+    }
+    OutputWord((U2)(OperandValue - (CurrentAddress + 2)));
+}
+
+bool HandleShortRel(U1 inst)
+{
+    if (CurrentFixup || OperandType != OP_LIT) {
+        return false;
+    }
+    const U2 rel = OperandValue - (CurrentAddress + 2);
+    if (!IsShort(rel)) {
+        return false;
+    }
+    OutputByte(inst);
+    OutputByte(rel&0xff);
+    return true;
+}
+
+void InstCALL(void)
+{
+    GetOperand();
+    if (OperandType == OP_REG) {
+        if (OperandValue/8 != 1) {
+            Error("Invalid register operand to CALL");
+        }
+        OutputByte(0xFF);
+        OutputByte(0xC0 | (2<<3) | (OperandValue&7));
+        return;
+    }
+    OutputByte(0xE8);
+    HandleRel16();
+}
 
 void InstJMP(void)
 {
     GetOperand();
-    // TODO: Use EB for known short jumps
-    OutputByte(0xE9);
-    HandleRel16();
+    if (!HandleShortRel(0xEB)) {
+        OutputByte(0xE9);
+        HandleRel16();
+    }
 }
 
 void HandleJcc(U1 cc) {
-    // TODO: Use 0x70 | cc if known short jump
     assert(cc < 16);
     GetOperand();
-    OutputWord(0x800F | cc<<8);
-    HandleRel16();
+    if (!HandleShortRel(0x70|cc)){
+        OutputWord(0x800F | cc<<8);
+        HandleRel16();
+    }
 }
 
 void InstJO(void)   { HandleJcc(0x0); }
@@ -1024,9 +1046,9 @@ static const struct {
     { "MUL", &InstMUL },
     { "IMUL", &InstIMUL },
 
-    { "CALL", &InstCALL },
     { "INT", &InstINT },
     { "RET", &InstRET },
+    { "NOP", &InstNOP },
 
     { "PUSHA", &InstPUSHA },
     { "POPA", &InstPOPA },
@@ -1039,6 +1061,7 @@ static const struct {
     { "CLC", &InstCLC },
     { "STC", &InstSTC },
 
+    { "CALL", &InstCALL },
     { "JMP", &InstJMP },
     { "JO" , &InstJO  },
     { "JNO", &InstJNO },
