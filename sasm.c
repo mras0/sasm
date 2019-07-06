@@ -99,6 +99,16 @@ void ReadNext(void)
     CurrentChar = (U1)c;
 }
 
+U1 GetChar(void)
+{
+    if (CurrentChar == 0) {
+        Error("Unexpected EOF");
+    }
+    const U1 c = CurrentChar;
+    ReadNext();
+    return c;
+}
+
 void SkipWS(void)
 {
     for (;;) {
@@ -120,12 +130,32 @@ void MoveNext(void)
     SkipWS();
 }
 
+bool IsDigit(U1 ch)
+{
+    return ch >= '0' && ch <= '9';
+}
+
+bool IsAlpha(U1 ch)
+{
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
+
+U1 ToUpper(U1 ch)
+{
+    return ch >= 'a' && ch <= 'z' ? ch + 'A' - 'a' : ch;
+}
+
+bool IsTokenNumber(void)
+{
+    return IsDigit(TokenText[0]);
+}
+
 void GetToken(void)
 {
     TokenLen = 0;
-    while (CurrentChar == '.' || CurrentChar == ':' || (CurrentChar >= '0' && CurrentChar <= '9') || (CurrentChar >= 'A' && CurrentChar <= 'Z') || (CurrentChar >= 'a' && CurrentChar <= 'z')) {
+    while (CurrentChar == '.' || CurrentChar == ':' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
         if (TokenLen < TOKEN_MAX) {
-            TokenText[TokenLen++] = CurrentChar >= 'a' && CurrentChar <= 'z' ? CurrentChar + 'A' - 'a' : CurrentChar;
+            TokenText[TokenLen++] = ToUpper(CurrentChar);
         }
         ReadNext();
     }
@@ -133,18 +163,25 @@ void GetToken(void)
     SkipWS();
 }
 
-void ExpectComma(void)
+bool TryConsume(U1 ch)
 {
-    if (CurrentChar != ',') {
-        Error("Comma expected");
+    if (CurrentChar != ch) {
+        return false;
     }
     MoveNext();
+    return true;
 }
 
-U2 GetNumber(void)
-{
-    GetToken();
+void Expect(U1 ch) {
+    if (!TryConsume(ch)) {
+        char err[] = "? expected";
+        err[0] = ch;
+        Error(err);
+    }
+}
 
+U2 GetNumberFromToken(void)
+{
     U2 num = 0;
     if (TokenLen > 2 && TokenText[0] == '0' && TokenText[1] == 'X') {
         if (TokenLen > 6) {
@@ -170,6 +207,12 @@ U2 GetNumber(void)
         }
     }
     return num;
+}
+
+U2 GetNumber(void)
+{
+    GetToken();
+    return GetNumberFromToken();
 }
 
 struct Label* FindLabel(const char* text)
@@ -358,96 +401,102 @@ void GetNamedLiteral(void)
     }
 }
 
+U1 ModrmFromReg(void)
+{
+    switch (OperandValue) {
+    case R_SI:
+        return 4;
+    case R_DI:
+        return 5;
+    case R_BP:
+        return 6; // NOTE: Not legal on its own
+    case R_BX:
+        return 7;
+    }
+    return 0xFF;
+}
+
+U1 CombineModrmWithReg(U1 ModRM)
+{
+    if (ModRM == 0xFF) {
+        return ModrmFromReg();
+    }
+
+    switch (OperandValue) {
+    case R_SI:
+        if (ModRM == 6) { // BP
+            return 2;
+        } else if (ModRM == 7) { // BX
+            return 0;
+        }
+        break;
+    case R_DI:
+        if (ModRM == 6) { // BP
+            return 3;
+        } else if (ModRM == 7) { // BX
+            return 1;
+        }
+        break;
+    case R_BP:
+        if (ModRM == 4) { // SI
+            return 2;
+        } else if (ModRM == 5) { // DI
+            return 3;
+        }
+        break;
+    case R_BX:
+        if (ModRM == 4) { // SI
+            return 0;
+        } else if (ModRM == 5) { // DI
+            return 1;
+        }
+        break;
+    }
+    return 0xFF;
+}
+
+bool GetRegOrNumber(void)
+{
+    GetToken();
+    if (IsTokenNumber()) {
+        OperandType  = OP_LIT;
+        OperandValue = GetNumberFromToken();
+        return true;
+    }
+    GetReg();
+    if (OperandValue != R_INVALID) {
+        OperandType = OP_REG;
+        return true;
+    }
+    return false;
+}
+
 void GetOperandMem(void)
 {
-    assert(CurrentChar == '[');
     assert(!CurrentFixup);
-    MoveNext();
+
+    Expect('[');
 
     U1 ModRM = 0xFF;
     U2 Disp  = 0;
 
-    for (;;) {
-        if (CurrentChar >= '0' && CurrentChar <= '9') {
-            Disp += GetNumber();
-        } else {
-            GetToken();
-            GetReg();
-            if (OperandValue != R_INVALID) {
-                if (ModRM == 0xFF) {
-                    switch (OperandValue) {
-                    case R_SI:
-                        ModRM = 4;
-                        goto Next;
-                    case R_DI:
-                        ModRM = 5;
-                        goto Next;
-                    case R_BP:
-                        ModRM = 6; // NOTE: Not legal on its own
-                        goto Next;
-                    case R_BX:
-                        ModRM = 7;
-                        goto Next;
-                    }
-                } else {
-                    switch (OperandValue) {
-                    case R_SI:
-                        if (ModRM == 6) { // BP
-                            ModRM = 2;
-                            goto Next;
-                        } else if (ModRM == 7) { // BX
-                            ModRM = 0;
-                            goto Next;
-                        }
-                        break;
-                    case R_DI:
-                        if (ModRM == 6) { // BP
-                            ModRM = 3;
-                            goto Next;
-                        } else if (ModRM == 7) { // BX
-                            ModRM = 1;
-                            goto Next;
-                        }
-                        break;
-                    case R_BP:
-                        if (ModRM == 4) { // SI
-                            ModRM = 2;
-                            goto Next;
-                        } else if (ModRM == 5) { // DI
-                            ModRM = 3;
-                            goto Next;
-                        }
-                        break;
-                    case R_BX:
-                        if (ModRM == 4) { // SI
-                            ModRM = 0;
-                            goto Next;
-                        } else if (ModRM == 5) { // DI
-                            ModRM = 1;
-                            goto Next;
-                        }
-                        break;
-                    }
-                }
-                Error("Invalid register combination for memory operand");
-            } else {
-                GetNamedLiteral();
+    do {
+        if (GetRegOrNumber()) {
+            if (OperandType == OP_LIT) {
                 Disp += OperandValue;
+            } else {
+                assert(OperandType == OP_REG);
+                ModRM = CombineModrmWithReg(ModRM);
+                if (ModRM == 0xFF) {
+                    Error("Invalid register combination for memory operand");
+                }
             }
+        } else {
+            GetNamedLiteral();
+            Disp += OperandValue;
         }
-    Next:
-        if (CurrentChar != '+' && CurrentChar != '-') {
-            break;
-        }
-        if (CurrentChar == '-') {
-            Error("Minus in memory operand not supported");
-        }
-        MoveNext();
-    }
-    if (CurrentChar != ']') {
-        Error("Expected ]");
-    }
-    MoveNext();
+    } while (TryConsume('+'));
+    Expect(']');
 
     if (ModRM == 6 && !Disp) {
         ModRM |= 0x40;
@@ -471,40 +520,22 @@ void GetOperandMem(void)
 
 void GetOperand(void)
 {
-    if (CurrentChar == '\'') {
+    if (TryConsume('\'')) {
         OperandType = OP_LIT;
-        ReadNext();
-        OperandValue = CurrentChar;
-        ReadNext();
-        if (CurrentChar != '\'') {
-            OperandValue |= CurrentChar << 8;
-            ReadNext();
+        OperandValue = GetChar();
+        if (!TryConsume('\'')) {
+            OperandValue |= GetChar() << 8;
+            Expect('\'');
         }
-        if (CurrentChar != '\'') {
-            Error("Invalid character literal");
-        }
-        MoveNext();
-    } else if (CurrentChar >= '0' && CurrentChar <= '9') {
-        OperandType  = OP_LIT;
-        OperandValue = GetNumber();
     } else if (CurrentChar == '[') {
         GetOperandMem();
     } else {
-        GetToken();
-        GetReg();
-        if (OperandValue != R_INVALID) {
-            OperandType = OP_REG;
+        if (GetRegOrNumber()) {
             return;
         }
-
         if (!strcmp(TokenText, "BYTE") || !strcmp(TokenText, "WORD")) {
-            if (ExplicitSize != 0xFF) {
-                Error("Explicit size specified more than once");
-            }
+            assert(ExplicitSize == 0xFF);
             ExplicitSize = TokenText[0] == 'W';
-            if (CurrentChar != '[') {
-                Error("Expected [");
-            }
             GetOperandMem();
             return;
         }
@@ -542,30 +573,26 @@ void OutputDx(U1 size, U2 val)
 
 void DirectiveDx(U1 size)
 {
-    for (;;){
-        if (CurrentChar == '\'') {
-            ReadNext();
-            while (CurrentChar != '\'') {
-                if (CurrentChar < 0x20) {
+    do {
+        if (TryConsume('\'')) {
+            while (!TryConsume('\'')) {
+                const U1 c = GetChar();
+                if (c < 0x20) {
                     Error("Unterminated literal");
                 }
-                OutputDx(size, CurrentChar);
-                ReadNext();
+                OutputDx(size, c);
             }
-            MoveNext();
-        } else if (CurrentChar >= '0' && CurrentChar <= '9') {
-            OutputDx(size, GetNumber());
         } else {
-            if (size != 2) Error("Byte val reference not implemented");
             GetToken();
-            GetNamedLiteral();
-            OutputDx(size, OperandValue);
+            if (IsTokenNumber()) {
+                OutputDx(size, GetNumberFromToken());
+            } else {
+                if (size != 2) Error("Byte val reference not implemented");
+                GetNamedLiteral();
+                OutputDx(size, OperandValue);
+            }
         }
-        if (CurrentChar != ',') {
-            break;
-        }
-        MoveNext();
-    }
+    } while (TryConsume(','));
 }
 
 void DirectiveDb(void)
@@ -592,7 +619,7 @@ void Get2Operands(void)
 {
     GetOperand();
     MoveToOperandL();
-    ExpectComma();
+    Expect(',');
     GetOperand();
 }
 
@@ -981,33 +1008,6 @@ void InstJL(void)   { HandleJcc(0xc); }
 void InstJNL(void)  { HandleJcc(0xd); }
 void InstJNG(void)  { HandleJcc(0xe); }
 void InstJG(void)   { HandleJcc(0xf); }
-
-void InstIgnore0(void)
-{
-    printf("Ignoring %s\n", TokenText);
-}
-
-void InstIgnore1(void)
-{
-    printf("Ignoring %s ", TokenText);
-    GetOperand();
-    PrintOperand(false);
-    CurrentFixup = 0;
-    printf("\n");
-}
-
-void InstIgnore2(void)
-{
-    printf("Ignoring %s ", TokenText);
-    GetOperand();
-    PrintOperand(false);
-    ExpectComma();
-    printf(", ");
-    GetOperand();
-    PrintOperand(false);
-    printf("\n");
-    CurrentFixup = 0;
-}
 
 static const struct {
     const char* text;
