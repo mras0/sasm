@@ -43,11 +43,11 @@ U2 FreeFixup;
 struct Fixup* CurrentFixup;
 
 enum {
-    OP_REG,
+    OP_REG=0xc0,
     OP_LIT,
-    OP_MEM,
 } OperandType, OperandLType;
 U2 OperandValue, OperandLValue;
+U1 ExplicitSize;
 
 enum {
     R_AL, R_CL, R_DL, R_BL, R_AH, R_CH, R_DH, R_BH,
@@ -68,6 +68,7 @@ __declspec(noreturn)
 void Error(const char* msg)
 {
     fprintf(stderr, "Line %u: %s (Current token: \"%s\")\n", CurrentLine, msg, TokenText);
+    for (int i = 0; i < OutputOffset; ++i) printf("%02X ", OutputBuffer[i]);
     exit(1);
 }
 
@@ -296,30 +297,53 @@ void DefineLabel(void)
     }
 }
 
-void PrintOperand(void)
+void PrintOperand(bool alt)
 {
-    switch (OperandType) {
+    const U1 t = alt ? OperandLType : OperandType;
+    const U1 v = alt ? OperandLValue : OperandValue;
+    if (t < OP_REG) {
+        printf("[MODRM=%02X 0x%04X]", t, v);
+        return;
+    }
+
+    switch (t) {
     case OP_REG:
-        assert(OperandValue < R_INVALID);
-        printf("%s", RegNames[OperandValue]);
+        assert(v < R_INVALID);
+        printf("%s", RegNames[v]);
         break;
     case OP_LIT:
-        printf("0x%04X", OperandValue);
-        break;
-    case OP_MEM:
-        printf("[0x%04X]", OperandValue);
+        printf("0x%04X", v);
         break;
     default:
-        assert(0);
+        Error("Invalid opreand type");
     }
 }
 
-void GetOperandMem(void)
+void PrintInstr(const char* name, bool has2Operands)
 {
-    assert(CurrentChar == '[');
-    OperandType = OP_MEM;
-    MoveNext();
-    GetToken();
+    printf("%s ", name);
+    if (has2Operands) {
+        PrintOperand(true);
+        printf(", ");
+    }
+    PrintOperand(false);
+    printf("\n");
+}
+
+void GetReg(void)
+{
+    OperandValue = R_INVALID;
+    for (U1 r = 0; r < sizeof(RegNames)/sizeof(*RegNames); ++r) {
+        if (!strcmp(TokenText, RegNames[r])) {
+            OperandValue = r;
+            break;
+        }
+    }
+}
+
+void GetNamedLiteral(void)
+{
+    OperandType = OP_LIT;
     struct Label* l = FindOrMakeLabel();
     if (l->Address != INVALID_ADDR) {
         OperandValue = l->Address;
@@ -327,10 +351,109 @@ void GetOperandMem(void)
         OperandValue = 0;
         AddFixup(l);
     }
+}
+
+void GetOperandMem(void)
+{
+    assert(CurrentChar == '[');
+    MoveNext();
+
+    U1 ModRM = 0xFF;
+    U2 Disp  = 0;
+
+    for (;;) {
+        if (CurrentChar >= '0' && CurrentChar <= '9') {
+            Disp += GetNumber();
+        } else {
+            GetToken();
+            GetReg();
+            if (OperandValue != R_INVALID) {
+                if (ModRM == 0xFF) {
+                    switch (OperandValue) {
+                    case R_SI:
+                        ModRM = 4;
+                        goto Next;
+                    case R_DI:
+                        ModRM = 5;
+                        goto Next;
+                    case R_BP:
+                        ModRM = 6; // NOTE: Not legal on its own
+                        goto Next;
+                    case R_BX:
+                        ModRM = 7;
+                        goto Next;
+                    }
+                } else {
+                    switch (OperandValue) {
+                    case R_SI:
+                        if (ModRM == 6) { // BP
+                            ModRM = 2;
+                            goto Next;
+                        } else if (ModRM == 7) { // BX
+                            ModRM = 0;
+                            goto Next;
+                        }
+                        break;
+                    case R_DI:
+                        if (ModRM == 6) { // BP
+                            ModRM = 3;
+                            goto Next;
+                        } else if (ModRM == 7) { // BX
+                            ModRM = 1;
+                            goto Next;
+                        }
+                        break;
+                    case R_BP:
+                        if (ModRM == 4) { // SI
+                            ModRM = 2;
+                            goto Next;
+                        } else if (ModRM == 5) { // DI
+                            ModRM = 3;
+                            goto Next;
+                        }
+                        break;
+                    case R_BX:
+                        if (ModRM == 4) { // SI
+                            ModRM = 0;
+                            goto Next;
+                        } else if (ModRM == 5) { // DI
+                            ModRM = 1;
+                            goto Next;
+                        }
+                        break;
+                    }
+                }
+                Error("Invalid register combination for memory operand");
+            } else {
+                GetNamedLiteral();
+                Disp += OperandValue;
+            }
+        }
+    Next:
+        if (CurrentChar != '+' && CurrentChar != '-') {
+            break;
+        }
+        if (CurrentChar == '-') {
+            Error("Minus in memory operand not supported");
+        }
+        MoveNext();
+    }
     if (CurrentChar != ']') {
         Error("Expected ]");
     }
     MoveNext();
+    if (ModRM == 0xFF) {
+        ModRM = 6;
+    } else if (Disp != 0) {
+        assert(ModRM != 6);
+        if ((S2)Disp <= 127 && (S2)Disp >= -128) {
+            ModRM |= 0x40; // Disp8
+        } else {
+            ModRM |= 0x80; // Disp16
+        }
+    }
+    OperandType = ModRM;
+    OperandValue = Disp;
 }
 
 void GetOperand(void)
@@ -355,16 +478,17 @@ void GetOperand(void)
         GetOperandMem();
     } else {
         GetToken();
-
-        for (U1 r = 0; r < sizeof(RegNames)/sizeof(*RegNames); ++r) {
-            if (!strcmp(TokenText, RegNames[r])) {
-                OperandType = OP_REG;
-                OperandValue = r;
-                return;
-            }
+        GetReg();
+        if (OperandValue != R_INVALID) {
+            OperandType = OP_REG;
+            return;
         }
 
         if (!strcmp(TokenText, "BYTE") || !strcmp(TokenText, "WORD")) {
+            if (ExplicitSize != 0xFF) {
+                Error("Explicit size specified more than once");
+            }
+            ExplicitSize = TokenText[0] == 'W';
             if (CurrentChar != '[') {
                 Error("Expected [");
             }
@@ -372,15 +496,7 @@ void GetOperand(void)
             return;
         }
 
-        OperandType = OP_LIT;
-
-        struct Label* l = FindOrMakeLabel();
-        if (l->Address != INVALID_ADDR) {
-            OperandValue = l->Address;
-        } else {
-            OperandValue = 0;
-            AddFixup(l);
-        }
+        GetNamedLiteral();
     }
 }
 
@@ -469,7 +585,7 @@ void InstIgnore1(void)
 {
     printf("Ignoring %s ", TokenText);
     GetOperand();
-    PrintOperand();
+    PrintOperand(false);
     printf("\n");
 }
 
@@ -477,11 +593,11 @@ void InstIgnore2(void)
 {
     printf("Ignoring %s ", TokenText);
     GetOperand();
-    PrintOperand();
+    PrintOperand(false);
     ExpectComma();
     printf(", ");
     GetOperand();
-    PrintOperand();
+    PrintOperand(false);
     printf("\n");
 }
 #endif
@@ -532,6 +648,23 @@ void OutputImm(bool is16bit)
     }
 }
 
+void OutputModRM(U1 r)
+{
+    assert(r < 8);
+    OutputByte(OperandLType | (r<<3)); // ModRM
+    if (OperandLType == 6 || (OperandLType & 0xc0) == 0x80) {
+        if (CurrentFixup) {
+            // TODO: Handle mov [symbol1], symbol2
+            FixupIsHere();
+        }
+        // Disp16
+        OutputWord(OperandLValue);
+    } else if ((OperandLType & 0xc0) == 0x40) {
+        // Disp8
+        OutputByte(OperandLValue&0xff);
+    }
+}
+
 void OutputRR(U1 inst)
 {
     if (OperandLValue/8 != OperandValue/8) {
@@ -541,14 +674,35 @@ void OutputRR(U1 inst)
     OutputByte(0xc0 | (OperandLValue&7) | (OperandValue&7)<<3);
 }
 
+void OutputMR(U1 inst)
+{
+    if (ExplicitSize != 0xFF && ExplicitSize != OperandValue/8) {
+        Error("Invalid register sizes");
+    }
+    OutputByte(inst | (OperandValue/8 ? 1 : 0)); // 16 or 8-bit?
+    OutputModRM(OperandValue&7);
+}
+
 void InstMOV(void)
 {
     Get2Operands();
     if (OperandLType == OP_REG && OperandType == OP_REG) {
         OutputRR(0x88);
         return;
+    } else if (OperandLType < OP_REG && OperandType == OP_REG) {
+        OutputMR(0x88);
+        return;
+    } else if (OperandLType < OP_REG && OperandType == OP_LIT) {
+        if (ExplicitSize == 0xFF) {
+            Error("Unknown operand size");
+        }
+        OutputByte(0xC6 | ExplicitSize);   // Opcode
+        OutputModRM(0);
+        OutputImm(ExplicitSize);           // Immediate
+        return;
     }
     if (OperandLType != OP_REG || OperandType != OP_LIT) {
+        PrintInstr("MOV", true);
         Error("Not implemented: MOV <non-reg>, <non-lit>");
     }
     if (OperandLValue >= R_ES) {
@@ -681,6 +835,11 @@ void InstLODSB(void)
     OutputByte(0xAC);
 }
 
+void InstSTOSB(void)
+{
+    OutputByte(0xAA);
+}
+
 void InstJMP(void)
 {
     // TODO: Use EB for known short jumps
@@ -747,6 +906,7 @@ static const struct {
     { "POP", &InstPOP },
 
     { "LODSB", &InstLODSB},
+    { "STOSB", &InstSTOSB},
 
     { "JMP", &InstJMP },
     { "JO" , &InstJO  },
@@ -775,6 +935,7 @@ void Dispatch(void)
         DefineLabel();
         return;
     }
+    ExplicitSize = 0xFF;
     for (unsigned i = 0; i < sizeof(DispatchList)/sizeof(*DispatchList); ++i) {
         if (!strcmp(TokenText, DispatchList[i].text)) {
             DispatchList[i].func();
