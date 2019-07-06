@@ -442,10 +442,14 @@ void GetOperandMem(void)
         Error("Expected ]");
     }
     MoveNext();
+
+    if (ModRM == 6 && !Disp) {
+        ModRM |= 0x40;
+    }
+
     if (ModRM == 0xFF) {
         ModRM = 6;
     } else if (Disp != 0) {
-        assert(ModRM != 6);
         if ((S2)Disp <= 127 && (S2)Disp >= -128) {
             ModRM |= 0x40; // Disp8
         } else {
@@ -574,33 +578,6 @@ void DirectiveDw(void)
 {
     DirectiveDx(2);
 }
-
-#if 0
-void InstIgnore0(void)
-{
-    printf("Ignoring %s\n", TokenText);
-}
-
-void InstIgnore1(void)
-{
-    printf("Ignoring %s ", TokenText);
-    GetOperand();
-    PrintOperand(false);
-    printf("\n");
-}
-
-void InstIgnore2(void)
-{
-    printf("Ignoring %s ", TokenText);
-    GetOperand();
-    PrintOperand(false);
-    ExpectComma();
-    printf(", ");
-    GetOperand();
-    PrintOperand(false);
-    printf("\n");
-}
-#endif
 
 void InstINT(void)
 {
@@ -738,8 +715,37 @@ void InstXCHG(void)
     Error("Invalid/unsupported operands to XCHG");
 }
 
+void InstIncDec(bool dec)
+{
+    GetOperand();
+    if (OperandType == OP_REG) {
+        if (OperandValue / 8 == 0) {
+            OutputByte(0xFE);
+            OutputByte(0xC0 | (dec<<3) | (OperandValue&7));
+            return;
+        } else if (OperandValue / 8 == 1) {
+            OutputByte(0x40 | (dec<<3) | (OperandValue&7));
+            return;
+        }
+    }
+
+    PrintInstr(dec?"DEC":"INC", false);
+    Error("TODO");
+}
+
+void InstINC(void)
+{
+    InstIncDec(0);
+}
+
+void InstDEC(void)
+{
+    InstIncDec(1);
+}
+
 void InstALU(U1 base)
 {
+    assert(((base & 7) | (base >> 6)) == 0);
     Get2Operands();
     if (OperandLType == OP_REG && OperandType == OP_REG) {
         OutputRR(base);
@@ -749,9 +755,20 @@ void InstALU(U1 base)
             OutputByte(base + 4);
             OutputImm8();
             return;
+        } else if (OperandLValue == R_AX) {
+            OutputByte(base + 5);
+            OutputImm16();
+            return;
+        } else {
+            const bool is16bit = !!(OperandLType/8);
+            OutputByte(0x80 | is16bit);
+            OutputByte(0xC0 | (OperandLValue&7) | base);
+            OutputImm(is16bit);
+            return;
         }
     }
-    Error("Not implemented AND with non-reg arguments");
+    PrintInstr("ALU", true);
+    Error("Not implemented ALU with non-reg arguments");
 }
 
 void InstADD(void) { InstALU(0x00); }
@@ -886,6 +903,31 @@ void InstJNL(void)  { HandleJcc(0xd); }
 void InstJNG(void)  { HandleJcc(0xe); }
 void InstJG(void)   { HandleJcc(0xf); }
 
+void InstIgnore0(void)
+{
+    printf("Ignoring %s\n", TokenText);
+}
+
+void InstIgnore1(void)
+{
+    printf("Ignoring %s ", TokenText);
+    GetOperand();
+    PrintOperand(false);
+    printf("\n");
+}
+
+void InstIgnore2(void)
+{
+    printf("Ignoring %s ", TokenText);
+    GetOperand();
+    PrintOperand(false);
+    ExpectComma();
+    printf(", ");
+    GetOperand();
+    PrintOperand(false);
+    printf("\n");
+}
+
 static const struct {
     const char* text;
     void (*func)(void);
@@ -896,6 +938,9 @@ static const struct {
 
     { "MOV", &InstMOV },
     { "XCHG", &InstXCHG },
+
+    { "INC", &InstINC },
+    { "DEC", &InstDEC },
 
     { "ADD", &InstADD },
     { "OR" , &InstOR  },
