@@ -356,6 +356,7 @@ void GetNamedLiteral(void)
 void GetOperandMem(void)
 {
     assert(CurrentChar == '[');
+    assert(!CurrentFixup);
     MoveNext();
 
     U1 ModRM = 0xFF;
@@ -449,13 +450,16 @@ void GetOperandMem(void)
 
     if (ModRM == 0xFF) {
         ModRM = 6;
-    } else if (Disp != 0) {
+    } else if (CurrentFixup) {
+        ModRM |= 0x80; // Disp16
+    } else if (Disp) {
         if ((S2)Disp <= 127 && (S2)Disp >= -128) {
             ModRM |= 0x40; // Disp8
         } else {
             ModRM |= 0x80; // Disp16
         }
     }
+
     OperandType = ModRM;
     OperandValue = Disp;
 }
@@ -513,7 +517,6 @@ void MoveToOperandL(void)
 
 void HandleRel16(void)
 {
-    GetOperand();
     if (OperandType != OP_LIT) {
         Error("Expected literal");
     }
@@ -559,8 +562,10 @@ void DirectiveDx(U1 size)
         } else if (CurrentChar >= '0' && CurrentChar <= '9') {
             OutputDx(size, GetNumber());
         } else {
+            if (size != 2) Error("Byte val reference not implemented");
             GetToken();
-            Error("Not implemented in DirectiveDx");
+            GetNamedLiteral();
+            OutputDx(size, OperandValue);
         }
         if (CurrentChar != ',') {
             break;
@@ -599,6 +604,9 @@ void Get2Operands(void)
 
 void OutputImm16(void)
 {
+    if (CurrentFixup) {
+        FixupIsHere();
+    }
     OutputWord(OperandValue);
 }
 
@@ -612,12 +620,6 @@ void OutputImm8(void)
 
 void OutputImm(bool is16bit)
 {
-    if (CurrentFixup) {
-        if (!is16bit) {
-            Error("Invalid immediate with fixup");
-        }
-        FixupIsHere();
-    }
     if (is16bit) {
         OutputImm16();
     } else {
@@ -627,7 +629,7 @@ void OutputImm(bool is16bit)
 
 void OutputModRM(U1 r)
 {
-    assert(r < 8);
+    assert(r < 8 && OperandLType < OP_REG);
     OutputByte(OperandLType | (r<<3)); // ModRM
     if (OperandLType == 6 || (OperandLType & 0xc0) == 0x80) {
         if (CurrentFixup) {
@@ -660,7 +662,7 @@ void OutputMR(U1 inst)
     OutputModRM(OperandValue&7);
 }
 
-void OutputRM(U1 inst)
+void SwapOperands(void)
 {
     U1 tempT = OperandLType;
     U2 tempV = OperandLValue;
@@ -668,7 +670,22 @@ void OutputRM(U1 inst)
     OperandLValue = OperandValue;
     OperandType = tempT;
     OperandValue = tempV;
+}
+
+void OutputRM(U1 inst)
+{
+    SwapOperands();
     OutputMR(inst);
+}
+
+void OutputMImm(U1 inst, U1 r)
+{
+    if (ExplicitSize == 0xFF) {
+        Error("Unknown operand size");
+    }
+    OutputByte(inst | ExplicitSize);   // Opcode
+    OutputModRM(r);
+    OutputImm(ExplicitSize);           // Immediate
 }
 
 void InstMOV(void)
@@ -685,12 +702,7 @@ void InstMOV(void)
         OutputRM(0x8A);
         return;
     } else if (OperandLType < OP_REG && OperandType == OP_LIT) {
-        if (ExplicitSize == 0xFF) {
-            Error("Unknown operand size");
-        }
-        OutputByte(0xC6 | ExplicitSize);   // Opcode
-        OutputModRM(0);
-        OutputImm(ExplicitSize);           // Immediate
+        OutputMImm(0xC6, 0);
         return;
     }
     if (OperandLType != OP_REG || OperandType != OP_LIT) {
@@ -702,6 +714,24 @@ void InstMOV(void)
     }
     OutputByte(0xB0 + OperandLValue);
     OutputImm(OperandLValue >= R_AX);
+}
+
+void InstMOVZX(void)
+{
+    Get2Operands();
+    if (OperandLType == OP_REG && OperandLValue/8 == 1) {
+        OutputByte(0x0F);
+        OutputByte(0xB6);
+        if (OperandType < OP_REG) {
+            SwapOperands();
+            OutputModRM(OperandValue & 7);
+            return;
+        } else if (OperandType == OP_REG) {
+            OutputByte(0xc0 | (OperandLValue&7)<<3 | (OperandValue&7));
+            return;
+        }
+    }
+    Error("Invalid/unsupported operands to MOVZX");
 }
 
 void InstXCHG(void)
@@ -727,6 +757,14 @@ void InstIncDec(bool dec)
             OutputByte(0x40 | (dec<<3) | (OperandValue&7));
             return;
         }
+    } else if (OperandType < OP_REG) {
+        if (ExplicitSize == 0xFF) {
+            Error("Operand size not specified");
+        }
+        OutputByte(0xFE | ExplicitSize);
+        SwapOperands();
+        OutputModRM(dec);
+        return;
     }
 
     PrintInstr(dec?"DEC":"INC", false);
@@ -750,6 +788,9 @@ void InstALU(U1 base)
     if (OperandLType == OP_REG && OperandType == OP_REG) {
         OutputRR(base);
         return;
+    } else if (OperandLType == OP_REG && OperandType < OP_REG) {
+        OutputRM(base + 2);
+        return;
     } else if (OperandLType == OP_REG && OperandType == OP_LIT) {
         if (OperandLValue == R_AL) {
             OutputByte(base + 4);
@@ -766,6 +807,9 @@ void InstALU(U1 base)
             OutputImm(is16bit);
             return;
         }
+    } else if (OperandLType < OP_REG && OperandType == OP_LIT) {
+        OutputMImm(0x80, base >> 3);
+        return;
     }
     PrintInstr("ALU", true);
     Error("Not implemented ALU with non-reg arguments");
@@ -780,36 +824,56 @@ void InstSUB(void) { InstALU(0x28); }
 void InstXOR(void) { InstALU(0x30); }
 void InstCMP(void) { InstALU(0x38); }
 
-void InstROL(void)
+void InstROT(U1 r)
 {
+    assert(r < 8);
     Get2Operands();
     if (OperandLType == OP_REG && OperandType == OP_LIT) {
         const bool is16bit = OperandLValue/8==1;
         OutputByte(0xc0 | (is16bit?1:0));
-        OutputByte(0xc0 | (0<<8) | (OperandLValue&7));
+        OutputByte(0xc0 | (r<<3) | (OperandLValue&7));
         OutputImm8();
         return;
     }
-    Error("Not implemented: ROL");
+    PrintInstr("ROT", 2);
+    Error("Not implemented");
 }
 
-void InstDIV(void)
+void InstROL(void) { InstROT(0); }
+void InstROR(void) { InstROT(1); }
+void InstRCL(void) { InstROT(2); }
+void InstRCR(void) { InstROT(3); }
+void InstSHL(void) { InstROT(4); }
+void InstSHR(void) { InstROT(5); }
+void InstSAR(void) { InstROT(7); }
+
+void InstMulDiv(U1 r)
 {
+    assert(r >= 4 && r < 8);
     GetOperand();
     if (OperandType != OP_REG || OperandValue >= R_ES) {
-        Error("Not implemented: DIV <non-small-reg>");
+        Error("Invalid operands for mul/div");
     }
     OutputByte(0xF6 | (OperandValue/8==1));
-    OutputByte(0xC0 | (6<<3) | (OperandValue&7));
+    OutputByte(0xC0 | (r<<3) | (OperandValue&7));
 }
 
-void InstMUL(void)
-{
-    Error("Not implemented: MUL");
-}
+void InstMUL(void)  { InstMulDiv(4); }
+void InstIMUL(void) { InstMulDiv(5); }
+void InstDIV(void)  { InstMulDiv(6); }
+void InstIDIV(void) { InstMulDiv(7); }
 
 void InstCALL(void)
 {
+    GetOperand();
+    if (OperandType == OP_REG) {
+        if (OperandValue/8 != 1) {
+            Error("Invalid register operand to CALL");
+        }
+        OutputByte(0xFF);
+        OutputByte(0xC0 | (2<<3) | (OperandValue&7));
+        return;
+    }
     OutputByte(0xE8);
     HandleRel16();
 }
@@ -857,23 +921,15 @@ void InstPOP(void)
     OutputByte(0x58 | (OperandValue & 7));
 }
 
-void InstRET(void)
-{
-    OutputByte(0xC3);
-}
-
-void InstLODSB(void)
-{
-    OutputByte(0xAC);
-}
-
-void InstSTOSB(void)
-{
-    OutputByte(0xAA);
-}
+void InstRET(void)   { OutputByte(0xC3); }
+void InstLODSB(void) { OutputByte(0xAC); }
+void InstSTOSB(void) { OutputByte(0xAA); }
+void InstCLC(void)   { OutputByte(0xF8); }
+void InstSTC(void)   { OutputByte(0xF9); }
 
 void InstJMP(void)
 {
+    GetOperand();
     // TODO: Use EB for known short jumps
     OutputByte(0xE9);
     HandleRel16();
@@ -882,6 +938,7 @@ void InstJMP(void)
 void HandleJcc(U1 cc) {
     // TODO: Use 0x70 | cc if known short jump
     assert(cc < 16);
+    GetOperand();
     OutputWord(0x800F | cc<<8);
     HandleRel16();
 }
@@ -913,6 +970,7 @@ void InstIgnore1(void)
     printf("Ignoring %s ", TokenText);
     GetOperand();
     PrintOperand(false);
+    CurrentFixup = 0;
     printf("\n");
 }
 
@@ -926,6 +984,7 @@ void InstIgnore2(void)
     GetOperand();
     PrintOperand(false);
     printf("\n");
+    CurrentFixup = 0;
 }
 
 static const struct {
@@ -937,6 +996,7 @@ static const struct {
     { "DW", &DirectiveDw },
 
     { "MOV", &InstMOV },
+    { "MOVZX", &InstMOVZX },
     { "XCHG", &InstXCHG },
 
     { "INC", &InstINC },
@@ -952,9 +1012,17 @@ static const struct {
     { "CMP", &InstCMP },
 
     { "ROL", &InstROL },
+    { "ROR", &InstROR },
+    { "RCL", &InstRCL },
+    { "RCR", &InstRCR },
+    { "SHL", &InstSHL },
+    { "SHR", &InstSHR },
+    { "SAR", &InstSAR },
 
     { "DIV", &InstDIV },
+    { "IDIV", &InstIDIV },
     { "MUL", &InstMUL },
+    { "IMUL", &InstIMUL },
 
     { "CALL", &InstCALL },
     { "INT", &InstINT },
@@ -968,13 +1036,21 @@ static const struct {
     { "LODSB", &InstLODSB},
     { "STOSB", &InstSTOSB},
 
+    { "CLC", &InstCLC },
+    { "STC", &InstSTC },
+
     { "JMP", &InstJMP },
     { "JO" , &InstJO  },
     { "JNO", &InstJNO },
     { "JC" , &InstJC  },
+    { "JB" , &InstJC  },
     { "JNC", &InstJNC },
+    { "JNB", &InstJNC },
+    { "JAE", &InstJNC },
     { "JZ" , &InstJZ  },
+    { "JE" , &InstJZ  },
     { "JNZ", &InstJNZ },
+    { "JNE", &InstJNZ },
     { "JNA", &InstJNA },
     { "JBE", &InstJNA },
     { "JA" , &InstJA  },
