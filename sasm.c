@@ -16,16 +16,6 @@ typedef short S2;
 #define OUTPUT_MAX 0x1000
 #define INVALID_ADDR 0xFFFF
 
-FILE* InputFile;
-U2 CurrentLine;
-U2 NumNewLines;
-U1 CurrentChar;
-char TokenText[TOKEN_MAX+1];
-U1 TokenLen;
-U2 CurrentAddress;
-U1 OutputBuffer[OUTPUT_MAX];
-U2 OutputOffset;
-
 struct Label {
     char Name[TOKEN_MAX+1];
     U2 Address;
@@ -42,19 +32,28 @@ struct Equ {
     U2 Value;
 };
 
+FILE* InputFile;
+U2 CurrentLine;
+U2 NumNewLines;
+U1 CurrentChar;
+char TokenText[TOKEN_MAX+1];
+U1 TokenLen;
+U2 CurrentAddress;
+U1 OutputBuffer[OUTPUT_MAX];
+U2 OutputOffset;
 struct Label Labels[LABEL_MAX];
 struct Fixup Fixups[FIXUP_MAX];
 struct Equ   Equs[EQU_MAX];
 U2 NumLabels;
 U2 FreeFixup;
 U2 NumEqus;
-struct Fixup* CurrentFixup;
 
 enum {
     OP_REG=0xc0,
     OP_LIT,
 } OperandType, OperandLType;
 U2 OperandValue, OperandLValue;
+struct Fixup* CurrentFixup, * CurrentLFixup;
 U1 ExplicitSize;
 
 enum {
@@ -356,6 +355,13 @@ void ResolveFixups(struct Label* l)
     }
 }
 
+void SwapFixup(void)
+{
+    struct Fixup* temp = CurrentFixup;
+    CurrentFixup = CurrentLFixup;
+    CurrentLFixup = temp;
+}
+
 void FixupIsHere(void)
 {
     if (!CurrentFixup) {
@@ -608,7 +614,8 @@ void MoveToOperandL(void)
 {
     OperandLType  = OperandType;
     OperandLValue = OperandValue;
-    // TODO: CurrentFixup
+    CurrentLFixup = CurrentFixup;
+    CurrentFixup = NULL;
 }
 
 void DirectiveOrg(void)
@@ -703,9 +710,10 @@ void OutputModRM(U1 r)
     assert(r < 8 && OperandLType < OP_REG);
     OutputByte(OperandLType | (r<<3)); // ModRM
     if (OperandLType == 6 || (OperandLType & 0xc0) == 0x80) {
-        if (CurrentFixup) {
-            // TODO: Handle mov [symbol1], symbol2
+        if (CurrentLFixup) {
+            SwapFixup();
             FixupIsHere();
+            SwapFixup();
         }
         // Disp16
         OutputWord(OperandLValue);
@@ -741,6 +749,7 @@ void SwapOperands(void)
     OperandLValue = OperandValue;
     OperandType = tempT;
     OperandValue = tempV;
+    SwapFixup();
 }
 
 void OutputRM(U1 inst)
@@ -1139,7 +1148,7 @@ void Dispatch(void)
     for (unsigned i = 0; i < sizeof(DispatchList)/sizeof(*DispatchList); ++i) {
         if (!strcmp(TokenText, DispatchList[i].text)) {
             DispatchList[i].func(DispatchList[i].arg);
-            if (CurrentFixup) {
+            if (CurrentLFixup || CurrentFixup) {
                 Error("Fixup not handled");
             }
             return;
