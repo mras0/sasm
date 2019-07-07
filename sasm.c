@@ -12,6 +12,7 @@ typedef short S2;
 #define TOKEN_MAX 32
 #define LABEL_MAX 100
 #define FIXUP_MAX 100
+#define EQU_MAX   100
 #define OUTPUT_MAX 0x1000
 #define INVALID_ADDR 0xFFFF
 
@@ -36,10 +37,17 @@ struct Fixup {
     U2 Next;
 };
 
+struct Equ {
+    char Name[TOKEN_MAX+1];
+    U2 Value;
+};
+
 struct Label Labels[LABEL_MAX];
 struct Fixup Fixups[FIXUP_MAX];
+struct Equ   Equs[EQU_MAX];
 U2 NumLabels;
 U2 FreeFixup;
+U2 NumEqus;
 struct Fixup* CurrentFixup;
 
 enum {
@@ -85,6 +93,31 @@ void OutputWord(U2 w)
 {
     OutputByte(w & 0xff);
     OutputByte(w >> 8);
+}
+
+struct Equ* FindEqu(void)
+{
+    for (int i = 0 ; i < NumEqus; ++i) {
+        if (!strcmp(TokenText, Equs[i].Name)) {
+            return &Equs[i];
+        }
+    }
+    return NULL;
+}
+
+struct Equ* DefineEqu(void)
+{
+    if (FindEqu()) {
+        printf("Equ: \"%s\"\n", TokenText);
+        Error("Equ already defined");
+    }
+    if (NumEqus == EQU_MAX) {
+        Error("Too many EQUs");
+    }
+    struct Equ* e = &Equs[NumEqus++];
+    strcpy(e->Name, TokenText);
+    e->Value = 0;
+    return e;
 }
 
 void ReadNext(void)
@@ -162,7 +195,7 @@ bool IsTokenNumber(void)
 void GetToken(void)
 {
     TokenLen = 0;
-    while (CurrentChar == '.' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
+    while (CurrentChar == '.' || CurrentChar == '_' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
         if (TokenLen < TOKEN_MAX) {
             TokenText[TokenLen++] = ToUpper(CurrentChar);
         }
@@ -170,6 +203,10 @@ void GetToken(void)
     }
     TokenText[TokenLen] = '\0';
     SkipWS();
+    const struct Equ* e = FindEqu();
+    if (e) {
+        TokenLen = sprintf(TokenText, "0X%X", e->Value);
+    }
 }
 
 bool TryConsume(U1 ch)
@@ -221,6 +258,9 @@ U2 GetNumberFromToken(void)
 U2 GetNumber(void)
 {
     GetToken();
+    if (!TokenLen) {
+        Error("Invalid number");
+    }
     return GetNumberFromToken();
 }
 
@@ -533,15 +573,20 @@ void GetOperandMem(void)
     OperandValue = Disp;
 }
 
+void GetCharLit(void)
+{
+    OperandValue = GetChar();
+    if (!TryConsume('\'')) {
+        OperandValue |= GetChar() << 8;
+        Expect('\'');
+    }
+}
+
 void GetOperand(void)
 {
     if (TryGet('\'')) {
         OperandType = OP_LIT;
-        OperandValue = GetChar();
-        if (!TryConsume('\'')) {
-            OperandValue |= GetChar() << 8;
-            Expect('\'');
-        }
+        GetCharLit();
     } else if (CurrentChar == '[') {
         GetOperandMem();
     } else {
@@ -853,7 +898,7 @@ void InstALU(U1 base)
             OutputImm16();
             return;
         } else {
-            const bool is16bit = !!(OperandLType/8);
+            const bool is16bit = !!(OperandLValue/8);
             OutputByte(0x80 | is16bit);
             OutputByte(0xC0 | (OperandLValue&7) | base);
             OutputImm(is16bit);
@@ -1078,6 +1123,12 @@ static const struct {
     { "JG"    , &HandleJcc      , JG   },
     };
 
+bool TryGetU(U1 ch)
+{
+    assert(ch >= 'A' && ch <= 'Z');
+    return TryGet(ch) || TryGet(ch + 'a' - 'A');
+}
+
 void Dispatch(void)
 {
     if (TryConsume(':')) {
@@ -1094,7 +1145,19 @@ void Dispatch(void)
             return;
         }
     }
-    Error("Invalid directive");
+
+    if (!TryGetU('E') || !TryGetU('Q') || !TryGetU('U')) {
+        Error("Invalid directive");
+    }
+    SkipWS();
+
+    struct Equ* e = DefineEqu();
+    if (TryGet('\'')) {
+        GetCharLit();
+        e->Value = OperandValue;
+    } else {
+        e->Value  = GetNumber();
+    }
 }
 
 void ParserInit(const char* filename)
