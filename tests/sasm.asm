@@ -279,7 +279,7 @@ WriteOutput:
         mov ax, 0x3e00
         mov bx, si
         int 0x21
-        jmp NotImplemented
+        ret
 .Error:
         mov bx, MsgErrOutput
         jmp Error
@@ -604,8 +604,8 @@ InstMOV:
 
 .Msgrr: db 'Not implemented: MOVrr', 0
 .Msgrm: db 'Not implemented: MOVrm', 0
-.Msgmr  db 'Not implemented: MOVml', 0
-.Msgml  db 'Not implemented: MOVmr', 0
+.Msgmr: db 'Not implemented: MOVml', 0
+.Msgml: db 'Not implemented: MOVmr', 0
 
 InstINT:
         mov al, 0xcd
@@ -622,8 +622,8 @@ OutFileName:      db 'a.com', 0
 
 MsgErrOpenIn:     db 'Error opening input file', 0
 MsgErrOutput:     db 'Error during output', 0
-MsgErrInvalidNum  db 'Error invalid number', 0
-MsgErrInvalidOpe  db 'Invalid operand', 0
+MsgErrInvalidNum: db 'Error invalid number', 0
+MsgErrInvalidOpe: db 'Invalid operand', 0
 
 RegNames:
     dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'

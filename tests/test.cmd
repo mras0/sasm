@@ -4,7 +4,7 @@ if [%ASM%]==[] set ASM=%1
 if [%ASM%]==[] set ASM=%~dp0..\build\debug\sasm.exe
 
 set failed=0
-for %%f in (%~dp0*.asm) do (
+for %%f in (%~dp0\t*.asm) do (
     %ASM% "%%f"
     if errorlevel 1 (
         set /a failed=!failed!+1

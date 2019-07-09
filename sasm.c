@@ -647,7 +647,7 @@ void DirectiveDx(U1 size)
                 if (c < 0x20) {
                     Error("Unterminated literal");
                 }
-                OutputDx(size, c);
+                OutputDx(1, c); // Always output one byte when in character literal mode
             }
         } else {
             GetToken();
@@ -705,6 +705,7 @@ void OutputImm(bool is16bit)
     }
 }
 
+// Assumes left side operand is mem
 void OutputModRM(U1 r)
 {
     assert(r < 8 && OperandLType < OP_REG);
@@ -853,9 +854,19 @@ void InstMOVZX(void)
 void InstXCHG(void)
 {
     Get2Operands();
-    if (OperandLType == OP_REG && OperandType == OP_REG) {
-        // TODO: Could use 0x90+r if either operand is AX
-        OutputRR(0x86);
+    // TODO: Could use 0x90+r if either operand is AX
+    if (OperandLType == OP_REG) {
+        if (OperandType == OP_REG) {
+            OutputRR(0x86);
+            return;
+        } else if (OperandType < OP_REG) {
+            SwapOperands();
+            goto common;
+        }
+    } else if (OperandLType < OP_REG && OperandType == OP_REG) {
+    common:
+        OutputByte(0x87);
+        OutputModRM(OperandValue&7);
         return;
     }
     Error("Invalid/unsupported operands to XCHG");
