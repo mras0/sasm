@@ -891,31 +891,38 @@ void InstALU(U1 base)
 {
     assert(((base & 7) | (base >> 6)) == 0);
     Get2Operands();
-    if (OperandLType == OP_REG && OperandType == OP_REG) {
-        OutputRR(base);
-        return;
-    } else if (OperandLType == OP_REG && OperandType < OP_REG) {
-        OutputRM(base + 2);
-        return;
-    } else if (OperandLType == OP_REG && OperandType == OP_LIT) {
-        if (OperandLValue == R_AL) {
-            OutputByte(base + 4);
-            OutputImm8();
+    if (OperandLType == OP_REG) {
+        if (OperandType == OP_REG) {
+            OutputRR(base);
             return;
-        } else if (OperandLValue == R_AX) {
-            OutputByte(base + 5);
-            OutputImm16();
+        } else if (OperandType < OP_REG) {
+            OutputRM(base + 2);
             return;
-        } else {
-            const bool is16bit = !!(OperandLValue/8);
-            OutputByte(0x80 | is16bit);
-            OutputByte(0xC0 | (OperandLValue&7) | base);
-            OutputImm(is16bit);
+        } else if (OperandType == OP_LIT) {
+            if (OperandLValue == R_AL) {
+                OutputByte(base + 4);
+                OutputImm8();
+                return;
+            } else if (OperandLValue == R_AX) {
+                OutputByte(base + 5);
+                OutputImm16();
+                return;
+            } else {
+                const bool is16bit = !!(OperandLValue/8);
+                OutputByte(0x80 | is16bit);
+                OutputByte(0xC0 | (OperandLValue&7) | base);
+                OutputImm(is16bit);
+                return;
+            }
+        }
+    } else if (OperandLType < OP_REG) {
+        if (OperandType == OP_REG) {
+            OutputMR(base);
+            return;
+        } else if (OperandType == OP_LIT) {
+            OutputMImm(0x80, base >> 3);
             return;
         }
-    } else if (OperandLType < OP_REG && OperandType == OP_LIT) {
-        OutputMImm(0x80, base >> 3);
-        return;
     }
     PrintInstr("ALU", true);
     Error("Not implemented ALU with non-reg arguments");
