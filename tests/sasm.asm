@@ -50,6 +50,8 @@ ProgramEntry:
 
         call ParserFini
 
+        call WriteOutput
+
         xor al, al
         jmp Exit
 
@@ -253,29 +255,52 @@ PutHexDigit:
 ;; File Output
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+; Write output buffer to file
+WriteOutput:
+        ; Create file
+        mov dx, OutFileName
+        mov cx, 0x0020 ; Attributes
+        mov ah, 0x3c
+        int 0x21
+        jc .Error
+        mov si, ax ; Save file handle in SI
+
+        ; Write
+        mov ah, 0x40
+        mov bx, si
+        mov cx, [NumOutBytes]
+        mov dx, OutputBuffer ; ds:dx -> buffer
+        int 0x21
+        jc .Error
+        cmp cx, [NumOutBytes]
+        jne .Error
+
+        ; Close file
+        mov ax, 0x3e00
+        mov bx, si
+        int 0x21
+        jmp NotImplemented
+.Error:
+        mov bx, MsgErrOutput
+        jmp Error
+
+
 ; Output byte in AL to output buffer
+; Doesn't modify any registers
 OutputByte:
-        pusha
-        mov si, ax
-        mov bx, .Msg
-        call PutString
-        mov ax, si
-        call PutHexByte
-        call PutCrLf
-        popa
+        push di
+        mov di, OutputBuffer
+        add di, [NumOutBytes]
+        mov [di], al
+        inc word [NumOutBytes]
+        pop di
         ret
-.Msg: db 'OutputByte: 0x', 0
 
 ; Output word in AX
 OutputWord:
-        push si
-        mov si, ax
         call OutputByte
-        mov ax, si
-        mov al, ah
-        call OutputByte
-        pop si
-        ret
+        mov al, ah ; Only works because OutputByte is friendly
+        jmp OutputByte
 
 ; Output 8-bit immediate if AL is 0, output 16-bit immediate otherwise
 ; the immediate is assumed to be in OperandValue
@@ -314,7 +339,7 @@ ParserInit:
         ret
 
 ParserFini:
-        ; Close file
+        ; Close input file
         mov ax, 0x3e00
         mov bx, [InputFile]
         int 0x21
@@ -592,7 +617,11 @@ InstINT:
 ;; Constants
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+FileName:         db 't01.asmX', 0
+OutFileName:      db 'a.com', 0
+
 MsgErrOpenIn:     db 'Error opening input file', 0
+MsgErrOutput:     db 'Error during output', 0
 MsgErrInvalidNum  db 'Error invalid number', 0
 MsgErrInvalidOpe  db 'Invalid operand', 0
 
@@ -615,7 +644,6 @@ DispatchListEnd:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;; Parser
-FileName:         db 't01.asmX', 0
 InputFile:        dw 0 ; Input file handle
 CurrentLine:      dw 1 ; Current line being processed
 NumNewLines:      dw 0 ; Number of newlines passed by ReadNext
@@ -634,4 +662,8 @@ OperandLType:     db 0
 OperandLValue:    dw 0
 
 ;;; Output
-CurrentAddress    dw 0 ; Current memory address of code (e.g. 0x100 first in a COM file)
+CurrentAddress:   dw 0 ; Current memory address of code (e.g. 0x100 first in a COM file)
+NumOutBytes:      dw 0 ; Number of bytes output
+
+; FIXME TODO Obviously not sustainable...
+OutputBuffer:
