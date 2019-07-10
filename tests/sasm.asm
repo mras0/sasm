@@ -8,11 +8,16 @@
 
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 5          ; Maximum length of directive/instruction
+OUTPUT_MAX       equ 0x8000     ; Maximum output size
 LABEL_MAX        equ 100        ; Maximum number of labels
+FIXUP_MAX        equ 100        ; Maximum number of fixups
 DISPATCH_SIZE    equ 8          ; Size of DispatchListEntry
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 LABEL_ADDR       equ 18         ; Offset of label address
 LABEL_FIXUP      equ 20         ; Offset of label fixup
+FIXUP_SIZE       equ 4          ; Size of Fixup
+FIXUP_ADDR       equ 0          ; Offset of fixup address (into the output buffer)
+FIXUP_LINK       equ 2          ; Offset of fixup link pointer (INVALID_ADDR terminates list)
 
 HEX_ADJUST       equ 7          ; 'A'-'0'-10
 QUOTE_CHAR       equ 39         ; '\''
@@ -67,10 +72,33 @@ Init:
         add ax, bx
         mov [FirstFreeSeg], ax
 
+        mov ax, OUTPUT_MAX
+        mov bx, 1
+        call Malloc
+        mov [OutputSeg], ax
+
         mov ax, LABEL_MAX
         mov bx, LABEL_SIZE
         call Malloc
         mov [LabelSeg], ax
+
+        mov ax, FIXUP_MAX
+        mov bx, FIXUP_SIZE
+        call Malloc
+        mov [FixupSeg], ax
+        ; Initial fixup list
+        mov es, ax
+        xor bx, bx
+        mov cx, FIXUP_MAX
+.FixupInit:
+        mov ax, bx
+        add ax, FIXUP_SIZE
+        mov [es:bx+FIXUP_LINK], ax
+        mov bx, ax
+        dec cx
+        jnz .FixupInit
+        sub bx, FIXUP_SIZE
+        mov word [es:bx+FIXUP_LINK], INVALID_ADDR ; Terminate free list
 
         call ParserInit
         ret
@@ -154,8 +182,13 @@ MainLoop:
 
 Dispatch:
         push si
-        ; TODO: Check if label
+        mov al, ':'
+        call TryConsume
+        jc .NotLabel
+        call DefineLabel
+        jmp .Done
 
+.NotLabel:
         mov si, DispatchList
 
         ; Is the token too short/long to be a valid instruction/directive?
@@ -164,6 +197,11 @@ Dispatch:
         jb .CheckEQU
         cmp al, INST_MAX
         ja .CheckEQU
+
+        ; Initialize fixup pointers
+        mov ax, INVALID_ADDR
+        mov [CurrentFixup], ax
+        mov [CurrentLFixup], ax
 
 .Compare:
         xor bx, bx
@@ -183,7 +221,14 @@ Dispatch:
         movzx ax, byte [si+INST_MAX]
         mov bx, [si+INST_MAX+1]
         call bx
+        cmp word [CurrentFixup], INVALID_ADDR
+        jne .FixupUnhandled
+        cmp word [CurrentLFixup], INVALID_ADDR
+        jne .FixupUnhandled
         jmp .Done
+.FixupUnhandled:
+        mov bx, MsgErrFixupUnh
+        jmp Error
 
 .Next:
         add si, DISPATCH_SIZE
@@ -208,11 +253,12 @@ Malloc:
         add ax, 15
         shr ax, 4
 
-        add ax, [FirstFreeSeg]
+        mov cx, [FirstFreeSeg]
+        add ax, cx
         cmp ax, [2] ; (PSP) Segment of the first byte beyond the memory allocated to the program
         jae .Err ; Out of memory
-
         mov [FirstFreeSeg], ax
+        mov ax, cx
 
         ret
 .Err:
@@ -347,6 +393,7 @@ OutputByte:
         mov di, [NumOutBytes]
         stosb
         inc word [NumOutBytes]
+        inc word [CurrentAddress]
         pop es
         pop di
         ret
@@ -366,8 +413,10 @@ OutputImm:
 
 ; Output 16-bit immediate from OperandValue
 OutputImm16:
-        ; TODO: Handle Fixup
-        ; if (CurrentFixup) FixupIsHere()
+        cmp word [CurrentFixup], INVALID_ADDR
+        je .Output
+        call RegisterFixup
+.Output:
         mov ax, [OperandValue]
         jmp OutputWord
 
@@ -416,6 +465,17 @@ ReadNext:
         ret
 .NotOK:
         mov byte [CurrentChar], 0
+        ret
+
+; Try to get character in AL and ReadNext. Returns carry clear on success.
+TryGet:
+        cmp [CurrentChar], al
+        jne .NoMatch
+        call ReadNext
+        clc
+        ret
+.NoMatch:
+        stc
         ret
 
 SkipWS:
@@ -517,9 +577,25 @@ GetTokenNumber:
         cmp word [Token], '0X'
         je .Hex
         ; Decimal number
-        mov bx, .Msg
-        jmp Error
-        .Msg: db 'Not implemented: Decimal number',0
+        xor ax, ax
+        mov bx, Token
+        xor ch, ch
+.Dec:
+        mov cl, [bx]
+        and cl, cl
+        jnz .NotDone
+        ret
+.NotDone:
+        inc bx
+        mov dx, 10
+        mul dx
+        and dx, dx
+        jnz .Error
+        sub cl, '0'
+        cmp cl, 9
+        ja .Error
+        add ax, cx
+        jmp .Dec
 .Hex:
         mov cl, [TokenLen]
         sub cl, 2
@@ -544,6 +620,22 @@ GetTokenNumber:
 .Error:
         mov bx, MsgErrInvalidNum
         jmp Error
+
+; Returns carry clear if token is number
+IsTokenNumber:
+        mov al, [Token]
+        sub al, '0'
+        cmp al, 9
+        ja .NotNumber
+        clc
+        ret
+.NotNumber:
+        stc
+        ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Operand Handling
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ; Get operand to OperandType/OperandValue (and possibly CurrentFixup)
 GetOperand:
@@ -576,10 +668,8 @@ GetOperand:
         jnz .ChecReg
         ; Fall through
 .CheckNumber:
-        mov al, [Token]
-        sub al, '0'
-        cmp al, 9
-        ja .NotNumber
+        call IsTokenNumber
+        jc .NotNumber
         call GetTokenNumber
         mov [OperandValue], ax
         mov byte [OperandType], OP_LIT
@@ -610,8 +700,45 @@ GetOperand:
 ;GetNamedLiteral:
         mov byte [OperandType], OP_LIT
         call FindOrMakeLabel
-        jmp NotImplemented
+        mov ax, [LabelSeg]
+        mov es, ax
+        mov ax, [es:bx+LABEL_ADDR]
+        cmp ax, INVALID_ADDR
+        je .NeedFixup
+        mov [OperandValue], ax
+        ret
+.NeedFixup:
+        mov word [OperandValue], 0
+        ;
+        ; Add fixup for the label
+        ;
 
+        ; First grab a free fixup pointer
+        mov ax, [NextFreeFixup]
+        cmp ax, INVALID_ADDR
+        jne .FixupValid
+        mov bx, MsgErrFixupMax
+        jmp Error
+.FixupValid:
+        ; Store the fixup along the other operand data
+        mov [CurrentFixup], ax
+        ; And update the linked list
+        mov cx, [es:bx+LABEL_FIXUP] ; Remember old fixup pointer
+        mov [es:bx+LABEL_FIXUP], ax ; Store fixup pointer
+
+        ; Done with the label, switch to pointing to the fixups
+        mov bx, [FixupSeg]
+        mov es, bx
+        mov bx, ax ; es:bx points to the new fixup node
+
+        ; Update free list
+        mov ax, [es:bx+FIXUP_LINK]
+        mov [NextFreeFixup], ax
+
+        ; And point the link at the old head
+        mov [es:bx+FIXUP_LINK], cx
+
+        ret
 
 SwapOperands:
         mov al, [OperandType]
@@ -620,6 +747,9 @@ SwapOperands:
         mov ax, [OperandValue]
         xchg ax, [OperandLValue]
         mov [OperandValue], ax
+        mov ax, [CurrentFixup]
+        xchg ax, [CurrentLFixup]
+        mov [CurrentFixup], ax
         ret
 
 Get2Operands:
@@ -629,21 +759,93 @@ Get2Operands:
         call SwapOperands
         jmp GetOperand
 
-; Find label matching TokenText, returns pointer in BX or
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Label Handling
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Define label (from Token) at current address
+DefineLabel:
+        cmp byte [Token], '.'
+        jne .NotLocal
+        mov bx, .MsgErrLocalLabel
+        jmp Error
+.NotLocal:
+        call FindLabel
+        mov ax, [LabelSeg]
+        mov es, ax
+        cmp bx, INVALID_ADDR
+        jne .KnownLabel
+        mov bx, .MsgErrUnknownL
+        jmp Error
+.KnownLabel:
+        cmp word [es:bx+LABEL_ADDR], INVALID_ADDR
+        je .NotDup
+        mov bx, MsgErrDupLabel
+        jmp Error
+.NotDup:
+        mov ax, [CurrentAddress]
+        mov [es:bx+LABEL_ADDR], ax ; Set label address
+        ; Resolve fixups
+        mov bx, [es:bx+LABEL_FIXUP]
+        push si
+        push di
+        mov dx, [FixupSeg]
+        mov di, [OutputSeg]
+.ResolveFixup:
+        cmp bx, INVALID_ADDR
+        je .Done
+
+        mov es, dx
+        mov si, [es:bx+FIXUP_ADDR]
+        mov bx, [es:bx+FIXUP_LINK]
+        mov es, di
+        add [es:si], ax
+
+        jmp .ResolveFixup
+.Done:
+        pop di
+        pop si
+        ret
+
+.MsgErrLocalLabel: db 'Local labels not supported yet', 0
+.MsgErrKnownL:     db 'TODO: Known label!', 0
+.MsgErrUnknownL:   db 'TODO: Unknown label!', 0
+
+; Register fixup for CurrentFixup at this exact output location
+RegisterFixup:
+        mov bx, [CurrentFixup]
+        mov ax, INVALID_ADDR
+        cmp bx, ax
+        jne .OK
+        mov bx, .MsgErrInternalErr
+        jmp Error
+.OK:
+        mov [CurrentFixup], ax
+        mov ax, [FixupSeg]
+        mov es, ax
+        mov ax, [NumOutBytes]
+        mov [es:bx+FIXUP_ADDR], ax
+        ret
+
+.MsgErrInternalErr: db 'No fixup to register?', 0
+
+; Find label matching Token, returns pointer in BX or
 ; INVALID_ADDR if not found
 FindLabel:
         push si
         push di
+        mov cx, [NumLabels]
+        and cx, cx
+        jz .NotFound
         mov ax, [LabelSeg]
         mov es, ax
         xor bx, bx
-        mov cx, LABEL_MAX
 .Search:
         mov si, Token
         mov di, bx
 .Compare:
         mov al, [si]
-        cmp [di], al
+        cmp [es:di], al
         jne .Next
         and al, al
         jz .Done
@@ -654,24 +856,47 @@ FindLabel:
         add bx, LABEL_SIZE
         dec cx
         jnz .Search
+.NotFound:
         mov bx, INVALID_ADDR
-        jmp .Done
 .Done:
         pop di
         pop si
         ret
 
+; Returns pointer to label in BX. Label must NOT exist.
+MakeLabel:
+        mov ax, [NumLabels]
+        cmp ax, LABEL_MAX
+        jb .OK
+        mov bx, MsgErrLabelMax
+        jmp Error
+.OK:
+        inc word [NumLabels]
+        mov bx, LABEL_SIZE
+        mul bx
+        mov bx, ax
+        mov ax, [LabelSeg]
+        mov es, ax
+        mov ax, INVALID_ADDR
+        mov [es:bx+LABEL_ADDR], ax
+        mov [es:bx+LABEL_FIXUP], ax
+        push di
+        push si
+        movzx cx, [TokenLen]
+        inc cx
+        mov di, bx
+        mov si, Token
+        rep movsb
+        pop si
+        pop di
+        ret
+
+; Returns pointer to label (from Token) in BX
 FindOrMakeLabel:
         call FindLabel
         cmp bx, INVALID_ADDR
-        je .NotFound
-        mov bx, .F
-        jmp Error
-.NotFound:
-        mov bx, .N
-        jmp Error
-.F: db 'TODO: Label found', 0
-.N: db 'TODO: Label NOT found', 0
+        je MakeLabel
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Directives
@@ -681,6 +906,57 @@ DirORG:
         call GetNumber
         mov [CurrentAddress], ax
         ret
+
+; AL = 1 if DB 2 if DW
+DirDX:
+        push si
+        mov si, ax
+        cmp al, 1
+        je .Main
+        mov bx, .MsgErrDW
+        jmp Error
+.Main:
+        mov al, QUOTE_CHAR
+        call TryGet
+        jc .NotLit
+        ; Handle character literal
+.CharLit:
+        mov al, QUOTE_CHAR
+        call TryGet
+        jnc .Next
+        mov al, [CurrentChar]
+        cmp al, ' '
+        jae .OK
+        mov bx, MsgErrChLitErr
+        jmp Error
+.OK:
+        call OutputByte ; Always
+        call ReadNext
+        jmp .CharLit
+.NotLit:
+        call GetToken
+        call IsTokenNumber
+        jc .NamedLit
+        call GetTokenNumber
+        cmp si, 1
+        jne .OutputWord
+        call OutputByte
+        jmp .Next
+.OutputWord:
+        call OutputWord
+        jmp .Next
+.NamedLit:
+        mov bx, .MsgErrNamedLit
+        jmp Error
+.Next:
+        mov al, ','
+        call TryConsume
+        jnc .Main
+        pop si
+        ret
+
+.MsgErrNamedLit: db 'TODO: DirDX NamedLit', 0
+.MsgErrDW: db 'TODO: DirDX DW', 0
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
@@ -739,7 +1015,7 @@ InstINT:
 ;; Constants
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-FileName:         db 't01.asm', 0
+FileName:         db 'in.asm', 0
 OutFileName:      db 'a.com', 0
 
 MsgErrOpenIn:     db 'Error opening input file', 0
@@ -747,18 +1023,30 @@ MsgErrOutput:     db 'Error during output', 0
 MsgErrMem:        db 'Alloc failed', 0
 MsgErrInvalidNum: db 'Error invalid number', 0
 MsgErrInvalidOpe: db 'Invalid operand', 0
+MsgErrLabelMax:   db 'Too many labels', 0
+MsgErrFixupMax:   db 'Too many fixups', 0
+MsgErrDupLabel:   db 'Duplicate label', 0
+MsgErrFixupUnh:   db 'Unhandled fixup', 0
+MsgErrChLitErr:   db 'Invalid character literal', 0
 
 RegNames:
     dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
     dw 'AX', 'CX', 'DX', 'BX', 'SP', 'BP', 'SI', 'DI'
     dw 'ES', 'CS', 'SS', 'DS'
 
+; Each entry has "DISPATCH_SIZE" and starts with a NUL-padded string
+; of size INST_MAX followed by a byte that's passed in AL (AX) to the
+; function in the final word.
 DispatchList:
-    db 'ORG', 0, 0, 0x00
+    db 'DB',0,0,0, 0x01
+    dw DirDX
+    db 'DW',0,0,0, 0x02
+    dw DirDX
+    db 'ORG',0,0,  0x00
     dw DirORG
-    db 'MOV', 0, 0, 0x00
+    db 'MOV',0,0,  0x00
     dw InstMOV
-    db 'INT', 0, 0, 0x00
+    db 'INT',0,0,  0x00
     dw InstINT
 DispatchListEnd:
 
@@ -779,15 +1067,21 @@ TokenEnd:         db 0 ; NUL-terminator
 
 ; The last parsed operand is in OperandType/OperandValue
 ; Instructions with 2 operands have the left most operand saved in
-; OperandLType/OperandLValue
+; OperandLType/OperandLValue. CurrentFixup/CurrentLFixup holds
+; any fixups needed for the operands (or INVALID_ADDR)
 ; See the EQUs at the top of the file for the meaning
 OperandType:      db 0
 OperandValue:     dw 0
+CurrentFixup:     dw 0
 OperandLType:     db 0
 OperandLValue:    dw 0
+CurrentLFixup:    dw 0
 
 LabelSeg:         dw 0
 NumLabels:        dw 0
+
+FixupSeg:         dw 0
+NextFreeFixup:    dw 0 ; Points to next free fixup node (or INVALID_ADDR)
 
 ;;; Output
 OutputSeg:        dw 0

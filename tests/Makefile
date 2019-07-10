@@ -6,7 +6,8 @@ clean:
 	rm -rf sasm.com
 
 test: all
-	DOSBox.exe sasm.com && ndisasm -b 16 -o 0x100 a.com
+	# DOSBox.exe sasm.com && ndisasm -b 16 -o 0x100 a.com
+	testsasm.cmd
 
 sasm.com: sasm.asm
 	nasm -f bin -o $@ $<

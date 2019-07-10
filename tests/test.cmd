@@ -5,7 +5,8 @@ if [%ASM%]==[] set ASM=%~dp0..\build\debug\sasm.exe
 
 set failed=0
 for %%f in (%~dp0\t*.asm) do (
-    %ASM% "%%f"
+    echo %%f
+    call %ASM% "%%f"
     if errorlevel 1 (
         set /a failed=!failed!+1
     ) else (
@@ -29,6 +30,9 @@ for %%f in (%~dp0\t*.asm) do (
             diff "%TMP%\a.asm" "%TMP%\b.asm"
         )
     )
+
+    rem exit early for now
+    if !failed! GEQ 1 echo early exit due to failure & exit /b 1
 )
 
 echo Result: %failed%
