@@ -1,16 +1,22 @@
 ;; Calling convention (unless otherwise mentioned):
 ;;
-;;   Callee-saved: Sregs, BP, SI, DI
-;;   Scratch: AX, BX, CX, DX
-;;   Return value: (DX:)AX
+;;   Callee-saved: DS, BP, SI, DI
+;;   Scratch: AX, BX, CX, DX, ES
+;;   Return value: (DX:)AX or BX for pointer values,
+;;                 boolean values via the carry flag
 ;;
 
-TOKEN_MAX        equ 16 ; Maximum length of token (adjust token buffer if increasing)
-INST_MAX         equ 5  ; Maximum length of directive/instruction
-DISPATCH_SIZE    equ 8  ; Size of DispatchListEntry
+TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
+INST_MAX         equ 5          ; Maximum length of directive/instruction
+LABEL_MAX        equ 100        ; Maximum number of labels
+DISPATCH_SIZE    equ 8          ; Size of DispatchListEntry
+LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
+LABEL_ADDR       equ 18         ; Offset of label address
+LABEL_FIXUP      equ 20         ; Offset of label fixup
 
-HEX_ADJUST       equ 7  ; 'A'-'0'-10
-QUOTE_CHAR       equ 39 ; '\''
+HEX_ADJUST       equ 7          ; 'A'-'0'-10
+QUOTE_CHAR       equ 39         ; '\''
+INVALID_ADDR     equ 0xFFFF
 
 ; Value of Operand(L)Type:
 ; Less than 0xC0: Memory access with ModRM = OperandType
@@ -44,16 +50,37 @@ R_INVALID        equ 21
         org 0x100
 
 ProgramEntry:
-        call ParserInit
-
+        call Init
         call MainLoop
+        call Fini
 
+        xor al, al
+        jmp Exit
+
+Init:
+        ; First free paragraph is at the end of the program
+        ; COM files get the largest available block
+        mov ax, ProgramEnd
+        add ax, 15
+        shr ax, 4
+        mov bx, cs
+        add ax, bx
+        mov [FirstFreeSeg], ax
+
+        mov ax, LABEL_MAX
+        mov bx, LABEL_SIZE
+        call Malloc
+        mov [LabelSeg], ax
+
+        call ParserInit
+        ret
+
+Fini:
         call ParserFini
 
         call WriteOutput
 
-        xor al, al
-        jmp Exit
+        ret
 
 
 NotImplemented:
@@ -172,6 +199,26 @@ Dispatch:
         pop si
         ret
 
+; Allocate AX*BX bytes, returns segment in AX
+Malloc:
+        ; Calculate how many paragraphs are needed
+        mul bx
+        and dx, dx
+        jnz .Err ; Overflow
+        add ax, 15
+        shr ax, 4
+
+        add ax, [FirstFreeSeg]
+        cmp ax, [2] ; (PSP) Segment of the first byte beyond the memory allocated to the program
+        jae .Err ; Out of memory
+
+        mov [FirstFreeSeg], ax
+
+        ret
+.Err:
+        mov bx, MsgErrMem
+        jmp Error
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Screen Output
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -269,8 +316,13 @@ WriteOutput:
         mov ah, 0x40
         mov bx, si
         mov cx, [NumOutBytes]
-        mov dx, OutputBuffer ; ds:dx -> buffer
+        ; ds:dx -> buffer
+        mov dx, [OutputSeg]
+        push ds
+        mov ds, dx
+        xor dx, dx
         int 0x21
+        pop ds
         jc .Error
         cmp cx, [NumOutBytes]
         jne .Error
@@ -289,10 +341,13 @@ WriteOutput:
 ; Doesn't modify any registers
 OutputByte:
         push di
-        mov di, OutputBuffer
-        add di, [NumOutBytes]
-        mov [di], al
+        push es
+        mov di, [OutputSeg]
+        mov es, di
+        mov di, [NumOutBytes]
+        stosb
         inc word [NumOutBytes]
+        pop es
         pop di
         ret
 
@@ -319,7 +374,7 @@ OutputImm16:
 ; Output 8-bit immediate from OperandValue
 OutputImm8:
         mov al, [OperandValue]
-        jmp OperandValue
+        jmp OutputByte
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Parser
@@ -530,8 +585,31 @@ GetOperand:
         mov byte [OperandType], OP_LIT
         ret
 .NotNumber:
-        ; TODO: Check for byte/word and then do mem
+        ; Check for word/byte [mem]
+        cmp byte [TokenLen], 4
+        jne .CheckNamedLit
+        mov ax, [Token]
+        mov bx, [Token+2]
+        cmp ax, 'BY'
+        jne .CheckWord
+        cmp bx, 'TE'
+        jne .CheckNamedLit
+        ; TODO: mov byte [ExplicitSize], 1
+        ;       jmp GetOperandMem
+        jmp NotImplemented
+.CheckWord:
+        cmp ax, 'WO'
+        jne .CheckNamedLit
+        cmp ax, 'RD'
+        jne .CheckNamedLit
+        ; TODO: mov byte [ExplicitSize], 2
+        ;       jmp GetOperandMem
+        jmp NotImplemented
+.CheckNamedLit:
         ; Otherwise do named literal
+;GetNamedLiteral:
+        mov byte [OperandType], OP_LIT
+        call FindOrMakeLabel
         jmp NotImplemented
 
 
@@ -550,6 +628,50 @@ Get2Operands:
         call Expect
         call SwapOperands
         jmp GetOperand
+
+; Find label matching TokenText, returns pointer in BX or
+; INVALID_ADDR if not found
+FindLabel:
+        push si
+        push di
+        mov ax, [LabelSeg]
+        mov es, ax
+        xor bx, bx
+        mov cx, LABEL_MAX
+.Search:
+        mov si, Token
+        mov di, bx
+.Compare:
+        mov al, [si]
+        cmp [di], al
+        jne .Next
+        and al, al
+        jz .Done
+        inc si
+        inc di
+        jmp .Compare
+.Next:
+        add bx, LABEL_SIZE
+        dec cx
+        jnz .Search
+        mov bx, INVALID_ADDR
+        jmp .Done
+.Done:
+        pop di
+        pop si
+        ret
+
+FindOrMakeLabel:
+        call FindLabel
+        cmp bx, INVALID_ADDR
+        je .NotFound
+        mov bx, .F
+        jmp Error
+.NotFound:
+        mov bx, .N
+        jmp Error
+.F: db 'TODO: Label found', 0
+.N: db 'TODO: Label NOT found', 0
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Directives
@@ -617,11 +739,12 @@ InstINT:
 ;; Constants
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-FileName:         db 't01.asmX', 0
+FileName:         db 't01.asm', 0
 OutFileName:      db 'a.com', 0
 
 MsgErrOpenIn:     db 'Error opening input file', 0
 MsgErrOutput:     db 'Error during output', 0
+MsgErrMem:        db 'Alloc failed', 0
 MsgErrInvalidNum: db 'Error invalid number', 0
 MsgErrInvalidOpe: db 'Invalid operand', 0
 
@@ -643,6 +766,8 @@ DispatchListEnd:
 ;; Data
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+FirstFreeSeg:     dw 0
+
 ;;; Parser
 InputFile:        dw 0 ; Input file handle
 CurrentLine:      dw 1 ; Current line being processed
@@ -661,9 +786,13 @@ OperandValue:     dw 0
 OperandLType:     db 0
 OperandLValue:    dw 0
 
+LabelSeg:         dw 0
+NumLabels:        dw 0
+
 ;;; Output
+OutputSeg:        dw 0
 CurrentAddress:   dw 0 ; Current memory address of code (e.g. 0x100 first in a COM file)
 NumOutBytes:      dw 0 ; Number of bytes output
 
-; FIXME TODO Obviously not sustainable...
-OutputBuffer:
+;;; Keep last
+ProgramEnd:
