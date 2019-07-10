@@ -6,11 +6,13 @@
 ;;                 boolean values via the carry flag
 ;;
 
+; TODO: Investigate whether stack potentially overlaps with allocations
+
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 5          ; Maximum length of directive/instruction
 OUTPUT_MAX       equ 0x8000     ; Maximum output size
 LABEL_MAX        equ 100        ; Maximum number of labels
-FIXUP_MAX        equ 100        ; Maximum number of fixups
+FIXUP_MAX        equ 200        ; Maximum number of fixups
 DISPATCH_SIZE    equ 8          ; Size of DispatchListEntry
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 LABEL_ADDR       equ 18         ; Offset of label address

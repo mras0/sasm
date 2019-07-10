@@ -11,7 +11,7 @@ typedef short S2;
 
 #define TOKEN_MAX 32
 #define LABEL_MAX 100
-#define FIXUP_MAX 100
+#define FIXUP_MAX 200
 #define EQU_MAX   100
 #define OUTPUT_MAX 0x1000
 #define INVALID_ADDR 0xFFFF
@@ -1089,6 +1089,7 @@ static const struct {
     { "ORG"   , &DirectiveOrg   , 0x00 },
     { "DB"    , &DirectiveDx    , 0x01 },
     { "DW"    , &DirectiveDx    , 0x02 },
+    { "REP"   , &OutputByte     , 0xF3 },
     { "MOV"   , &InstMOV        , 0x00 },
     { "MOVZX" , &InstMOVZX      , 0x00 },
     { "XCHG"  , &InstXCHG       , 0x00 },
@@ -1120,6 +1121,8 @@ static const struct {
     { "POPA"  , &OutputByte     , 0x61 },
     { "PUSH"  , &InstPUSH       , 0x00 },
     { "POP"   , &InstPOP        , 0x00 },
+    { "MOVSB" , &OutputByte     , 0xA4 },
+    { "MOVSW" , &OutputByte     , 0xA5 },
     { "STOSB" , &OutputByte     , 0xAA },
     { "LODSB" , &OutputByte     , 0xAC },
     { "CLC"   , &OutputByte     , 0xF8 },
