@@ -1228,6 +1228,26 @@ InstMOV:
 .Msgmr: db 'Not implemented: MOVml', 0
 .Msgml: db 'Not implemented: MOVmr', 0
 
+InstXCHG:
+        call Get2Operands
+        cmp byte [OperandLType], OP_REG
+        je .XCHGr
+        ja InvalidOperand
+        mov bx, .Msgm
+        jmp Error
+.XCHGr:
+        cmp byte [OperandType], OP_REG
+        je .XCHGrr
+        ja InvalidOperand
+        mov bx, .Msgrm
+        jmp Error
+.XCHGrr:
+        mov al, 0x86
+        jmp OutputRR
+
+.Msgm: db 'Not implemented: XCHGm', 0
+.Msgrm: db 'Not implemented: XCHGrm', 0
+
 ; Base instruction in AL (e.g. 0x38 for CMP)
 InstALU:
         push ax
@@ -1262,7 +1282,27 @@ InstALU:
 .MsgM: db 'ALU mem, ?? not implemented',0
 .MsgRM: db 'ALU reg, mem not implemented',0
 .MsgRL: db 'ALU reg (not AL/AX), lit not implemented',0
-.MSG: db 'ALUrl ', 0
+
+; /r in AL (e.g. 6 for DIV)
+InstMulDiv:
+        push ax
+        call GetOperand
+        pop ax
+        cmp byte [OperandType], OP_REG
+        jne InvalidOperand
+        ; Output 0xF6 | is16bit, 0xC0 | r<<3 | (OperandValue&7)
+        mov ah, al
+        shl ah, 3
+        or ah, 0xC0
+        mov al, [OperandValue]
+        cmp al, R_ES
+        jae InvalidOperand
+        mov bl, al
+        and bl, 7
+        or ah, bl
+        shr al, 3
+        or al, 0xF6
+        jmp OutputWord
 
 ; /r in AL (e.g. 4 for SHL)
 InstROT:
@@ -1312,8 +1352,19 @@ InstPUSH:
         cmp byte [OperandType], OP_REG
         je .PushR
         jl InvalidOperand
-        mov bx, .MsgL
-        jmp Error
+        cmp word [CurrentFixup], INVALID_ADDR
+        jne .PushImm16
+        mov ax, [OperandValue]
+        movsx bx, al
+        cmp ax, bx
+        jne .PushImm16
+        mov al, 0x6A
+        call OutputByte
+        jmp OutputImm8
+.PushImm16:
+        mov al, 0x68
+        call OutputByte
+        jmp OutputImm16
 .PushR:
         mov al, [OperandValue]
         sub al, R_AX
@@ -1329,7 +1380,6 @@ InstPUSH:
         mov bx, .MsgS
         jmp Error
 
-.MsgL: db 'Push literal not implemented', 0
 .MsgS: db 'Push SREG not implemented', 0
 
 
@@ -1423,11 +1473,13 @@ DispatchList:
     db 'ORG',0,0,  0x00
     dw DirORG
 
-    ; MOV
+    ; MOV/XCHG
     db 'MOV',0,0,  0x00
     dw InstMOV
+    db 'XCHG',0,   0x00
+    dw InstXCHG
 
-    ; ALU instructions
+    ; ALU instructions (argument is base instruction)
     db 'ADD',0,0,  0x00
     dw InstALU
     db 'OR',0,0,0, 0x08
@@ -1445,7 +1497,17 @@ DispatchList:
     db 'CMP',0,0,  0x38
     dw InstALU
 
-    ; Rotate instructions
+    ; Mul/Div instructions (argument is /r)
+    db 'MUL',0,0,  0x04
+    dw InstMulDiv
+    db 'IMUL',0,   0x05
+    dw InstMulDiv
+    db 'DIV',0,0,  0x06
+    dw InstMulDiv
+    db 'IDIV',0,   0x07
+    dw InstMulDiv
+
+    ; Rotate instructions (argument is /r)
     db 'ROL',0,0,  0x00
     dw InstROT
     db 'ROR',0,0,  0x01
@@ -1493,7 +1555,7 @@ DispatchList:
     db 'JMP',0,0,  0x00
     dw InstJMP
 
-    ; Conditional jump instructions
+    ; Conditional jump instructions (argument is condition code)
     db 'JO',0,0,0, CC_O
     dw InstJCC
     db 'JNO',0,0,  CC_NO
