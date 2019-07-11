@@ -54,6 +54,24 @@ R_SS             equ 18
 R_DS             equ 19
 R_INVALID        equ 21
 
+; Condition Codes
+CC_O             equ 0x0
+CC_NO            equ 0x1
+CC_C             equ 0x2
+CC_NC            equ 0x3
+CC_Z             equ 0x4
+CC_NZ            equ 0x5
+CC_NA            equ 0x6
+CC_A             equ 0x7
+CC_S             equ 0x8
+CC_NS            equ 0x9
+CC_PE            equ 0xa
+CC_PO            equ 0xb
+CC_L             equ 0xc
+CC_NL            equ 0xd
+CC_NG            equ 0xe
+CC_G             equ 0xf
+
         org 0x100
 
 ProgramEntry:
@@ -768,18 +786,22 @@ Get2Operands:
 ; Define label (from Token) at current address
 DefineLabel:
         cmp byte [Token], '.'
-        jne .NotLocal
-        mov bx, .MsgErrLocalLabel
-        jmp Error
-.NotLocal:
+        je .Local
+        ; Non-local label, retire all previously defined local labels
+        call RetireLocLabs
+.Local:
         call FindLabel
-        mov ax, [LabelSeg]
-        mov es, ax
         cmp bx, INVALID_ADDR
         jne .KnownLabel
-        mov bx, .MsgErrUnknownL
-        jmp Error
+        call MakeLabel
+        mov ax, [LabelSeg]
+        mov es, ax
+        mov ax, [CurrentAddress]
+        mov [es:bx+LABEL_ADDR], ax
+        ret
 .KnownLabel:
+        mov ax, [LabelSeg]
+        mov es, ax
         cmp word [es:bx+LABEL_ADDR], INVALID_ADDR
         je .NotDup
         mov bx, MsgErrDupLabel
@@ -809,9 +831,58 @@ DefineLabel:
         pop si
         ret
 
-.MsgErrLocalLabel: db 'Local labels not supported yet', 0
-.MsgErrKnownL:     db 'TODO: Known label!', 0
-.MsgErrUnknownL:   db 'TODO: Unknown label!', 0
+RetireLocLabs:
+        mov ax, [LabelSeg]
+        mov es, ax
+        xor bx, bx
+        mov cx, [NumLabels]
+        and cx, cx
+        jnz .L
+        ret
+.L:
+        cmp byte [es:bx], '.'
+        jne .Next
+
+        cmp word [es:bx+LABEL_ADDR], INVALID_ADDR
+        jne .NotInv
+.Inv:
+        mov bx, MsgErrUndefLab
+        jmp Error
+.NotInv:
+        cmp word [es:bx+LABEL_FIXUP], INVALID_ADDR
+        jne .Inv
+
+        mov ax, [NumLabels]
+        dec ax
+        mov [NumLabels], ax
+        dec cx
+        jz .Done
+
+        mov dx, LABEL_SIZE
+        mul dx
+
+        push ds
+        push si
+        push di
+        push cx
+        mov si, es
+        mov ds, si
+        mov di, bx
+        mov si, ax
+        mov cx, LABEL_SIZE
+        rep movsb
+        pop cx
+        pop di
+        pop si
+        pop ds
+
+.Next:
+        add bx, LABEL_SIZE
+        dec cx
+        jnz .L
+.Done:
+        ret
+.Msg: db 'TODO: Retire local label ',0
 
 ; Register fixup for CurrentFixup at this exact output location
 RegisterFixup:
@@ -963,9 +1034,71 @@ DirDX:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 InvalidOperand:
         mov bx, MsgErrInvalidOpe
         jmp Error
+
+HandleRel16:
+        cmp byte [OperandType], OP_LIT
+        jne InvalidOperand
+        cmp word [CurrentFixup], INVALID_ADDR
+        je .NoFixup
+        call RegisterFixup
+.NoFixup:
+        mov ax, [OperandValue]
+        sub ax, [CurrentAddress]
+        sub ax, 2
+        jmp OutputWord
+
+; Output instruction byte in AL and Rel8 if OperandValue is a short
+; (known) jump. Returns carry clear on success
+HandleShortRel:
+        cmp word [CurrentFixup], INVALID_ADDR
+        jne .NotShort ; Too advanced for now
+        mov bx, [OperandValue]
+        sub bx, [CurrentAddress]
+        sub bx, 2
+        movsx cx, bl
+        cmp cx, bx
+        jne .NotShort
+        push bx
+        call OutputByte
+        pop bx
+        mov al, bl
+        call OutputByte
+        clc
+        ret
+.NotShort:
+        stc
+        ret
+
+; Output instruction byte in AL, ORed with 1 if OperandValue
+; is a 16-bit register (R_AX .. R_DI)
+OutInst816:
+        ; 16-bit?
+        mov bl, [OperandValue]
+        shr bl, 3
+        cmp bl, 1
+        jne .Not16
+        or al, 1
+.Not16:
+        jmp OutputByte
+
+; Output reg,reg instruction with instruction byte in AL
+; The low bit of the instruction is set if OperandValue
+; signifies a 16-bit (not sreg) register
+OutputRR:
+        call OutInst816
+        mov al, 0xc0
+        mov ah, [OperandLValue]
+        and ah, 7
+        or al, ah
+        mov ah, [OperandValue]
+        and ah, 7
+        shl ah, 3
+        or al, ah
+        jmp OutputByte
 
 InstMOV:
         call Get2Operands
@@ -986,7 +1119,22 @@ InstMOV:
         jmp OutputImm
 .MOVrr:
         ; MOV reg, reg
-        mov bx, .Msgrr
+        cmp byte [OperandLValue], R_ES
+        jae .MOVs
+        ; LHS isn't s-reg
+        cmp byte [OperandValue], R_ES
+        jae .MOVrs
+        mov al, 0x88
+        jmp OutputRR
+.MOVrs:
+        mov bx, .Msgrs
+        jmp Error
+.MOVs:
+        mov al, [OperandValue]
+        sub al, R_AX
+        cmp al, 7
+        ja InvalidOperand
+        mov bx, .Msgsr
         jmp Error
 .MOVrm:
         ; MOV reg, mem
@@ -1002,16 +1150,130 @@ InstMOV:
         mov bx, .Msgmr
         jmp Error
 
-.Msgrr: db 'Not implemented: MOVrr', 0
+.Msgsr: db 'Not implemented: MOVsr', 0
+.Msgrs: db 'Not implemented: MOVrs', 0
 .Msgrm: db 'Not implemented: MOVrm', 0
 .Msgmr: db 'Not implemented: MOVml', 0
 .Msgml: db 'Not implemented: MOVmr', 0
+
+; Base instruction in AL (e.g. 0x38 for CMP)
+InstALU:
+        push ax
+        call Get2Operands
+        pop ax
+        cmp byte [OperandLType], OP_REG
+        je .ALUr
+        ja InvalidOperand
+        mov bx, .MsgM
+        jmp Error
+.ALUr:
+        cmp byte [OperandType], OP_REG
+        je OutputRR
+        ja .ALUrl
+        mov bx, .MsgRM
+        jmp Error
+.ALUrl:
+        mov bx, .MsgRL
+        jmp Error
+.MsgM: db 'ALU mem, ?? not implemented',0
+.MsgRM: db 'ALU reg, mem not implemented',0
+.MsgRL: db 'ALU reg, lit not implemented',0
 
 InstINT:
         mov al, 0xcd
         call OutputByte
         call GetNumber
         jmp OutputByte
+
+InstCALL:
+        call GetOperand
+        cmp byte [OperandType], OP_REG
+        je .CallR
+        mov al, 0xE8
+        call OutputByte
+        jmp HandleRel16
+.CallR:
+        mov al, 0xFF
+        call OutputByte
+        mov al, [OperandValue]
+        and al, 7
+        or al, 0xD0 ; 0xC0 | (2<<3)
+        jmp OutputByte
+
+InstPUSH:
+        call GetOperand
+        cmp byte [OperandType], OP_REG
+        je .PushR
+        jl InvalidOperand
+        mov bx, .MsgL
+        jmp Error
+.PushR:
+        mov al, [OperandValue]
+        sub al, R_AX
+        cmp al, 8
+        jae .PushS
+        or al, 0x50
+        jmp OutputByte
+.PushS:
+        ; sub al, 8
+        ; shl al, 3
+        ; or al, 0x06
+        ; jmp OutputByte
+        mov bx, .MsgS
+        jmp Error
+
+.MsgL: db 'Push literal not implemented', 0
+.MsgS: db 'Push SREG not implemented', 0
+
+
+InstPOP:
+        call GetOperand
+        cmp byte [OperandType], OP_REG
+        jne InvalidOperand
+        mov al, [OperandValue]
+        sub al, R_AX
+        js InvalidOperand
+        cmp al, 8
+        ja .PopS
+        or al, 0x58
+        jmp OutputByte
+.PopS:
+        ; sub al, 8
+        ; shl al, 3
+        ; or al, 0x07
+        ; jmp OutputByte
+        mov bx, .MsgS
+        jmp Error
+.MsgS: db 'Not implenented: POP SREG', 0
+
+InstJMP:
+        call GetOperand
+        mov al, 0xEB
+        call HandleShortRel
+        jc .NotShort
+        ret
+.NotShort:
+        mov al, 0xE9
+        call OutputByte
+        jmp HandleRel16
+
+; AL contains the condition code
+InstJCC:
+        push si
+        mov si, ax
+        call GetOperand
+        mov ax, 0x70
+        or ax, si
+        call HandleShortRel
+        jnc .Done
+        shl si, 8
+        mov ax, 0x800F
+        or ax, si
+        call OutputWord
+        call HandleRel16
+.Done:
+        pop si
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants
@@ -1030,6 +1292,7 @@ MsgErrFixupMax:   db 'Too many fixups', 0
 MsgErrDupLabel:   db 'Duplicate label', 0
 MsgErrFixupUnh:   db 'Unhandled fixup', 0
 MsgErrChLitErr:   db 'Invalid character literal', 0
+MsgErrUndefLab:   db 'Undefined label', 0
 
 RegNames:
     dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
@@ -1040,16 +1303,107 @@ RegNames:
 ; of size INST_MAX followed by a byte that's passed in AL (AX) to the
 ; function in the final word.
 DispatchList:
+    ; Directives
     db 'DB',0,0,0, 0x01
     dw DirDX
     db 'DW',0,0,0, 0x02
     dw DirDX
     db 'ORG',0,0,  0x00
     dw DirORG
+
     db 'MOV',0,0,  0x00
     dw InstMOV
+
+    db 'ADD',0,0,  0x00
+    dw InstALU
+    db 'OR',0,0,0, 0x08
+    dw InstALU
+    db 'ADC',0,0,  0x10
+    dw InstALU
+    db 'SBB',0,0,  0x18
+    dw InstALU
+    db 'AND',0,0,  0x20
+    dw InstALU
+    db 'SUB',0,0,  0x28
+    dw InstALU
+    db 'XOR',0,0,  0x30
+    dw InstALU
+    db 'CMP',0,0,  0x38
+    dw InstALU
+
+    db 'POP',0,0,  0x00
+    dw InstPOP
+    db 'POPA',0,   0x61
+    dw OutputByte
+    db 'PUSH',0,   0x00
+    dw InstPUSH
+    db 'PUSHA',    0x60
+    dw OutputByte
+
+    db 'MOVSB',    0xA4
+    dw OutputByte
+    db 'MOVSW',    0xA5
+    dw OutputByte
+    db 'STOSB',    0xAA
+    dw OutputByte
+    db 'LODSB',    0xAC
+    dw OutputByte
+
+    db 'RET',0,0,  0xC3
+    dw OutputByte
     db 'INT',0,0,  0x00
     dw InstINT
+    db 'CALL',0,   0x00
+    dw InstCALL
+
+    db 'JMP',0,0,  0x00
+    dw InstJMP
+
+    db 'JO',0,0,0, CC_O
+    dw InstJCC
+    db 'JNO',0,0,  CC_NO
+    dw InstJCC
+    db 'JC',0,0,0, CC_C
+    dw InstJCC
+    db 'JB',0,0,0, CC_C
+    dw InstJCC
+    db 'JNC',0,0,  CC_NC
+    dw InstJCC
+    db 'JNB',0,0,  CC_NC
+    dw InstJCC
+    db 'JAE',0,0,  CC_NC
+    dw InstJCC
+    db 'JZ',0,0,0, CC_Z
+    dw InstJCC
+    db 'JE',0,0,0, CC_Z
+    dw InstJCC
+    db 'JNZ',0,0,  CC_NZ
+    dw InstJCC
+    db 'JNE',0,0,  CC_NZ
+    dw InstJCC
+    db 'JNA',0,0,  CC_NA
+    dw InstJCC
+    db 'JBE',0,0,  CC_NA
+    dw InstJCC
+    db 'JA',0,0,0, CC_A
+    dw InstJCC
+    db 'JS',0,0,0, CC_S
+    dw InstJCC
+    db 'JNS',0,0,  CC_NS
+    dw InstJCC
+    db 'JPE',0,0,  CC_PE
+    dw InstJCC
+    db 'JPO',0,0,  CC_PO
+    dw InstJCC
+    db 'JL',0,0,0, CC_L
+    dw InstJCC
+    db 'JNL',0,0,  CC_NL
+    dw InstJCC
+    db 'JNG',0,0,  CC_NG
+    dw InstJCC
+    db 'JG',0,0,0, CC_G
+    dw InstJCC
+
 DispatchListEnd:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
