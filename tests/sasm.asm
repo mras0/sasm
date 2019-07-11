@@ -170,12 +170,6 @@ Exit:
         mov ah, 0x4c
         int 0x21
 
-MsgCurToken: db 'Current token: "', 0
-MsgErrInLine: db 'Error in line ', 0
-MsgErrNotImpl: db 'Not implemented', 0
-MsgErrNotDone: db 'File not completely parsed', 0
-MsgErrUnknInst: db 'Unknown directive or instruction', 0
-
 MainLoop:
         ; Update line counter
         mov ax, [NumNewLines]
@@ -653,6 +647,23 @@ IsTokenNumber:
         stc
         ret
 
+; Read one or two character literal to OperandValue
+; Assumes initial quote character has been consumed
+GetCharLit:
+        movzx ax, [CurrentChar]
+        mov [OperandValue], ax
+        call ReadNext
+        mov al, QUOTE_CHAR
+        call TryConsume
+        jnc .Done
+        mov al, [CurrentChar]
+        mov [OperandValue+1], al
+        call ReadNext
+        mov al, QUOTE_CHAR
+        call Expect
+.Done:
+        ret
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Operand Handling
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -660,8 +671,12 @@ IsTokenNumber:
 ; Get operand to OperandType/OperandValue (and possibly CurrentFixup)
 GetOperand:
         ; TODO: Character literal
-        cmp byte [CurrentChar], QUOTE_CHAR
-        je NotImplemented
+        mov al, QUOTE_CHAR
+        call TryGet
+        jc .NotLit
+        mov byte [OperandType], OP_LIT
+        jmp GetCharLit
+.NotLit:
         ; TODO: Memory operand
         cmp byte [CurrentChar], '['
         je NotImplemented
@@ -810,7 +825,9 @@ DefineLabel:
         mov ax, [CurrentAddress]
         mov [es:bx+LABEL_ADDR], ax ; Set label address
         ; Resolve fixups
-        mov bx, [es:bx+LABEL_FIXUP]
+        mov cx, [es:bx+LABEL_FIXUP] ; Store last valid fixup in CX
+        mov word [es:bx+LABEL_FIXUP], INVALID_ADDR
+        mov bx, cx
         push si
         push di
         mov dx, [FixupSeg]
@@ -819,6 +836,7 @@ DefineLabel:
         cmp bx, INVALID_ADDR
         je .Done
 
+        mov cx, bx ; Update last valid fixup node
         mov es, dx
         mov si, [es:bx+FIXUP_ADDR]
         mov bx, [es:bx+FIXUP_LINK]
@@ -827,8 +845,60 @@ DefineLabel:
 
         jmp .ResolveFixup
 .Done:
+        cmp cx, INVALID_ADDR
+        je .NoFixups
+        mov es, dx
+        mov bx, cx
+        mov ax, [NextFreeFixup]
+        mov [es:bx+FIXUP_LINK], ax
+        mov [NextFreeFixup], bx
+.NoFixups:
         pop di
         pop si
+        ret
+
+; Print Label in BX (assumes ES=LabelSeg). Registers preserved.
+PrintLabel:
+        push ds
+        pusha
+        mov ax, es
+        mov ds, ax
+        call PutString
+        mov al, ' '
+        call PutChar
+        popa
+        pop ds
+        mov ax, [es:bx+LABEL_ADDR]
+        pusha
+        call PutHex
+        mov al, ' '
+        call PutChar
+        popa
+        mov ax, [es:bx+LABEL_FIXUP]
+        pusha
+        call PutHex
+        call PutCrLf
+        popa
+        ret
+
+; Print all labels (registers preserved)
+PrintLabels:
+        push es
+        pusha
+        mov ax, [LabelSeg]
+        mov es, ax
+        xor bx, bx
+        mov cx, [NumLabels]
+        and cx, cx
+        jz .Done
+.L:
+        call PrintLabel
+        add bx, LABEL_SIZE
+        dec cx
+        jnz .L
+.Done:
+        popa
+        pop es
         ret
 
 RetireLocLabs:
@@ -846,6 +916,8 @@ RetireLocLabs:
         cmp word [es:bx+LABEL_ADDR], INVALID_ADDR
         jne .NotInv
 .Inv:
+        call PrintLabels
+        call PrintLabel
         mov bx, MsgErrUndefLab
         jmp Error
 .NotInv:
@@ -1173,11 +1245,46 @@ InstALU:
         mov bx, .MsgRM
         jmp Error
 .ALUrl:
+        cmp byte [OperandLValue], R_AL
+        jne .ALUrl2
+        add al, 4
+        call OutputByte
+        jmp OutputImm8
+.ALUrl2:
+        cmp byte [OperandLValue], R_AX
+        jne .ALUrl3
+        add al, 5
+        call OutputByte
+        jmp OutputImm16
+.ALUrl3:
         mov bx, .MsgRL
         jmp Error
 .MsgM: db 'ALU mem, ?? not implemented',0
 .MsgRM: db 'ALU reg, mem not implemented',0
-.MsgRL: db 'ALU reg, lit not implemented',0
+.MsgRL: db 'ALU reg (not AL/AX), lit not implemented',0
+.MSG: db 'ALUrl ', 0
+
+; /r in AL (e.g. 4 for SHL)
+InstROT:
+        push ax
+        call Get2Operands
+        pop bx
+        cmp byte [OperandLType], OP_REG
+        jne NotImplemented
+        cmp byte [OperandType], OP_LIT
+        jne NotImplemented
+        mov ah, [OperandLValue]
+        ; Output 0xc0 | is16bit, 0xC0 | r<<3 | (OperandLValue&7)
+        mov al, ah
+        and ah, 3
+        shl bl, 3
+        or ah, bl
+        or ah, 0xc0
+        shr al, 3
+        and al, 1
+        or al, 0xc0
+        call OutputWord
+        jmp OutputImm8
 
 InstINT:
         mov al, 0xcd
@@ -1282,6 +1389,11 @@ InstJCC:
 FileName:         db 'in.asm', 0
 OutFileName:      db 'a.com', 0
 
+MsgCurToken:      db 'Current token: "', 0
+MsgErrInLine:     db 'Error in line ', 0
+MsgErrNotImpl:    db 'Not implemented', 0
+MsgErrNotDone:    db 'File not completely parsed', 0
+MsgErrUnknInst:   db 'Unknown directive or instruction', 0
 MsgErrOpenIn:     db 'Error opening input file', 0
 MsgErrOutput:     db 'Error during output', 0
 MsgErrMem:        db 'Alloc failed', 0
@@ -1311,9 +1423,11 @@ DispatchList:
     db 'ORG',0,0,  0x00
     dw DirORG
 
+    ; MOV
     db 'MOV',0,0,  0x00
     dw InstMOV
 
+    ; ALU instructions
     db 'ADD',0,0,  0x00
     dw InstALU
     db 'OR',0,0,0, 0x08
@@ -1331,6 +1445,23 @@ DispatchList:
     db 'CMP',0,0,  0x38
     dw InstALU
 
+    ; Rotate instructions
+    db 'ROL',0,0,  0x00
+    dw InstROT
+    db 'ROR',0,0,  0x01
+    dw InstROT
+    db 'RCL',0,0,  0x02
+    dw InstROT
+    db 'RCR',0,0,  0x03
+    dw InstROT
+    db 'SHL',0,0,  0x04
+    dw InstROT
+    db 'SHR',0,0,  0x05
+    dw InstROT
+    db 'SAR',0,0,  0x07
+    dw InstROT
+
+    ; Stack instructions
     db 'POP',0,0,  0x00
     dw InstPOP
     db 'POPA',0,   0x61
@@ -1340,6 +1471,7 @@ DispatchList:
     db 'PUSHA',    0x60
     dw OutputByte
 
+    ; String instructions
     db 'MOVSB',    0xA4
     dw OutputByte
     db 'MOVSW',    0xA5
@@ -1349,6 +1481,7 @@ DispatchList:
     db 'LODSB',    0xAC
     dw OutputByte
 
+    ; Flow control
     db 'RET',0,0,  0xC3
     dw OutputByte
     db 'INT',0,0,  0x00
@@ -1356,9 +1489,11 @@ DispatchList:
     db 'CALL',0,   0x00
     dw InstCALL
 
+    ; JMP
     db 'JMP',0,0,  0x00
     dw InstJMP
 
+    ; Conditional jump instructions
     db 'JO',0,0,0, CC_O
     dw InstJCC
     db 'JNO',0,0,  CC_NO
@@ -1409,6 +1544,8 @@ DispatchListEnd:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Data
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; TODO: To save a few bytes the following should just be 'resb'/'resw'
 
 FirstFreeSeg:     dw 0
 
