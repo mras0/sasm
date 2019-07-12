@@ -14,6 +14,7 @@ INST_MAX         equ 5          ; Maximum length of directive/instruction
 OUTPUT_MAX       equ 0x8000     ; Maximum output size
 LABEL_MAX        equ 100        ; Maximum number of labels
 FIXUP_MAX        equ 200        ; Maximum number of fixups
+EQU_MAX          equ 100        ; Maximum number of equavates
 DISPATCH_SIZE    equ 8          ; Size of DispatchListEntry
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 LABEL_ADDR       equ 18         ; Offset of label address
@@ -21,6 +22,8 @@ LABEL_FIXUP      equ 20         ; Offset of label fixup
 FIXUP_SIZE       equ 4          ; Size of Fixup
 FIXUP_ADDR       equ 0          ; Offset of fixup address (into the output buffer)
 FIXUP_LINK       equ 2          ; Offset of fixup link pointer (INVALID_ADDR terminates list)
+EQU_SIZE         equ 20         ; Size of equate (TOKEN_MAX+2+sizeof(WORD))
+EQU_VAL          equ 18         ; Offset of value in equate
 
 HEX_ADJUST       equ 7          ; 'A'-'0'-10
 QUOTE_CHAR       equ 39         ; '\''
@@ -120,6 +123,11 @@ Init:
         jnz .FixupInit
         sub bx, FIXUP_SIZE
         mov word [es:bx+FIXUP_LINK], INVALID_ADDR ; Terminate free list
+
+        mov ax, EQU_MAX
+        mov bx, EQU_SIZE
+        call Malloc
+        mov [EquSeg], ax
 
         call ParserInit
         ret
@@ -253,13 +261,23 @@ Dispatch:
         jb .Compare
 
 .CheckEQU:
-        ; TODO: Check if EQU
-
-        mov bx, MsgErrUnknInst
-        call Error
+        mov al, 'E'
+        call TryGetU
+        jc .Invalid
+        mov al, 'Q'
+        call TryGetU
+        jc .Invalid
+        mov al, 'U'
+        call TryGetU
+        jc .Invalid
+        call SkipWS
+        call MakeEqu
 .Done:
         pop si
         ret
+.Invalid:
+        mov bx, MsgErrUnknInst
+        call Error
 
 ; Allocate AX*BX bytes, returns segment in AX
 Malloc:
@@ -485,6 +503,7 @@ ReadNext:
         ret
 
 ; Try to get character in AL and ReadNext. Returns carry clear on success.
+; I.e. it doesn't skip spaces after consuming the character.
 TryGet:
         cmp [CurrentChar], al
         jne .NoMatch
@@ -494,6 +513,15 @@ TryGet:
 .NoMatch:
         stc
         ret
+
+; Like TryGet but case insensitive
+TryGetU:
+        call TryGet
+        jc .NoMatch
+        ret
+.NoMatch:
+        or al, ' ' ; ToUpper
+        jmp TryGet
 
 SkipWS:
         mov al, [CurrentChar]
@@ -581,7 +609,31 @@ GetToken:
         mov [TokenLen], al
         pop di
         call SkipWS
-        ; TODO: Check if EQU
+        call FindEqu
+        cmp bx, INVALID_ADDR
+        je .NotEqu
+        ; Found EQU convert it to a hex string (yes a bit lame)
+        mov ax, [es:bx+EQU_VAL]
+        mov byte [TokenLen], 6
+        mov bx, Token
+        mov word [bx], '0X'
+        add bx, 2
+        mov cl, 4
+.Cvt:
+        rol ax, 4
+        mov ch, al
+        and ch, 0x0f
+        add ch, '0'
+        cmp ch, '9'
+        jbe .StoreDig
+        add ch, HEX_ADJUST
+.StoreDig:
+        mov [bx], ch
+        inc bx
+        dec cl
+        jnz .Cvt
+        mov byte [bx], 0
+.NotEqu:
         ret
 
 ; Get number to AX
@@ -1153,7 +1205,6 @@ RetireLocLabs:
         jnz .L
 .Done:
         ret
-.Msg: db 'TODO: Retire local label ',0
 
 ; Register fixup for CurrentFixup at this exact output location
 RegisterFixup:
@@ -1240,6 +1291,85 @@ FindOrMakeLabel:
         call FindLabel
         cmp bx, INVALID_ADDR
         je MakeLabel
+        ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EQU Handling
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Find EQU (from Token) in BX, INVALID_ADDR if not found
+; Leaves ES pointer to EquSeg
+FindEqu:
+        push si
+        push di
+        mov ax, [EquSeg]
+        mov es, ax
+        mov cx, [NumEqus]
+        and cx, cx
+        jz .NotFound
+        xor bx, bx
+.Main:
+        mov si, Token
+        mov di, bx
+.Compare:
+        mov al, [si]
+        cmp [es:di], al
+        jne .Next
+        and al, al
+        jz .Done
+        inc si
+        inc di
+        jmp .Compare
+.Next:
+        add bx, EQU_SIZE
+        dec cx
+        jnz .Main
+        ; Fall through
+.NotFound:
+        mov bx, INVALID_ADDR
+.Done:
+        pop di
+        pop si
+        ret
+
+; Create new EQU from Token and the next token(s) (EQU assumed to be parsed)
+MakeEqu:
+        call FindEqu
+        cmp bx, INVALID_ADDR
+        je .NewEqu
+        mov bx, MsgErrDupEqu
+        jmp Error
+.NewEqu:
+        mov ax, [NumEqus]
+        cmp ax, EQU_MAX
+        jb .HasRoom
+        mov bx, MsgErrEquMax
+        jmp Error
+.HasRoom:
+        inc word [NumEqus]
+        mov bx, EQU_SIZE
+        mul bx
+        push si
+        push di
+        movzx cx, [TokenLen]
+        inc cx
+        mov di, ax
+        mov si, Token
+        rep movsb
+        pop di
+        pop si
+        push ax
+        mov al, QUOTE_CHAR
+        call TryGet
+        jc .Number
+        call GetCharLit
+        mov ax, [OperandValue]
+        jmp .HasVal
+.Number:
+        call GetNumber
+.HasVal:
+        pop bx
+        mov [es:bx+EQU_VAL], ax
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1811,6 +1941,8 @@ MsgErrFixupUnh:   db 'Unhandled fixup', 0
 MsgErrChLitErr:   db 'Invalid character literal', 0
 MsgErrUndefLab:   db 'Undefined label', 0
 MsgErrNoSize:     db 'Size missing for memory operand', 0
+MsgErrDupEqu:     db 'Duplicate EQU', 0
+MsgErrEquMax:     db 'Too many EQUs', 0
 
 RegNames:
     dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
@@ -2010,6 +2142,9 @@ NumLabels:        dw 0
 
 FixupSeg:         dw 0
 NextFreeFixup:    dw 0 ; Points to next free fixup node (or INVALID_ADDR)
+
+EquSeg:           dw 0
+NumEqus:          dw 0
 
 ;;; Output
 OutputSeg:        dw 0
