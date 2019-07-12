@@ -3,6 +3,9 @@
         movzx cx, [foo]
         movzx dx, byte [foo+2]
         movzx dx, bl
+        movsx cx, [foo]
+        movsx dx, byte [foo+2]
+        movsx dx, bl
         add byte [foo], 4
         add word [foo], 4
         add word [foo+bx], 42

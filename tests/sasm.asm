@@ -737,7 +737,7 @@ GetOperand:
 .CheckWord:
         cmp ax, 'WO'
         jne .CheckNamedLit
-        cmp ax, 'RD'
+        cmp bx, 'RD'
         jne .CheckNamedLit
         mov byte [ExplicitSize], 2
         jmp GetOperandMem
@@ -1284,17 +1284,18 @@ DirDX:
         call OutputWord
         jmp .Next
 .NamedLit:
-        mov bx, .MsgErrNamedLit
-        jmp Error
+        cmp si, 2
+        jne NotImplemented
+        call GetNamedLiteral
+        mov ax, [OperandValue]
+        call OutputWord
+        ; Fall thorugh
 .Next:
         mov al, ','
         call TryConsume
         jnc .Main
         pop si
         ret
-
-.MsgErrNamedLit: db 'TODO: DirDX NamedLit', 0
-.MsgErrDW: db 'TODO: DirDX DW', 0
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
@@ -1535,6 +1536,33 @@ InstXCHG:
 .Msgm: db 'Not implemented: XCHGm', 0
 .Msgrm: db 'Not implemented: XCHGrm', 0
 
+; AL=second opcode byte
+InstMOVXX:
+        push ax
+        call Get2Operands
+        pop ax
+        cmp byte [OperandLType], OP_REG
+        jne NotImplemented
+        mov ah, al
+        mov al, 0x0f
+        call OutputWord
+        cmp byte [OperandType], OP_REG
+        je .RR
+        call SwapOperands
+        mov al, [OperandValue]
+        and al, 7
+        jmp OutputModRM
+.RR:
+        mov al, [OperandValue]
+        and al, 7
+        mov ah, [OperandLValue]
+        and ah, 7
+        shl ah, 3
+        or al, ah
+        or al, 0xc0
+        jmp OutputByte
+
+
 ; AL=0 if INC, AL=1 if DEC
 InstIncDec:
         push ax
@@ -1543,8 +1571,19 @@ InstIncDec:
         cmp byte [OperandType], OP_REG
         je .Reg
         ja InvalidOperand
-        mov bx, .Msgm
+        mov ah, [ExplicitSize]
+        dec ah
+        jns .HasSize
+        mov bx, MsgErrNoSize
         jmp Error
+.HasSize:
+        or ah, 0xfe
+        push ax
+        mov al, ah
+        call OutputByte
+        call SwapOperands
+        pop ax
+        jmp OutputModRM
 .Reg:
         shl al, 3
         mov ah, [OperandValue]
@@ -1559,9 +1598,6 @@ InstIncDec:
         mov al, 0xfe
         jmp OutputWord
 
-.Msgr: db 'Not implemented: INC/DEC reg', 0
-.Msgm: db 'Not implemented: INC/DEC mem', 0
-
 ; Base instruction in AL (e.g. 0x38 for CMP)
 InstALU:
         push ax
@@ -1570,14 +1606,18 @@ InstALU:
         cmp byte [OperandLType], OP_REG
         je .ALUr
         ja InvalidOperand
-        mov bx, .MsgM
-        jmp Error
+        cmp byte [OperandType], OP_REG
+        je OutputMR
+        jb InvalidOperand
+        shr al, 3
+        mov ah, 0x80
+        jmp OutputMImm
 .ALUr:
         cmp byte [OperandType], OP_REG
         je OutputRR
         ja .ALUrl
-        mov bx, .MsgRM
-        jmp Error
+        add al, 2
+        jmp OutputRM
 .ALUrl:
         cmp byte [OperandLValue], R_AL
         jne .ALUrl2
@@ -1603,9 +1643,6 @@ InstALU:
         call OutputWord
         pop ax
         jmp OutputImm
-
-.MsgM: db 'ALU mem, ?? not implemented',0
-.MsgRM: db 'ALU reg, mem not implemented',0
 
 ; /r in AL (e.g. 6 for DIV)
 InstMulDiv:
@@ -1804,6 +1841,12 @@ DispatchList:
     db 'XCHG',0,   0x00
     dw InstXCHG
 
+    ; MOVSX/MOVZX
+    db 'MOVZX',    0xB6
+    dw InstMOVXX
+    db 'MOVSX',    0xBE
+    dw InstMOVXX
+
     ; INC/DEC
     db 'INC',0,0,  0x00
     dw InstIncDec
@@ -1827,6 +1870,9 @@ DispatchList:
     dw InstALU
     db 'CMP',0,0,  0x38
     dw InstALU
+
+    db 'NOP',0,0,  0x90
+    dw OutputByte
 
     ; Mul/Div instructions (argument is /r)
     db 'MUL',0,0,  0x04

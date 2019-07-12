@@ -10,8 +10,8 @@ typedef unsigned short U2;
 typedef short S2;
 
 #define TOKEN_MAX 32
-#define LABEL_MAX 100
-#define FIXUP_MAX 200
+#define LABEL_MAX 200
+#define FIXUP_MAX 400
 #define EQU_MAX   100
 #define OUTPUT_MAX 0x1000
 #define INVALID_ADDR 0xFFFF
@@ -833,12 +833,12 @@ Invalid:
     }
 }
 
-void InstMOVZX(void)
+void InstMOVXX(U1 op2)
 {
     Get2Operands();
     if (OperandLType == OP_REG && OperandLValue/8 == 1) {
         OutputByte(0x0F);
-        OutputByte(0xB6);
+        OutputByte(op2);
         if (OperandType < OP_REG) {
             SwapOperands();
             OutputModRM(OperandValue & 7);
@@ -1091,7 +1091,8 @@ static const struct {
     { "DW"    , &DirectiveDx    , 0x02 },
     { "REP"   , &OutputByte     , 0xF3 },
     { "MOV"   , &InstMOV        , 0x00 },
-    { "MOVZX" , &InstMOVZX      , 0x00 },
+    { "MOVZX" , &InstMOVXX      , 0xB6 },
+    { "MOVSX" , &InstMOVXX      , 0xBE },
     { "XCHG"  , &InstXCHG       , 0x00 },
     { "INC"   , &InstIncDec     , 0x00 },
     { "DEC"   , &InstIncDec     , 0x01 },
