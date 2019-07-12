@@ -865,7 +865,7 @@ void InstXCHG(void)
         }
     } else if (OperandLType < OP_REG && OperandType == OP_REG) {
     common:
-        OutputByte(0x87);
+        OutputByte(0x86 | (OperandValue/8==1?1:0));
         OutputModRM(OperandValue&7);
         return;
     }

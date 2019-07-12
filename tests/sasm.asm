@@ -1661,8 +1661,8 @@ InstXCHG:
         cmp byte [OperandType], OP_REG
         jne InvalidOperand
 .XCHGmr:
-        mov al, 0x87
-        call OutputByte
+        mov al, 0x86
+        call OutInst816
         mov al, [OperandValue]
         and al, 7
         jmp OutputModRM
