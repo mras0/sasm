@@ -1253,9 +1253,6 @@ DirDX:
         push si
         mov si, ax
         cmp al, 1
-        je .Main
-        mov bx, .MsgErrDW
-        jmp Error
 .Main:
         mov al, QUOTE_CHAR
         call TryGet
@@ -1538,6 +1535,33 @@ InstXCHG:
 .Msgm: db 'Not implemented: XCHGm', 0
 .Msgrm: db 'Not implemented: XCHGrm', 0
 
+; AL=0 if INC, AL=1 if DEC
+InstIncDec:
+        push ax
+        call GetOperand
+        pop ax
+        cmp byte [OperandType], OP_REG
+        je .Reg
+        ja InvalidOperand
+        mov bx, .Msgm
+        jmp Error
+.Reg:
+        shl al, 3
+        mov ah, [OperandValue]
+        mov bl, ah
+        and ah, 7
+        or al, ah
+        or al, 0x40 ; AL = 0x40|dec<<3|(OperandValue&7)
+        shr bl, 3
+        jnz OutputByte
+        or al, 0xc0 ; Could just be |0x80 since 0x40 is already or'ed in
+        mov ah, al
+        mov al, 0xfe
+        jmp OutputWord
+
+.Msgr: db 'Not implemented: INC/DEC reg', 0
+.Msgm: db 'Not implemented: INC/DEC mem', 0
+
 ; Base instruction in AL (e.g. 0x38 for CMP)
 InstALU:
         push ax
@@ -1567,11 +1591,21 @@ InstALU:
         call OutputByte
         jmp OutputImm16
 .ALUrl3:
-        mov bx, .MsgRL
-        jmp Error
+        mov ah, al
+        or ah, 0xc0
+        mov al, [OperandLValue]
+        mov bl, al
+        shr al, 3
+        push ax
+        or al, 0x80
+        and bl, 7
+        or ah, bl
+        call OutputWord
+        pop ax
+        jmp OutputImm
+
 .MsgM: db 'ALU mem, ?? not implemented',0
 .MsgRM: db 'ALU reg, mem not implemented',0
-.MsgRL: db 'ALU reg (not AL/AX), lit not implemented',0
 
 ; /r in AL (e.g. 6 for DIV)
 InstMulDiv:
@@ -1769,6 +1803,12 @@ DispatchList:
     dw InstMOV
     db 'XCHG',0,   0x00
     dw InstXCHG
+
+    ; INC/DEC
+    db 'INC',0,0,  0x00
+    dw InstIncDec
+    db 'DEC',0,0,  0x01
+    dw InstIncDec
 
     ; ALU instructions (argument is base instruction)
     db 'ADD',0,0,  0x00
