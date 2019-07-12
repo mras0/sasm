@@ -812,9 +812,13 @@ GetOperandMem:
         call .CombineModrm
         jmp .Next
 .SegOverride:
-        mov bx, .MsgS
-        call PutString
-        jmp NotImplemented
+        sub al, R_ES
+        shl al, 3
+        or al, 0x26
+        call OutputByte
+        mov al, ':'
+        call Expect
+        jmp .Main
 .NamedLit:
         call GetNamedLiteral
         ; Fall through
@@ -883,7 +887,6 @@ GetOperandMem:
         pop di
         pop si
         ret
-.MsgS: db 'Segment override ', 0
 .MsgL: db 'Literal ', 0
 .DebugM:
         pusha
@@ -1474,15 +1477,16 @@ InstMOV:
         mov al, 0x88
         jmp OutputRR
 .MOVrs:
-        mov bx, .Msgrs
-        jmp Error
+        mov al, 0x8c
+        jmp OutputRR
 .MOVs:
         mov al, [OperandValue]
         sub al, R_AX
         cmp al, 7
         ja InvalidOperand
-        mov bx, .Msgsr
-        jmp Error
+        call SwapOperands
+        mov al, 0x8e
+        jmp OutputRR
 .MOVrm:
         mov al,0x8A
         jmp OutputRM
@@ -1512,9 +1516,6 @@ InstMOV:
 .MOVmr:
         mov al, 0x88
         jmp OutputMR
-
-.Msgsr: db 'Not implemented: MOVsr', 0
-.Msgrs: db 'Not implemented: MOVrs', 0
 
 InstXCHG:
         call Get2Operands
@@ -1734,14 +1735,10 @@ InstPUSH:
         or al, 0x50
         jmp OutputByte
 .PushS:
-        ; sub al, 8
-        ; shl al, 3
-        ; or al, 0x06
-        ; jmp OutputByte
-        mov bx, .MsgS
-        jmp Error
-
-.MsgS: db 'Push SREG not implemented', 0
+        sub al, 8
+        shl al, 3
+        or al, 0x06
+        jmp OutputByte
 
 
 InstPOP:
@@ -1752,17 +1749,14 @@ InstPOP:
         sub al, R_AX
         js InvalidOperand
         cmp al, 8
-        ja .PopS
+        jae .PopS
         or al, 0x58
         jmp OutputByte
 .PopS:
-        ; sub al, 8
-        ; shl al, 3
-        ; or al, 0x07
-        ; jmp OutputByte
-        mov bx, .MsgS
-        jmp Error
-.MsgS: db 'Not implenented: POP SREG', 0
+        and al, 7
+        shl al, 3
+        or al, 0x07
+        jmp OutputByte
 
 InstJMP:
         call GetOperand
