@@ -1652,20 +1652,23 @@ InstXCHG:
         cmp byte [OperandLType], OP_REG
         je .XCHGr
         ja InvalidOperand
-        mov bx, .Msgm
-        jmp Error
+        cmp byte [OperandType], OP_REG
+        jne InvalidOperand
+.XCHGmr:
+        mov al, 0x87
+        call OutputByte
+        mov al, [OperandValue]
+        and al, 7
+        jmp OutputModRM
 .XCHGr:
         cmp byte [OperandType], OP_REG
         je .XCHGrr
         ja InvalidOperand
-        mov bx, .Msgrm
-        jmp Error
+        call SwapOperands
+        jmp .XCHGmr
 .XCHGrr:
         mov al, 0x86
         jmp OutputRR
-
-.Msgm: db 'Not implemented: XCHGm', 0
-.Msgrm: db 'Not implemented: XCHGrm', 0
 
 ; AL=second opcode byte
 InstMOVXX:
@@ -1997,7 +2000,10 @@ DispatchList:
     db 'CMP',0,0,  0x38
     dw InstALU
 
+    ; Misc
     db 'NOP',0,0,  0x90
+    dw OutputByte
+    db 'REP',0,0,  0xF3
     dw OutputByte
 
     ; Mul/Div instructions (argument is /r)
