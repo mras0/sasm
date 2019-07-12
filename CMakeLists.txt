@@ -21,3 +21,13 @@ if (WIN32)
 endif()
 
 add_executable(sasm sasm.c)
+
+set(SASM_COM ${CMAKE_CURRENT_BINARY_DIR}/sasm.com)
+
+add_custom_command(
+    OUTPUT ${SASM_COM}
+    COMMAND sasm -o "${SASM_COM}" "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
+    DEPENDS sasm
+)
+
+add_custom_target(SASM_COM ALL DEPENDS ${SASM_COM})

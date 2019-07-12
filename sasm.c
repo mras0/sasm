@@ -1212,13 +1212,63 @@ void ParserFini(void)
     InputFile = NULL;
 }
 
+char* GetOutputFileName(const char* InputFileName)
+{
+    int l = strlen(InputFileName);
+    char* OutputFileName = malloc(l + 4);
+    if (!OutputFileName) {
+        Error("Out of memory");
+    }
+    strcpy(OutputFileName, InputFileName);
+    for (int i = l-1;;--i) {
+        if (i == 0 || OutputFileName[i] == '\\' || OutputFileName[i] == '/') {
+            strcpy(&OutputFileName[l], ".com");
+            break;
+        } else if (OutputFileName[i] == '.') {
+            strcpy(&OutputFileName[i], ".com");
+            break;
+        }
+    }
+    return OutputFileName;
+}
+
 int main(int argc, char* argv[])
 {
     if (argc < 2) {
+    Usage:
         fprintf(stderr, "Usage: %s input-file\n", argv[0]);
         return 1;
     }
-    ParserInit(argv[1]);
+    const char* InputFileName = NULL;
+    char* OutputFileName = NULL;
+
+    for (int i = 1; i < argc; ++i) {
+        const char* a = argv[i];
+        const bool HasNext = i + 1 < argc;
+        if (a[0] == '-') {
+            if (!strcmp(a, "-o")) {
+                if (!HasNext) goto Usage;
+                const char* OName = argv[++i];
+                OutputFileName = malloc(strlen(OName)+1);
+                if (!OutputFileName) Error("Out of memory");
+                strcpy(OutputFileName,OName);
+            } else {
+                fprintf(stderr, "Invalid argument \"%s\"\n", a);
+                return 1;
+            }
+        } else {
+            if (InputFileName) goto Usage;
+            InputFileName = a;
+        }
+    }
+    if (!InputFileName) {
+        goto Usage;
+    }
+
+    if (!OutputFileName) {
+        OutputFileName = GetOutputFileName(InputFileName);
+    }
+    ParserInit(InputFileName);
     for (;;) {
         CurrentLine += NumNewLines;
         NumNewLines = 0;
@@ -1243,27 +1293,12 @@ int main(int argc, char* argv[])
         f->Next = INVALID_ADDR;
     }
 #endif
-    int l = strlen(argv[1]);
-    char* outfname = malloc(l + 4);
-    if (!outfname) {
-        Error("Out of memory");
-    }
-    strcpy(outfname, argv[1]);
-    for (int i = l-1;;--i) {
-        if (i == 0 || outfname[i] == '\\' || outfname[i] == '/') {
-            strcpy(&outfname[l], ".com");
-            break;
-        } else if (outfname[i] == '.') {
-            strcpy(&outfname[i], ".com");
-            break;
-        }
-    }
-    printf("Writing %s\n", outfname);
-    FILE* OutputFile = fopen(outfname, "wb");
+    printf("Writing %s\n", OutputFileName);
+    FILE* OutputFile = fopen(OutputFileName, "wb");
     if (!OutputFile) {
         Error("Could not open output file");
     }
     fwrite(OutputBuffer, 1, OutputOffset, OutputFile);
     fclose(OutputFile);
-    free(outfname);
+    free(OutputFileName);
 }
