@@ -7,6 +7,7 @@
 ;;
 
 ; TODO: Investigate whether stack potentially overlaps with allocations
+;;      SS:SP is intialized at the top of the 64K started at CS:0
 
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 5          ; Maximum length of directive/instruction
@@ -216,6 +217,8 @@ Dispatch:
         mov ax, INVALID_ADDR
         mov [CurrentFixup], ax
         mov [CurrentLFixup], ax
+        ; And ExplicitSize
+        mov byte [ExplicitSize], 0
 
 .Compare:
         xor bx, bx
@@ -668,20 +671,9 @@ GetCharLit:
 ;; Operand Handling
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-; Get operand to OperandType/OperandValue (and possibly CurrentFixup)
-GetOperand:
-        ; TODO: Character literal
-        mov al, QUOTE_CHAR
-        call TryGet
-        jc .NotLit
-        mov byte [OperandType], OP_LIT
-        jmp GetCharLit
-.NotLit:
-        ; TODO: Memory operand
-        cmp byte [CurrentChar], '['
-        je NotImplemented
-
-;GetRegOrNumber:
+; Get token and see if it's a register or number.
+; Returns carry clear on success (token handled).
+GetRegOrNumber:
         call GetToken
         ; Check if register
         cmp byte [TokenLen], 2
@@ -696,6 +688,7 @@ GetOperand:
         shr bx, 1
         mov [OperandValue], bx
         mov byte [OperandType], OP_REG
+        clc
         ret
 .NextReg:
         add bx, 2
@@ -704,12 +697,32 @@ GetOperand:
         ; Fall through
 .CheckNumber:
         call IsTokenNumber
-        jc .NotNumber
+        jnc .Number
+        ret ; Keep carry set
+.Number:
         call GetTokenNumber
         mov [OperandValue], ax
         mov byte [OperandType], OP_LIT
+        clc
         ret
-.NotNumber:
+
+; Get operand to OperandType/OperandValue (and possibly CurrentFixup)
+GetOperand:
+        ; TODO: Character literal
+        mov al, QUOTE_CHAR
+        call TryGet
+        jc .NotLit
+        mov byte [OperandType], OP_LIT
+        jmp GetCharLit
+.NotLit:
+        cmp byte [CurrentChar], '['
+        je GetOperandMem
+
+        call GetRegOrNumber
+        jc .NotRegOrNumber
+        ret
+
+.NotRegOrNumber:
         ; Check for word/byte [mem]
         cmp byte [TokenLen], 4
         jne .CheckNamedLit
@@ -719,20 +732,18 @@ GetOperand:
         jne .CheckWord
         cmp bx, 'TE'
         jne .CheckNamedLit
-        ; TODO: mov byte [ExplicitSize], 1
-        ;       jmp GetOperandMem
-        jmp NotImplemented
+        mov byte [ExplicitSize], 1
+        jmp GetOperandMem
 .CheckWord:
         cmp ax, 'WO'
         jne .CheckNamedLit
         cmp ax, 'RD'
         jne .CheckNamedLit
-        ; TODO: mov byte [ExplicitSize], 2
-        ;       jmp GetOperandMem
-        jmp NotImplemented
+        mov byte [ExplicitSize], 2
+        jmp GetOperandMem
 .CheckNamedLit:
-        ; Otherwise do named literal
-;GetNamedLiteral:
+        ; Otherwise do named literal (fall through)
+GetNamedLiteral:
         mov byte [OperandType], OP_LIT
         call FindOrMakeLabel
         mov ax, [LabelSeg]
@@ -775,6 +786,189 @@ GetOperand:
 
         ret
 
+GetOperandMem:
+        push si
+        push di
+        mov al, '['
+        call Expect
+
+        ; si = MODRM (0xff = displacement only)
+        ; di = DISP
+        mov si, 0xff
+        mov di, 0
+
+.Main:
+        call .DebugM
+
+        call GetRegOrNumber
+        jc .NamedLit
+        cmp byte [OperandType], OP_REG
+        jne .Lit
+        mov al, [OperandValue]
+        cmp al, R_AX
+        jb InvalidOperand
+        cmp al, R_ES
+        jae .SegOverride
+        call .CombineModrm
+        jmp .Next
+.SegOverride:
+        mov bx, .MsgS
+        call PutString
+        jmp NotImplemented
+.NamedLit:
+        call GetNamedLiteral
+        ; Fall through
+.Lit:
+        pusha
+        mov bx, .MsgL
+        call PutString
+        mov ax, [OperandValue]
+        call PutHex
+        call PutCrLf
+        popa
+        add di, [OperandValue]
+        jmp .Next
+.Next:
+        mov al, '+'
+        call TryConsume
+        jnc .Main
+        mov al, ']'
+        call Expect
+
+        pusha
+        mov bx, .M2
+        call PutString
+        jmp .X2
+.M2: db 'Done with GetOperandMem',13,10,0
+.X2:
+        popa
+
+        mov [OperandValue], di
+
+        ; Can't encode [bp] as MODRM=6
+        mov ax, si
+        cmp al, 6
+        jne .NotBPRaw
+        and di, di
+        jnz .NotBPRaw
+        or al, 0x40 ; Disp8
+.NotBPRaw:
+        cmp al, 0xff
+        jne .NotDispOnly
+        mov al, 6
+        jmp .Done
+.NotDispOnly:
+        cmp word [CurrentFixup], INVALID_ADDR
+        je .NoFixup
+.Disp16:
+        or al, 0x80 ; Disp16
+        jmp .Done
+.NoFixup:
+        and di, di
+        jz .Done
+        mov bx, di
+        movsx bx, bl
+        cmp bx, di
+        jne .Disp16
+        or al, 0x40 ; Disp8
+        ; Fall through
+.Done:
+        mov [OperandType], al
+
+        ;; XXX REMOVE
+        movzx si, byte [OperandType]
+        mov di, [OperandValue]
+        call .DebugM
+
+        pop di
+        pop si
+        ret
+.MsgS: db 'Segment override ', 0
+.MsgL: db 'Literal ', 0
+.DebugM:
+        pusha
+        mov bx, .M
+        call PutString
+        popa
+        pusha
+        mov ax, si
+        call PutHex
+        mov al, ' '
+        call PutChar
+        mov ax, di
+        call PutHex
+        call PutCrLf
+        popa
+        ret
+.M: db 'SI/DI: ', 0
+
+
+; Modify MODRM in si with 16-bit register in al
+.CombineModrm:
+        call .Debug
+        and al, 7
+        mov cx, si
+        mov bx, .TabFF
+        cmp cl, 0xff
+        je .Translate
+        mov bx, .Tab04
+        cmp cl, 0x04
+        je .Translate
+        mov bx, .Tab05
+        cmp cl, 0x05
+        je .Translate
+        mov bx, .Tab06
+        cmp cl, 0x06
+        je .Translate
+        mov bx, .Tab07
+        cmp cl, 0x07
+        jne InvalidOperand
+        ; Fall through
+.Translate:
+        movzx cx, al
+        add bx ,cx
+        mov al, [bx]
+
+        pusha
+        call PutHexByte
+        call PutCrLf
+        popa
+
+        cmp al, 0xff
+        je InvalidOperand
+        movzx si, al
+        ret
+
+.Debug:
+        pusha
+        mov bx, .Msg
+        call PutString
+        popa
+        pusha
+        mov ax, si
+        call PutHexByte
+        mov al, ' '
+        call PutChar
+        popa
+        pusha
+        call PutHexByte
+        call PutCrLf
+        popa
+        ret
+.Msg: db 'Combine ', 0
+
+;
+; Conversion tables from previous modrm value to new
+;
+;            AX    CX    DX    BX    SP    BP    SI    DI    Current ModR/M meaning
+.Tab04: db  0xff, 0xff, 0xff, 0x00, 0xff, 0x02, 0xff, 0xff ; SI
+.Tab05: db  0xff, 0xff, 0xff, 0x01, 0xff, 0x03, 0xff, 0xff ; DI
+.Tab06: db  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x03 ; BP
+.Tab07: db  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x01 ; BX
+.TabFF: db  0xff, 0xff, 0xff, 0x07, 0xff, 0x06, 0x04, 0x05 ; Displacement only
+
+        ret
+
 SwapOperands:
         mov al, [OperandType]
         xchg al, [OperandLType]
@@ -782,6 +976,8 @@ SwapOperands:
         mov ax, [OperandValue]
         xchg ax, [OperandLValue]
         mov [OperandValue], ax
+        ; Fall through
+SwapFixup:
         mov ax, [CurrentFixup]
         xchg ax, [CurrentLFixup]
         mov [CurrentFixup], ax
@@ -1067,7 +1263,7 @@ DirDX:
         ; Handle character literal
 .CharLit:
         mov al, QUOTE_CHAR
-        call TryGet
+        call TryConsume
         jnc .Next
         mov al, [CurrentChar]
         cmp al, ' '
@@ -1075,7 +1271,7 @@ DirDX:
         mov bx, MsgErrChLitErr
         jmp Error
 .OK:
-        call OutputByte ; Always
+        call OutputByte ; Always output bytes for character liters
         call ReadNext
         jmp .CharLit
 .NotLit:
@@ -1157,7 +1353,35 @@ OutInst816:
 .Not16:
         jmp OutputByte
 
-; Output reg,reg instruction with instruction byte in AL
+; Outputs MODR/M byte(s) with register in AL
+; and memory operand assumed in OperandL*
+OutputModRM:
+        shl al, 3
+        or al, [OperandLType]
+        call OutputByte
+        mov al, [OperandLType]
+        cmp al, 6
+        je .Disp16
+        and al, 0xc0
+        cmp al, 0x80
+        je .Disp16
+        cmp al, 0x40
+        je .Disp8
+        ret
+.Disp8:
+        mov al, [OperandLValue]
+        jmp OutputByte
+.Disp16:
+        cmp word [CurrentLFixup], INVALID_ADDR
+        je .Out
+        call SwapFixup
+        call RegisterFixup
+        call SwapFixup
+.Out:
+        mov ax, [OperandLValue]
+        jmp OutputWord
+
+; Output reg, reg instruction with instruction byte in AL
 ; The low bit of the instruction is set if OperandValue
 ; signifies a 16-bit (not sreg) register
 OutputRR:
@@ -1172,16 +1396,69 @@ OutputRR:
         or al, ah
         jmp OutputByte
 
+; Output mem, reg otherwise see notes for OutputRR
+OutputMR:
+        ; TODO: Check if ExplicitSize (it's either redundant or wrong)
+        call OutInst816
+        mov al, [OperandValue]
+        and al, 7
+        jmp OutputModRM
+
+; Output reg, mem otherwise see notes for OutputMR
+OutputRM:
+        push ax
+        call SwapOperands
+        pop ax
+        jmp OutputMR
+
+; Output mem, imm with base instruction in AH, /r in AL
+OutputMImm:
+        mov bl, [ExplicitSize]
+        dec bl
+        jns .HasSize
+        mov bx, MsgErrNoSize
+        jmp Error
+.HasSize:
+        push bx
+        push ax
+        or bl, ah
+        mov al, bl
+        call OutputByte ; Opcode
+        pop ax
+        call OutputModRM
+        pop bx
+        mov al, bl
+        jmp OutputImm
+
 InstMOV:
+        pusha
+        mov al, '!'
+        call PutChar
+        call PutCrLf
+        popa
+
         call Get2Operands
+
+        pusha
+        mov al, '-'
+        call PutChar
+        mov al, '>'
+        call PutChar
+        mov ah, [OperandLType]
+        mov al, [OperandType]
+        call PutHex
+        call PutCrLf
+        popa
+
+
         cmp byte [OperandLType], OP_REG
         je .MOVr
-        jl .MOVm
+        jb .MOVm
         jmp InvalidOperand
 .MOVr:
         cmp byte [OperandType], OP_REG
         je .MOVrr
-        jl .MOVrm
+        jb .MOVrm
         ; MOV reg, imm
         mov al, 0xb0
         add al, [OperandLValue]
@@ -1209,24 +1486,37 @@ InstMOV:
         mov bx, .Msgsr
         jmp Error
 .MOVrm:
-        ; MOV reg, mem
-        mov bx, .Msgrm
-        jmp Error
+        mov al,0x8A
+        jmp OutputRM
 .MOVm:
+        pusha
+        mov al, '$'
+        call PutChar
+        popa
         cmp byte [OperandType], OP_REG
         je .MOVmr
-        jl InvalidOperand
-        mov bx, .Msgml
-        jmp Error
+        jb InvalidOperand
+        pusha
+        mov al, [OperandLType]
+        call PutHexByte
+        mov ax, [OperandLValue]
+        call PutHex
+        mov al, '#'
+        call PutChar
+        mov al, [OperandType]
+        call PutHexByte
+        mov ax, [OperandValue]
+        call PutHex
+        call PutCrLf
+        popa
+        mov ax, 0xc600
+        jmp OutputMImm
 .MOVmr:
-        mov bx, .Msgmr
-        jmp Error
+        mov al, 0x88
+        jmp OutputMR
 
 .Msgsr: db 'Not implemented: MOVsr', 0
 .Msgrs: db 'Not implemented: MOVrs', 0
-.Msgrm: db 'Not implemented: MOVrm', 0
-.Msgmr: db 'Not implemented: MOVml', 0
-.Msgml: db 'Not implemented: MOVmr', 0
 
 InstXCHG:
         call Get2Operands
@@ -1351,7 +1641,7 @@ InstPUSH:
         call GetOperand
         cmp byte [OperandType], OP_REG
         je .PushR
-        jl InvalidOperand
+        jb InvalidOperand
         cmp word [CurrentFixup], INVALID_ADDR
         jne .PushImm16
         mov ax, [OperandValue]
@@ -1455,6 +1745,7 @@ MsgErrDupLabel:   db 'Duplicate label', 0
 MsgErrFixupUnh:   db 'Unhandled fixup', 0
 MsgErrChLitErr:   db 'Invalid character literal', 0
 MsgErrUndefLab:   db 'Undefined label', 0
+MsgErrNoSize:     db 'Size missing for memory operand', 0
 
 RegNames:
     dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
@@ -1631,6 +1922,8 @@ CurrentFixup:     dw 0
 OperandLType:     db 0
 OperandLValue:    dw 0
 CurrentLFixup:    dw 0
+
+ExplicitSize:     db 0 ; Explicit size of memory operand (0=none, 1=byte, 2=word)
 
 LabelSeg:         dw 0
 NumLabels:        dw 0
