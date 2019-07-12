@@ -574,11 +574,9 @@ Expect:
         jc .Error
         ret
 .Error:
-        mov bx, .Msg
+        mov bx, MsgErrExpected
         mov [bx], al
         jmp Error
-
-.Msg: db '? expected',0
 
 GetToken:
         push di
@@ -855,8 +853,6 @@ GetOperandMem:
         mov di, 0
 
 .Main:
-        call .DebugM
-
         call GetRegOrNumber
         jc .NamedLit
         cmp byte [OperandType], OP_REG
@@ -869,6 +865,7 @@ GetOperandMem:
         call .CombineModrm
         jmp .Next
 .SegOverride:
+        ; Output segment override here even though it's a bit dirty
         sub al, R_ES
         shl al, 3
         or al, 0x26
@@ -880,13 +877,6 @@ GetOperandMem:
         call GetNamedLiteral
         ; Fall through
 .Lit:
-        pusha
-        mov bx, .MsgL
-        call PutString
-        mov ax, [OperandValue]
-        call PutHex
-        call PutCrLf
-        popa
         add di, [OperandValue]
         jmp .Next
 .Next:
@@ -895,17 +885,7 @@ GetOperandMem:
         jnc .Main
         mov al, ']'
         call Expect
-
-        pusha
-        mov bx, .M2
-        call PutString
-        jmp .X2
-.M2: db 'Done with GetOperandMem',13,10,0
-.X2:
-        popa
-
         mov [OperandValue], di
-
         ; Can't encode [bp] as MODRM=6
         mov ax, si
         cmp al, 6
@@ -935,37 +915,12 @@ GetOperandMem:
         ; Fall through
 .Done:
         mov [OperandType], al
-
-        ;; XXX REMOVE
-        movzx si, byte [OperandType]
-        mov di, [OperandValue]
-        call .DebugM
-
         pop di
         pop si
         ret
-.MsgL: db 'Literal ', 0
-.DebugM:
-        pusha
-        mov bx, .M
-        call PutString
-        popa
-        pusha
-        mov ax, si
-        call PutHex
-        mov al, ' '
-        call PutChar
-        mov ax, di
-        call PutHex
-        call PutCrLf
-        popa
-        ret
-.M: db 'SI/DI: ', 0
-
 
 ; Modify MODRM in si with 16-bit register in al
 .CombineModrm:
-        call .Debug
         and al, 7
         mov cx, si
         mov bx, .TabFF
@@ -988,35 +943,10 @@ GetOperandMem:
         movzx cx, al
         add bx ,cx
         mov al, [bx]
-
-        pusha
-        call PutHexByte
-        call PutCrLf
-        popa
-
         cmp al, 0xff
         je InvalidOperand
         movzx si, al
         ret
-
-.Debug:
-        pusha
-        mov bx, .Msg
-        call PutString
-        popa
-        pusha
-        mov ax, si
-        call PutHexByte
-        mov al, ' '
-        call PutChar
-        popa
-        pusha
-        call PutHexByte
-        call PutCrLf
-        popa
-        ret
-.Msg: db 'Combine ', 0
-
 ;
 ; Conversion tables from previous modrm value to new
 ;
@@ -1026,8 +956,6 @@ GetOperandMem:
 .Tab06: db  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x03 ; BP
 .Tab07: db  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x01 ; BX
 .TabFF: db  0xff, 0xff, 0xff, 0x07, 0xff, 0x06, 0x04, 0x05 ; Displacement only
-
-        ret
 
 SwapOperands:
         mov al, [OperandType]
@@ -1218,7 +1146,7 @@ RegisterFixup:
         mov ax, INVALID_ADDR
         cmp bx, ax
         jne .OK
-        mov bx, .MsgErrInternalErr
+        mov bx, MsgErrInternalErr
         jmp Error
 .OK:
         mov [CurrentFixup], ax
@@ -1227,8 +1155,6 @@ RegisterFixup:
         mov ax, [NumOutBytes]
         mov [es:bx+FIXUP_ADDR], ax
         ret
-
-.MsgErrInternalErr: db 'No fixup to register?', 0
 
 ; Find label matching Token, returns pointer in BX or
 ; INVALID_ADDR if not found
@@ -1568,26 +1494,7 @@ OutputMImm:
         jmp OutputImm
 
 InstMOV:
-        pusha
-        mov al, '!'
-        call PutChar
-        call PutCrLf
-        popa
-
         call Get2Operands
-
-        pusha
-        mov al, '-'
-        call PutChar
-        mov al, '>'
-        call PutChar
-        mov ah, [OperandLType]
-        mov al, [OperandType]
-        call PutHex
-        call PutCrLf
-        popa
-
-
         cmp byte [OperandLType], OP_REG
         je .MOVr
         jb .MOVm
@@ -1627,26 +1534,9 @@ InstMOV:
         mov al,0x8A
         jmp OutputRM
 .MOVm:
-        pusha
-        mov al, '$'
-        call PutChar
-        popa
         cmp byte [OperandType], OP_REG
         je .MOVmr
         jb InvalidOperand
-        pusha
-        mov al, [OperandLType]
-        call PutHexByte
-        mov ax, [OperandLValue]
-        call PutHex
-        mov al, '#'
-        call PutChar
-        mov al, [OperandType]
-        call PutHexByte
-        mov ax, [OperandValue]
-        call PutHex
-        call PutCrLf
-        popa
         mov ax, 0xc600
         jmp OutputMImm
 .MOVmr:
@@ -1953,6 +1843,9 @@ MsgErrNoSize:     db 'Size missing for memory operand', 0
 MsgErrDupEqu:     db 'Duplicate EQU', 0
 MsgErrEquMax:     db 'Too many EQUs', 0
 MsgErrOutMax:     db 'Output buffer full', 0
+MsgErrInternalErr: db 'No fixup to register?', 0
+MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
+
 
 RegNames:
     dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
