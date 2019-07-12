@@ -11,9 +11,9 @@
 
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 5          ; Maximum length of directive/instruction
-OUTPUT_MAX       equ 0x8000     ; Maximum output size
-LABEL_MAX        equ 100        ; Maximum number of labels
-FIXUP_MAX        equ 200        ; Maximum number of fixups
+OUTPUT_MAX       equ 0x2000     ; Maximum output size
+LABEL_MAX        equ 200        ; Maximum number of labels
+FIXUP_MAX        equ 400        ; Maximum number of fixups
 EQU_MAX          equ 100        ; Maximum number of equavates
 DISPATCH_SIZE    equ 8          ; Size of DispatchListEntry
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
@@ -421,6 +421,11 @@ WriteOutput:
 ; Output byte in AL to output buffer
 ; Doesn't modify any registers
 OutputByte:
+        cmp word [NumOutBytes], OUTPUT_MAX
+        jb .OK
+        mov bx, MsgErrOutMax
+        jmp Error
+.OK:
         push di
         push es
         mov di, [OutputSeg]
@@ -1152,7 +1157,12 @@ PrintLabels:
         pop es
         ret
 
+MsgBefore: db 'Labels before', 13, 10, 0
+MsgAfter: db 'Labels after', 13, 10, 0
 RetireLocLabs:
+        mov bx, MsgBefore
+        call PutString
+        call PrintLabels
         mov ax, [LabelSeg]
         mov es, ax
         xor bx, bx
@@ -1199,11 +1209,16 @@ RetireLocLabs:
         pop si
         pop ds
 
+        sub bx, LABEL_SIZE ; Re-do current label
+
 .Next:
         add bx, LABEL_SIZE
         dec cx
         jnz .L
 .Done:
+        mov bx, MsgAfter
+        call PutString
+        call PrintLabels
         ret
 
 ; Register fixup for CurrentFixup at this exact output location
@@ -1946,6 +1961,7 @@ MsgErrUndefLab:   db 'Undefined label', 0
 MsgErrNoSize:     db 'Size missing for memory operand', 0
 MsgErrDupEqu:     db 'Duplicate EQU', 0
 MsgErrEquMax:     db 'Too many EQUs', 0
+MsgErrOutMax:     db 'Output buffer full', 0
 
 RegNames:
     dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
@@ -2004,6 +2020,10 @@ DispatchList:
     db 'NOP',0,0,  0x90
     dw OutputByte
     db 'REP',0,0,  0xF3
+    dw OutputByte
+    db 'CLC',0,0,  0xF8
+    dw OutputByte
+    db 'STC',0,0,  0xF9
     dw OutputByte
 
     ; Mul/Div instructions (argument is /r)

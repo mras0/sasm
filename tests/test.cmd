@@ -1,10 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
-if [%ASM%]==[] set ASM=%1
 if [%ASM%]==[] set ASM=%~dp0..\build\debug\sasm.exe
+if [%1]==[] (set TESTS=%~dp0t*.asm) else (SET TESTS=%1)
 
 set failed=0
-for %%f in (%~dp0\t*.asm) do (
+for %%f in (%TESTS%) do (
     echo %%f
     call %ASM% "%%f"
     if errorlevel 1 (

@@ -13,7 +13,7 @@ typedef short S2;
 #define LABEL_MAX 200
 #define FIXUP_MAX 400
 #define EQU_MAX   100
-#define OUTPUT_MAX 0x1000
+#define OUTPUT_MAX 0x2000
 #define INVALID_ADDR 0xFFFF
 
 struct Label {
@@ -81,7 +81,7 @@ void Error(const char* msg)
 
 void OutputByte(U1 b)
 {
-    if (b == OUTPUT_MAX) {
+    if (OutputOffset == OUTPUT_MAX) {
         Error("Output overflow");
     }
     OutputBuffer[OutputOffset++] = b;
