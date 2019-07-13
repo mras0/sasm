@@ -1,5 +1,5 @@
+*.com
+*.exe
 *build/
 old*/
-tests/*.com
-tests/*.exe
 tests/in.asm

@@ -62,7 +62,7 @@ Main:
         mov ax, [SectorBufSeg]
         mov es, ax
         xor di, di
-        mov ax, 2
+        mov ax, 4
         call ReadCluster
 
         mov si, [SectorBufSeg]

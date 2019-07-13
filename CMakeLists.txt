@@ -35,6 +35,7 @@ endmacro()
 SASM(sasm.asm sasm.com)
 SASM(boot.asm boot.bin)
 SASM(os.asm os.sys)
+SASM(cmdp.asm cmdp.com)
 
 add_custom_target(sasm_com DEPENDS sasm.com)
 
@@ -46,7 +47,7 @@ add_custom_command(
     COMMAND disktool disk.img create
     COMMAND disktool disk.img boot boot.bin
     COMMAND disktool disk.img put os.sys
-    COMMAND disktool disk.img put sasm.com
+    COMMAND disktool disk.img put cmdp.com
     COMMAND disktool disk.img list
     DEPENDS disktool boot.bin os.sys sasm.com
     )
@@ -57,6 +58,14 @@ add_custom_target(
     qemu_test
     COMMAND qemu-system-i386 -drive format=raw,file=\"${DISK_IMG}\"
     DEPENDS ${DISK_IMG}
+)
+
+add_custom_target(
+    test_cmdp
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" sasm.asm
+    COMMAND dosbox cmdp.com
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com" "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
 )
 
 if (WIN32)
