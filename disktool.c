@@ -64,6 +64,8 @@ struct DirEntry {
 #define CLUSTER_MAX         ((DiskBPB.TotalSectors - DATA_SECTOR) / DiskBPB.SectorsPerCluster)
 #define CLUSTER_SIZE        (DiskBPB.BytesPerSector * DiskBPB.SectorsPerCluster)
 
+#define BOOT_CODE_OFFSET    (BPB_OFFSET + sizeof(struct BPB))
+
 static FILE* DiskImg;
 static struct BPB DiskBPB;
 static U1* FAT;
@@ -149,20 +151,6 @@ void ReadBPB(void)
     if (!DiskBPB.MaxRootEntries || DiskBPB.MaxRootEntries > MAX_ROOT_ENTRIES) {
         Error("Invalid BPB: MaxRootEntries = %u", DiskBPB.MaxRootEntries);
     }
-
-    printf("%-20s %8.8s\n", "OEM", BootSect + OEM_NAME_OFFSET);
-#define PR(f) printf("%-20s %u\n", #f, DiskBPB.f)
-    PR(BytesPerSector);
-    PR(SectorsPerCluster);
-    PR(ReservedSectors);
-    PR(NumFats);
-    PR(MaxRootEntries);
-    PR(TotalSectors);
-    PR(MediaDescriptor);
-    PR(SectorsPerFat);
-    PR(SectorsPerTrack);
-    PR(NumHeads);
-#undef PR
 }
 
 void hexdump(const void* buffer, U2 size)
@@ -234,7 +222,19 @@ void MountDisk(void)
 
 void ListDisk(void)
 {
-    MountDisk();
+#define PR(f) printf("%-20s %u\n", #f, DiskBPB.f)
+    PR(BytesPerSector);
+    PR(SectorsPerCluster);
+    PR(ReservedSectors);
+    PR(NumFats);
+    PR(MaxRootEntries);
+    PR(TotalSectors);
+    PR(MediaDescriptor);
+    PR(SectorsPerFat);
+    PR(SectorsPerTrack);
+    PR(NumHeads);
+#undef PR
+
     struct DirEntry* RootDir = malloc(sizeof(struct DirEntry) * MAX_ROOT_ENTRIES);
     if (!RootDir) {
         Error("Memory allocation failure");
@@ -253,10 +253,10 @@ void ListDisk(void)
     }
     free(RootDir);
 
-    for (U2 i = 0; i < CLUSTER_MAX; ++i) {
-        const U2 val = GetFATEntry(i);
-        printf("%03X ", val);
-    }
+    //for (U2 i = 0; i < CLUSTER_MAX; ++i) {
+    //    const U2 val = GetFATEntry(i);
+    //    printf("%03X ", val);
+    //}
 }
 
 void CreateDisk(void)
@@ -273,7 +273,7 @@ void CreateDisk(void)
     DiskBPB.SectorsPerTrack   = 18;
     DiskBPB.NumHeads          = 2;
 
-    static const char OEMName[8] = "SDOS1.0 ";
+    static const char OEMName[8] = "SDOS 1.0";
     U1 BootSect[512];
     memset(BootSect, 0, sizeof(BootSect));
 
@@ -282,8 +282,9 @@ void CreateDisk(void)
         WriteSector(i, BootSect);
     }
 
+    // Jump past BPB
     BootSect[0] = 0xEB;
-    BootSect[1] = 0xFE; // Infinite loop
+    BootSect[1] = BPB_OFFSET + sizeof(struct BPB) - 2; 
     BootSect[2] = 0x90;
     memcpy(BootSect + 3, OEMName, 8);
     memcpy(BootSect + BPB_OFFSET, &DiskBPB, sizeof(DiskBPB));
@@ -304,6 +305,11 @@ void FlushFAT(void)
     WriteSectors(FAT_SECTOR+DiskBPB.SectorsPerFat, FAT, DiskBPB.SectorsPerFat);
 }
 
+U1 ToUpper(U1 ch)
+{
+    return ch >= 'a' && ch < 'z' ? ch - ('a' - 'A') : ch;
+}
+
 void CreateFile(const char* filename, const void* data, U4 size)
 {
     struct DirEntry DE;
@@ -313,14 +319,14 @@ void CreateFile(const char* filename, const void* data, U4 size)
     int pos = 0;
     while (*filename && *filename != '.') {
         if (pos < 8) {
-            DE.Name[pos++] = *filename++;
+            DE.Name[pos++] = ToUpper(*filename++);
         }
     }
     if (*filename == '.') {
         ++filename;
         pos = 8;
         while (*filename && pos < 11) {
-            DE.Name[pos++] = *filename++;
+            DE.Name[pos++] = ToUpper(*filename++);
         }
     }
     DE.Attributes = ATTR_A;
@@ -338,7 +344,6 @@ void CreateFile(const char* filename, const void* data, U4 size)
         } else {
             DE.FirstClusterLo = Cluster;
         }
-
 
         const U4 here = size > (U4)CLUSTER_SIZE ? CLUSTER_SIZE : size;
 
@@ -362,6 +367,9 @@ void CreateFile(const char* filename, const void* data, U4 size)
             ReadSector(Sector, SectorBuffer);
         }
         struct DirEntry* E = &((struct DirEntry*)SectorBuffer)[entry % EntriesPerSector];
+        if (!memcmp(E->Name, DE.Name, sizeof(E->Name))) {
+            Error("%s already exists (not implemented)", E->Name);
+        }
         if (!E->Name[0]) {
             memcpy(E, &DE, sizeof(*E));
             WriteSector(Sector, SectorBuffer);
@@ -372,47 +380,113 @@ void CreateFile(const char* filename, const void* data, U4 size)
     Error("Root directory full");
 }
 
+U1* ReadFile(const char* FileName, U4* size)
+{
+    FILE* fp = fopen(FileName, "rb");
+    if (!fp) {
+        Error("Could not open %s", FileName);
+    }
+    fseek(fp, 0L, SEEK_END);
+    *size = (U4)ftell(fp);
+    U1* data = malloc(*size);
+    if (!data) {
+        Error("Error allocating memory");
+    }
+    fseek(fp, 0L, SEEK_SET);
+    if (!fread(data, *size, 1, fp) || ferror(fp)) {
+        Error("Error reading from %s", FileName);
+    }
+    fclose(fp);
+    return data;
+}
+
+void UpdateBootLoader(const char* BootFileName)
+{
+    U4 size;
+    U1* data = ReadFile(BootFileName, &size);
+    if (size > 510 - BOOT_CODE_OFFSET) {
+        Error("Size of boot sector %u is too large", size);
+    }
+    fseek(DiskImg, BOOT_CODE_OFFSET, SEEK_SET);
+    if (!fwrite(data, size, 1, DiskImg) || ferror(DiskImg)) {
+        Error("Disk writing to disk image");
+    }
+    free(data);
+}
+
+void PutFile(const char* FileName)
+{
+    U4 size;
+    U1* data = ReadFile(FileName, &size);
+    CreateFile(FileName, data, size);
+    free(data);
+}
+
 int main(int argc, char* argv[])
 {
     if (argc < 3) {
     Usage:
-        Error("Usage: %s disk-image op\n  Where op is one of list, create", argv[0]);
+        Error("Usage: %s disk-image op [args...]\n"
+            "  Operations:\n"
+            "     list            List information\n"
+            "     create          Create new disk\n"
+            "     boot boot-file  Update bootloader (note: special format assumes org 0x%04X)\n"
+            "     put file        Put file into root directory\n"
+            , argv[0], 0x7c00 + BOOT_CODE_OFFSET);
     }
     const char* DiskImgFileName = argv[1];
-    enum {OP_LIST, OP_CREATE} op;
+    enum {OP_LIST, OP_CREATE, OP_BOOT, OP_PUT } op;
     if (!strcmp(argv[2], "list")) {
         op = OP_LIST;
     } else if (!strcmp(argv[2], "create")) {
         op = OP_CREATE;
+    } else if (!strcmp(argv[2], "boot")) {
+        if (argc < 4) {
+            goto Usage;
+        }
+        op = OP_BOOT;
+    } else if (!strcmp(argv[2], "put")) {
+        if (argc < 4) {
+            goto Usage;
+        }
+        op = OP_PUT;
     } else {
         goto Usage;
     }
 
-    DiskImg = fopen(DiskImgFileName, op == OP_LIST ? "rb" : "w+b");
+    const U1 ReadOnly = op == OP_LIST;
+    DiskImg = fopen(DiskImgFileName, ReadOnly ? "rb" : "rb+");
+    if (!DiskImg && op == OP_CREATE) {
+        DiskImg = fopen(DiskImgFileName, "wb+");
+    }
     if (!DiskImg) {
         Error("Error opening %s", DiskImgFileName);
+    }
+
+    if (op != OP_CREATE) {
+      MountDisk();
     }
 
     if (op == OP_LIST) {
         ListDisk();
     } else if (op == OP_CREATE) {
         CreateDisk();
-        static const char Text[] = "Hello world!\r\n";
-        CreateFile("TEST.TXT", Text, sizeof(Text)-1);
-
-        U2 size = 5000;
-        U1* blah = malloc(size);
-        if (!blah) Error("out of memory");
-        for (int i = 0; i < size; ++i) blah[i]=(U1)i;
-        CreateFile("BLAH", blah, size);
-        free(blah);
-
-        FlushFAT();
+    } else if (op == OP_BOOT) {
+        UpdateBootLoader(argv[3]);
+    } else if (op == OP_PUT) {
+        PutFile(argv[3]);
     } else {
         assert(0);
     }
 
+    if (!ReadOnly) {
+        FlushFAT();
+    }
+
     free(FAT);
+    if (ferror(DiskImg)) {
+        Error("Disk image error");
+    }
     fclose(DiskImg);
     
 
