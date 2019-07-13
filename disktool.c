@@ -252,11 +252,21 @@ void ListDisk(void)
         printf("%11.11s %02X %08X %04X\n", de->Name, de->Attributes, de->FileSize, de->FirstClusterLo);
     }
     free(RootDir);
+}
 
-    //for (U2 i = 0; i < CLUSTER_MAX; ++i) {
-    //    const U2 val = GetFATEntry(i);
-    //    printf("%03X ", val);
-    //}
+void ShowFATInfo(void)
+{
+    printf("     ");
+    for (U2 i = 0; i < 16; ++i) {
+        printf("--%X%c", i, i==15?'\n':' ');
+    }
+    for (U2 i = 0; i < CLUSTER_MAX; ++i) {
+        if (i && i % 16 == 0) printf("\n");
+        if (i % 16 == 0) printf("%03X  ", i);
+        const U2 val = GetFATEntry(i);
+        printf("%03X ", val);
+    }
+    printf("\n");
 }
 
 void CreateDisk(void)
@@ -333,8 +343,7 @@ void CreateFile(const char* filename, const void* data, U4 size)
     DE.FileSize = size;
 
     const U1* d = data;
-    U2 LastCluster = 0;
-    while (size) {
+    for (U2 LastCluster = 0; size;) {
         const U2 Cluster = GetFreeCluster();
         if (!Cluster) {
             Error("Disk full");
@@ -344,6 +353,7 @@ void CreateFile(const char* filename, const void* data, U4 size)
         } else {
             DE.FirstClusterLo = Cluster;
         }
+        SetFATEntry(Cluster, 0xFFF);
 
         const U4 here = size > (U4)CLUSTER_SIZE ? CLUSTER_SIZE : size;
 
@@ -354,9 +364,6 @@ void CreateFile(const char* filename, const void* data, U4 size)
         size -= here;
         d += here;
         LastCluster = Cluster;
-    }
-    if (LastCluster) {
-        SetFATEntry(LastCluster, 0xFFF);
     }
 
     U1 SectorBuffer[512];
@@ -429,15 +436,18 @@ int main(int argc, char* argv[])
         Error("Usage: %s disk-image op [args...]\n"
             "  Operations:\n"
             "     list            List information\n"
+            "     fat             Show FAT information\n"
             "     create          Create new disk\n"
             "     boot boot-file  Update bootloader (note: special format assumes org 0x%04X)\n"
             "     put file        Put file into root directory\n"
             , argv[0], 0x7c00 + BOOT_CODE_OFFSET);
     }
     const char* DiskImgFileName = argv[1];
-    enum {OP_LIST, OP_CREATE, OP_BOOT, OP_PUT } op;
+    enum {OP_LIST, OP_FAT, OP_CREATE, OP_BOOT, OP_PUT } op;
     if (!strcmp(argv[2], "list")) {
         op = OP_LIST;
+    } else if (!strcmp(argv[2], "fat")) {
+        op = OP_FAT;
     } else if (!strcmp(argv[2], "create")) {
         op = OP_CREATE;
     } else if (!strcmp(argv[2], "boot")) {
@@ -454,7 +464,7 @@ int main(int argc, char* argv[])
         goto Usage;
     }
 
-    const U1 ReadOnly = op == OP_LIST;
+    const U1 ReadOnly = op == OP_LIST || op == OP_FAT;
     DiskImg = fopen(DiskImgFileName, ReadOnly ? "rb" : "rb+");
     if (!DiskImg && op == OP_CREATE) {
         DiskImg = fopen(DiskImgFileName, "wb+");
@@ -469,6 +479,8 @@ int main(int argc, char* argv[])
 
     if (op == OP_LIST) {
         ListDisk();
+    } else if (op == OP_FAT) {
+        ShowFATInfo();
     } else if (op == OP_CREATE) {
         CreateDisk();
     } else if (op == OP_BOOT) {
@@ -488,7 +500,7 @@ int main(int argc, char* argv[])
         Error("Disk image error");
     }
     fclose(DiskImg);
-    
+
 
     return 0;
 }

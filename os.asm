@@ -1,15 +1,29 @@
         org 0x0500
 
+SECTOR_SIZE      equ 512
+FAT_RES_SECS     equ 1  ; Number of reserved sectors
+FAT_NUM_FATS     equ 2  ; Number of FATS
+FAT_SEC_CNT      equ 9  ; SectorsPerFat
+DIR_ENTRY_SIZE   equ 32
+FAT_ROOT_SEC     equ 19 ; FAT_RES_SECS + FAT_NUM_FATS * FAT_SEC_CNT
+FAT_DATA_SEC     equ 33 ; FAT_ROOT_SEC + MaxRootEntries * DIR_ENTRY_SIZE / SECTOR_SIZE
+
 Main:
+        ; Save boot drive (passed by boot loader)
         mov [BootDrive], dl
+
+        mov bx, MsgLoading
+        call PutString
+
+        ; Set INT 21 vector
         mov word [0x84], Int21Dispatch
         mov word [0x86], 0x00
 
-        mov ax, 32 ; 512/16
+        mov ax, 32 ; SECTOR_SIZE/16
         call Malloc
         mov [SectorBufSeg], ax
 
-        mov ax, 288 ; 512*9/16
+        mov ax, 288 ; SECTOR_SIZE*FAT_SEC_CNT/16
         call Malloc
         mov [FATSeg], ax
 
@@ -17,21 +31,43 @@ Main:
         xor di, di
         mov ax, [FatSeg]
         mov es, ax
-        mov ax, 1
-        mov cx, 9
+        mov ax, FAT_RES_SECS
+        mov cx, FAT_SEC_CNT
         call ReadSectors
 
-        ; Read root directory
+;        ; Read root directory
+;        mov ax, [SectorBufSeg]
+;        mov es, ax
+;        xor di, di
+;        mov ax, FAT_ROOT_SEC
+;        mov cx, 1
+;        call ReadSectors
+
+        call PutCrLf ; Terminate Loading... message
+
+        mov ax, 4
+.Cluster:
+        push ax
+        call PutHexWord
+        mov al, ' '
+        call PutChar
+        pop ax
+        call ClusterValid
+        jc .ClPrDone
+        call NextCluster
+        jmp .Cluster
+.ClPrDone:
+        call PutCrLf
+
         mov ax, [SectorBufSeg]
         mov es, ax
         xor di, di
-        mov ax, 19
-        mov cx, 1
-        call ReadSectors
+        mov ax, 2
+        call ReadCluster
 
         mov si, [SectorBufSeg]
         shl si, 4
-        mov cx, 128
+        mov cx, 256
         call HexDump
 
         jmp Halt
@@ -138,8 +174,6 @@ HexDump:
         jnz HexDump
         ret
 
-
-
 Int21Dispatch:
         push ax
         xor bx, bx
@@ -184,6 +218,47 @@ Malloc:
         mov bx, MsgErrOOM
         jmp Fatal
 
+; Return carry clear if cluster index in AX is valid
+ClusterValid:
+        cmp ax, 0xFF0
+        jae .Invalid
+        cmp ax, 2
+        jb .Invalid
+        clc
+        ret
+.Invalid:
+        stc
+        ret
+
+
+; Return next cluster after AX in AX
+NextCluster:
+        call ClusterValid
+        jc InvalidCluster
+        mov bx, [FATSeg]
+        mov es, bx
+        mov bx, ax
+        add bx, bx
+        add bx, ax
+        shr bx, 1
+        mov ax, [es:bx]
+        jnc .Even
+        shr ax, 4
+.Even:
+        and ah, 0x0f
+        ret
+InvalidCluster:
+        mov bx, MsgErrCluster
+        jmp Fatal
+
+; Read cluster in AX to ES:DI
+ReadCluster:
+        call ClusterValid
+        jc InvalidCluster
+        add ax, 31 ; FAT_DATA_SEC - 2
+        mov cx, 1
+        jmp ReadSectors
+
 DiskPacket:
         dw 0x0010   ; Size of disk packet
 DP_Count:
@@ -196,10 +271,12 @@ DP_Start:
         dw 0x0000   ; Starting block number
         dw 0,0,0
 
+MsgLoading:      db 'Loading SDOS 1.0', 0
 MsgErrFatal:     db 'Fatal error: ', 0
 MsgErrNotSupp:   db 'Not implemented: INT 21h/AH=', 0
 MsgErrDisk:      db 'Error reading from disk', 0
 MsgErrOOM:       db 'Out of memory', 0
+MsgErrCluster:   db 'Cluster invalid', 0
 
 FreeSeg:         dw 0x0800
 SectorBufSeg:    dw 0

@@ -72,4 +72,5 @@ if (WIN32)
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests"
         DEPENDS sasm_com
         )
+    add_custom_target(test DEPENDS test_sasm_c test_sasm_asm)
 endif()
