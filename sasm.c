@@ -979,7 +979,7 @@ void InstPUSH(void)
             OutputByte(0x50 | (OperandValue & 7));
         }
     } else if (OperandType == OP_LIT) {
-        if (OperandValue > 0xff) {
+        if (!IsShort(OperandValue) || CurrentFixup) {
             OutputByte(0x68);
             OutputImm16();
         } else {
@@ -1117,6 +1117,7 @@ static const struct {
     { "IDIV"  , &InstMulDiv     , 0x07 },
     { "INT"   , &InstINT        , 0x00 },
     { "RET"   , &OutputByte     , 0xC3 },
+    { "RETF"  , &OutputByte     , 0xCB },
     { "NOP"   , &OutputByte     , 0x90 },
     { "PUSHA" , &OutputByte     , 0x60 },
     { "POPA"  , &OutputByte     , 0x61 },
@@ -1126,8 +1127,11 @@ static const struct {
     { "MOVSW" , &OutputByte     , 0xA5 },
     { "STOSB" , &OutputByte     , 0xAA },
     { "LODSB" , &OutputByte     , 0xAC },
+    { "HLT"   , &OutputByte     , 0xF4 },
     { "CLC"   , &OutputByte     , 0xF8 },
     { "STC"   , &OutputByte     , 0xF9 },
+    { "CLI"   , &OutputByte     , 0xFA },
+    { "STI"   , &OutputByte     , 0xFB },
     { "CALL"  , &InstCALL       , 0x00 },
     { "JMP"   , &InstJMP        , 0x00 },
     { "JO"    , &HandleJcc      , JO   },

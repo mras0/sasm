@@ -1905,9 +1905,15 @@ DispatchList:
     dw OutputByte
     db 'REP',0,0,  0xF3
     dw OutputByte
+    db 'HLT',0,0,  0xF4
+    dw OutputByte
     db 'CLC',0,0,  0xF8
     dw OutputByte
     db 'STC',0,0,  0xF9
+    dw OutputByte
+    db 'CLI',0,0,  0xFA
+    dw OutputByte
+    db 'STI',0,0,  0xFB
     dw OutputByte
 
     ; Mul/Div instructions (argument is /r)
@@ -1958,6 +1964,8 @@ DispatchList:
 
     ; Flow control
     db 'RET',0,0,  0xC3
+    dw OutputByte
+    db 'RETF',0,   0xCB
     dw OutputByte
     db 'INT',0,0,  0x00
     dw InstINT
