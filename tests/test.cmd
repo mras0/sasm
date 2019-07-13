@@ -35,6 +35,4 @@ for %%f in (%TESTS%) do (
     if !failed! GEQ 1 echo early exit due to failure & exit /b 1
 )
 
-echo Result: %failed%
-
 endlocal & exit /b %failed%

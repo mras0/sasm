@@ -190,7 +190,7 @@ void SetFATEntry(U2 cluster, U2 value)
     U1* E = FAT + cluster * 3 / 2;
     if (cluster & 1) {
         E[0] = (E[0] & 0x0F) | (value&0xf)<<4;
-        E[1] = value >> 4;
+        E[1] = (U1)(value >> 4);
     } else {
         E[0] = value & 0xff;
         E[1] = (E[1] & 0xF0) | value>>8;
@@ -273,7 +273,7 @@ void CreateDisk(void)
     DiskBPB.SectorsPerTrack   = 18;
     DiskBPB.NumHeads          = 2;
 
-    static const char OEMName[8] = "SDOS 1.0";
+    static const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '0' };
     U1 BootSect[512];
     memset(BootSect, 0, sizeof(BootSect));
 

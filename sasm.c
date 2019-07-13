@@ -204,7 +204,7 @@ void GetToken(void)
     SkipWS();
     const struct Equ* e = FindEqu();
     if (e) {
-        TokenLen = sprintf(TokenText, "0X%X", e->Value);
+        TokenLen = (U1)sprintf(TokenText, "0X%X", e->Value);
     }
 }
 
@@ -399,8 +399,8 @@ void DefineLabel(void)
 
 void PrintOperand(bool alt)
 {
-    const U1 t = alt ? OperandLType : OperandType;
-    const U1 v = alt ? OperandLValue : OperandValue;
+    const U1 t = (U1)(alt ? OperandLType : OperandType);
+    const U2 v = alt ? OperandLValue : OperandValue;
     if (t < OP_REG) {
         printf("[MODRM=%02X 0x%04X]", t, v);
         return;
@@ -542,7 +542,7 @@ void GetOperandMem(void)
                 if (OperandValue >= R_ES) {
                     // Segmnet override
                     assert(OperandValue <= R_DS);
-                    OutputByte(0x26 | (OperandValue-R_ES)<<3);
+                    OutputByte(0x26 | (U1)(OperandValue-R_ES)<<3);
                     Expect(':');
                     goto redo;
                 }
@@ -709,7 +709,7 @@ void OutputImm(bool is16bit)
 void OutputModRM(U1 r)
 {
     assert(r < 8 && OperandLType < OP_REG);
-    OutputByte(OperandLType | (r<<3)); // ModRM
+    OutputByte((U1)(OperandLType | (r<<3))); // ModRM
     if (OperandLType == 6 || (OperandLType & 0xc0) == 0x80) {
         if (CurrentLFixup) {
             SwapFixup();
@@ -802,7 +802,7 @@ void InstMOV(void)
             if (OperandLValue >= R_ES) {
                 goto Invalid;
             }
-            OutputByte(0xB0 + OperandLValue);
+            OutputByte((U1)(0xB0 + OperandLValue));
             OutputImm(OperandLValue >= R_AX);
         } else {
             assert(OperandValue < OP_REG);
@@ -974,7 +974,7 @@ void InstPUSH(void)
         }
         if (OperandValue >= R_ES) {
             assert(OperandValue <= R_DS);
-            OutputByte(0x06 | (OperandValue-R_ES)<<3);
+            OutputByte((U1)(0x06 | (OperandValue-R_ES)<<3));
         } else {
             OutputByte(0x50 | (OperandValue & 7));
         }
@@ -999,9 +999,9 @@ void InstPOP(void)
     }
     if (OperandValue >= R_ES) {
         assert(OperandValue <= R_DS && OperandValue != R_CS);
-        OutputByte(0x07 | (OperandValue-R_ES)<<3);
+        OutputByte((U1)(0x07 | (OperandValue-R_ES)<<3));
     } else {
-        OutputByte(0x58 | (OperandValue & 7));
+        OutputByte((U1)(0x58 | (OperandValue & 7)));
     }
 }
 
@@ -1201,7 +1201,7 @@ void ParserInit(const char* filename)
         fprintf(stderr, "Error opening %s\n", filename);
         exit(1);
     }
-    for (int i = 0; i < FIXUP_MAX - 1; ++i) {
+    for (U2 i = 0; i < FIXUP_MAX - 1; ++i) {
         Fixups[i].Next = i + 1;
     }
     Fixups[FIXUP_MAX-1].Next = INVALID_ADDR;
@@ -1288,14 +1288,16 @@ int main(int argc, char* argv[])
     }
     ParserFini();
 #ifndef NDEBUG
-    // Chek for leaks
+    // Check for leaks
     int FixupFreeCnt = 0;
     for (int i = 0; i < FIXUP_MAX; ++i) {
         assert(FreeFixup < FIXUP_MAX);
         struct Fixup* f = &Fixups[FreeFixup];
         FreeFixup = f->Next;
         f->Next = INVALID_ADDR;
+        ++FixupFreeCnt;
     }
+    assert(FixupFreeCnt == FIXUP_MAX);
 #endif
     printf("Writing %s\n", OutputFileName);
     FILE* OutputFile = fopen(OutputFileName, "wb");
