@@ -21,6 +21,7 @@ if (WIN32)
 endif()
 
 add_executable(sasm sasm.c)
+add_executable(disktool disktool.c)
 
 set(SASM_COM ${CMAKE_CURRENT_BINARY_DIR}/sasm.com)
 
