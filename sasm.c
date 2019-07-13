@@ -1118,6 +1118,7 @@ static const struct {
     { "INT"   , &InstINT        , 0x00 },
     { "RET"   , &OutputByte     , 0xC3 },
     { "RETF"  , &OutputByte     , 0xCB },
+    { "IRET"  , &OutputByte     , 0xCF },
     { "NOP"   , &OutputByte     , 0x90 },
     { "PUSHA" , &OutputByte     , 0x60 },
     { "POPA"  , &OutputByte     , 0x61 },
