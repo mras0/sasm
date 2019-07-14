@@ -116,6 +116,7 @@ Main:
         mov bx, MsgErrCmdNotF
         jmp Fatal
 .FoundCmdP:
+        ; Open file and read
 
         call OpenFileFromDE
 
@@ -127,21 +128,30 @@ Main:
         mov cx, 0xFF00
         call ReadFile
         pop ds
+        ; AX = bytes read
 
-        push ax
-        call PutHexWord
-        call PutCrLf
-        pop ax
+        ; TODO: Close file
 
-        push ds
-        mov si, [CmdpSeg]
-        mov ds, si
-        xor si, si
-        mov cx, ax
-        call HexDump
-        pop ds
-
-        jmp Halt
+        ; Start command interpreter.
+        ; TODO: PSP
+        ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
+        cli
+        mov ax, [CmdpSeg]
+        mov ss, ax
+        mov ds, ax
+        mov es, ax
+        mov dx, ax
+        mov sp, 0xFFFE
+        xor ax, ax
+        xor bx, bx
+        mov cx, 0x00FF
+        mov si, 0x0100
+        mov di, sp
+        mov bp, 0x0900
+        push dx
+        push si
+        sti
+        retf
 
 ; Halt with error message in BX
 Fatal:
@@ -248,20 +258,6 @@ HexDump:
         and cx, cx
         jnz HexDump
         ret
-
-Int21Dispatch:
-        push ax
-        xor bx, bx
-        mov ds, bx
-        mov bx, MsgErrNotSupp
-        call PutString
-        pop ax
-        mov al, ah
-        call PutHexByte
-        call PutCrLf
-.Halt:   hlt
-        jmp .Halt
-        ;iret
 
 ; Read CX sectors starting from AX into ES:DI
 ReadSectors:
@@ -537,11 +533,14 @@ ReadFile:
         push dx
         push es
 
+        push dx
         mov ax, FILE_INFO_SIZE
         mul bx
         mov bx, ax
         mov ax, [cs:FileInfoSeg]
         mov es, ax
+        pop dx
+
         ; ES:BX -> File info
 
 .Again:
@@ -659,6 +658,58 @@ FillFileBuffer:
         popa
         ret
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Main INT 21h dispatch routine
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Int21Dispatch:
+        cld ; Make sure direction flag is always clear
+
+        cmp ah, 0x09
+        je Int21_09
+
+        push ax
+        xor bx, bx
+        mov ds, bx
+        mov bx, MsgErrNotSupp
+        call PutString
+        pop ax
+        mov al, ah
+        call PutHexByte
+        call PutCrLf
+.Halt:   hlt
+        jmp .Halt
+
+; Int 21/AH=09h Write string to standard output
+; DS:DX points to '$' terminated string
+; Returns 24h ('$' in AL)
+Int21_09:
+        push si
+        mov si, dx
+.Print:
+        lodsb
+        cmp al, '$'
+        je .Done
+        call PutChar
+        jmp .Print
+.Done:
+        pop si
+        iret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Constants and data
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+MsgLoading:      db 'Loading SDOS 1.0', 0
+MsgErrFatal:     db 'Fatal error: ', 0
+MsgErrNotSupp:   db 'Not implemented: INT 21h/AH=', 0
+MsgErrDisk:      db 'Error reading from disk', 0
+MsgErrOOM:       db 'Out of memory', 0
+MsgErrCluster:   db 'Cluster invalid', 0
+MsgErrCmdNotF:   db 'Command processor not found', 0
+MsgErrFileMax:   db 'Too many open files', 0
+MsgErrRead:      db 'Error reading from file', 0
+CmdpFName:       db 'CMDP.COM', 0
+
 DiskPacket:
         dw 0x0010   ; Size of disk packet
 DP_Count:
@@ -670,18 +721,6 @@ DP_Seg:
 DP_Start:
         dw 0x0000   ; Starting block number
         dw 0,0,0
-
-MsgLoading:      db 'Loading SDOS 1.0', 0
-MsgErrFatal:     db 'Fatal error: ', 0
-MsgErrNotSupp:   db 'Not implemented: INT 21h/AH=', 0
-MsgErrDisk:      db 'Error reading from disk', 0
-MsgErrOOM:       db 'Out of memory', 0
-MsgErrCluster:   db 'Cluster invalid', 0
-MsgErrCmdNotF:   db 'Command processor not found', 0
-MsgErrFileMax:   db 'Too many open files', 0
-MsgErrRead:      db 'Error reading from file', 0
-
-CmdpFName:       db 'CMDP.COM', 0
 
 BootDrive:       db 0
 FreeSeg:         dw 0x0800

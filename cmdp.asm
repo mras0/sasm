@@ -3,6 +3,10 @@
 BUFFER_SIZE       EQU 512
 
 Main:
+        mov dx, HelloMsg
+        mov ah, 9
+        int 0x21
+
         ; Open file for reading
         mov dx, InFileName
         mov ax, 0x3d00
@@ -148,6 +152,8 @@ InFileName:       db 'SASM.ASM', 0
 MsgErrGeneric:    db 'Generic error message$'
 MsgErrOpenIn:     db 'Could not open input file$'
 MsgErrRead:       db 'Error reading from file$'
+
+HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 
 InputFile:        dw 0
 BytesRead:        dw 0 ; Number of bytes read to Buffer

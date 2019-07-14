@@ -49,7 +49,12 @@ add_custom_command(
     COMMAND disktool disk.img put os.sys
     COMMAND disktool disk.img put cmdp.com
     COMMAND disktool disk.img list
-    DEPENDS disktool boot.bin os.sys sasm.com
+    DEPENDS
+        disktool
+        ${CMAKE_CURRENT_BINARY_DIR}/boot.bin
+        ${CMAKE_CURRENT_BINARY_DIR}/os.sys
+        ${CMAKE_CURRENT_BINARY_DIR}/sasm.com
+        ${CMAKE_CURRENT_BINARY_DIR}/cmdp.com
     )
 
 add_custom_target(build_disk ALL DEPENDS "${DISK_IMG}")
