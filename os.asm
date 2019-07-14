@@ -44,6 +44,10 @@ Main:
         mov bx, MsgLoading
         call PutString
 
+        ; Set INT 20 vector
+        mov word [0x80], Int20Dispatch
+        mov word [0x82], 0x00
+
         ; Set INT 21 vector
         mov word [0x84], Int21Dispatch
         mov word [0x86], 0x00
@@ -146,7 +150,12 @@ Main:
         call CloseFileHandle
 
         ; Start command interpreter.
-        ; TODO: PSP
+        ; Build PSP (TODO: More...)
+        mov ax, [CmdpSeg]
+        mov es, ax
+        mov word [es:0], 0x20CD ; Int 20h
+        mov byte [es:0x80], 0   ; No command line arguments
+
         ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
         cli
         mov ax, [CmdpSeg]
@@ -161,6 +170,7 @@ Main:
         mov si, 0x0100
         mov di, sp
         mov bp, 0x0900
+        push bx ; So a local return will execute the INT 20 instruction at [cs:0]
         push dx
         push si
         sti
@@ -554,7 +564,10 @@ CloseFileHandle:
 
 
 ; Read from file handle in BX, CX bytes to DS:DX
-; Returns number of bytes read in AX
+; Returns number of bytes read in AX and carry clear on success
+;         carry set on error with error code in AX
+; Preserves BX, CX, DX and ES
+; Tries to match the expected behavior of Int21_3F
 ReadFile:
         push bx
         push cx
@@ -692,10 +705,18 @@ FillFileBuffer:
 Int21Dispatch:
         cld ; Make sure direction flag is always clear
 
+        cmp ah, 0x02
+        je Int21_02
         cmp ah, 0x09
         je Int21_09
         cmp ah, 0x3D
         je Int21_3D
+        cmp ah, 0x3E
+        je Int21_3E
+        cmp ah, 0x3F
+        je Int21_3F
+        cmp ah, 0x4C
+        je Int21_4C
 
 Int21NotImpl:
         push ax
@@ -709,6 +730,14 @@ Int21NotImpl:
         call PutCrLf
 .Halt:   hlt
         jmp .Halt
+
+; Int 21/AH=02h Write character to standard output
+; DL character to write
+; Returns character output in AL
+Int21_02:
+        mov al, dl
+        call PutChar
+        iret
 
 ; Int 21/AH=09h Write string to standard output
 ; DS:DX points to '$' terminated string
@@ -759,6 +788,8 @@ Int21_3D:
 .Found:
         call OpenFileFromDE
 
+        ; TODO: Register this file with the current process
+
         ; File handle in AX
         clc
 .Out:
@@ -769,6 +800,51 @@ Int21_3D:
         pop cx
         pop bx
         iret
+
+; Int 21/AH=3Eh Close file
+; BX file handle
+; Returns carry clear on success
+;         carry set on error and error code in AX
+Int21_3E:
+        ; TODO: Flush buffers if output file
+        pusha
+        push ds
+        mov ax, cs
+        mov ds, ax
+        call CloseFileHandle
+        pop ds
+        popa
+        clc ; Assumes we always succeed
+        iret
+
+; Int 21/AH=3Fh Read from file or device
+; BX    file handle
+; CX    number of bytes to read
+; DS:DX buffer for data
+; Returns Carry clear on success, number of bytes read in AX
+;         Carry set on error and error code in AX
+Int21_3F:
+        call ReadFile
+        iret
+
+Int21_4C:
+        push ax
+        mov ax, cs
+        mov ds, ax
+        mov bx, .MsgExited
+        call PutString
+        pop ax
+        call PutHexByte
+        call PutCrLf
+        mov bx, .MsgTODO
+        jmp Fatal
+.MsgExited: db 'Program exited with AL=0x', 0
+.MsgTODO:   db 'TODO: Handle this...', 0
+
+Int20Dispatch:
+        ; INT 20 is the same as INT 21/AX=4C00h
+        mov ax, 0x4c00
+        jmp Int21Dispatch
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants and data
