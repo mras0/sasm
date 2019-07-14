@@ -327,16 +327,18 @@ void CreateFile(const char* filename, const void* data, U4 size)
     memset(DE.Name, ' ', 11);
 
     int pos = 0;
-    while (*filename && *filename != '.') {
+    for (; *filename && *filename != '.'; ++filename) {
         if (pos < 8) {
-            DE.Name[pos++] = ToUpper(*filename++);
+            DE.Name[pos++] = ToUpper(*filename);
         }
     }
     if (*filename == '.') {
         ++filename;
         pos = 8;
-        while (*filename && pos < 11) {
-            DE.Name[pos++] = ToUpper(*filename++);
+        for (; *filename && pos < 11; ++filename) {
+            if (pos < 11) {
+                DE.Name[pos++] = ToUpper(*filename);
+            }
         }
     }
     DE.Attributes = ATTR_A;
@@ -425,6 +427,9 @@ void PutFile(const char* FileName)
 {
     U4 size;
     U1* data = ReadFile(FileName, &size);
+    const char* s;
+    if ((s = strrchr(FileName, '\\')) != NULL) FileName = s+1;
+    if ((s = strrchr(FileName, '/')) != NULL) FileName = s+1;
     CreateFile(FileName, data, size);
     free(data);
 }
