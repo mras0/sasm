@@ -119,9 +119,7 @@ Main:
         call PutCrLf ; Terminate Loading... message
 
         ; Find CmdpFName in RootSeg
-        mov bx, ds
-        mov es, bx
-        mov bx, CmdpFName
+        mov dx, CmdpFName
         call ExpandFName
 
         call FindFileInRoot
@@ -361,13 +359,16 @@ ReadCluster:
         mov cx, 1
         jmp ReadSectors
 
-; Expand filename in ES:BX to CurFileName
+; Expand filename in DS:DX to CurFileName
 ExpandFName:
         push di
+        mov ax, cs
+        mov es, ax
         mov di, CurFileName
+        mov bx, dx
         xor cx, cx
 .FName:
-        mov al, [es:bx]
+        mov al, [bx]
         cmp al, '.'
         je .Dot
         and al, al
@@ -386,7 +387,7 @@ ExpandFName:
         inc cl
         jmp .Fill1
 .Ext:
-        mov al, [es:bx]
+        mov al, [bx]
         and al, al
         jz .FillRest
         stosb
@@ -419,7 +420,6 @@ FindFileInRoot:
         and al, al
         jz .NotFound
 
-
         mov di, bx
         mov si, CurFileName
         mov cl, 11
@@ -431,6 +431,7 @@ FindFileInRoot:
         inc di
         dec cl
         jnz .Compare
+
         ; Match!
         jmp .Done
 .NextEntry:
@@ -731,13 +732,31 @@ Int21NotImpl:
 .Halt:   hlt
         jmp .Halt
 
+; IRET with carry flag
+; TODO: This is really ugly..
+; Stack on entry:
+; SP+4 Flags
+; SP+2 CS
+; SP+0 IP
+IRETC:
+        push bp
+        mov bp, sp
+        jc .c
+        and byte [bp+6], 0xfe ; clear carry
+        jmp .Ret
+.C:
+        or byte [bp+6], 1 ; set carry
+.Ret:
+        pop bp
+        iret
+
 ; Int 21/AH=02h Write character to standard output
 ; DL character to write
 ; Returns character output in AL
 Int21_02:
         mov al, dl
         call PutChar
-        iret
+        jmp IRETC
 
 ; Int 21/AH=09h Write string to standard output
 ; DS:DX points to '$' terminated string
@@ -753,7 +772,7 @@ Int21_09:
         jmp .Print
 .Done:
         pop si
-        iret
+        jmp IRETC
 
 ; Int 21/AH=3Dh Open existing file
 ; AL    access and sharing mode
@@ -768,14 +787,10 @@ Int21_3D:
         push ds
         push es
 
-        ; Point ES:BX at filename
-        mov ax, ds
-        mov es, ax
-        mov bx, dx
-        ; And DS at CS
+        call ExpandFName
+
         mov ax, cs
         mov ds, ax
-        call ExpandFName
 
         ; Find file
         call FindFileInRoot
@@ -799,7 +814,7 @@ Int21_3D:
         pop dx
         pop cx
         pop bx
-        iret
+        jmp IRETC
 
 ; Int 21/AH=3Eh Close file
 ; BX file handle
@@ -815,7 +830,7 @@ Int21_3E:
         pop ds
         popa
         clc ; Assumes we always succeed
-        iret
+        jmp IRETC
 
 ; Int 21/AH=3Fh Read from file or device
 ; BX    file handle
@@ -825,7 +840,7 @@ Int21_3E:
 ;         Carry set on error and error code in AX
 Int21_3F:
         call ReadFile
-        iret
+        jmp IRETC
 
 Int21_4C:
         push ax
