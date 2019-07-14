@@ -13,6 +13,7 @@ Start:
         push RealStart
         retf
 RealStart:
+        cld
         cli
         mov ax, cs
         mov ds, ax

@@ -1133,6 +1133,8 @@ static const struct {
     { "STC"   , &OutputByte     , 0xF9 },
     { "CLI"   , &OutputByte     , 0xFA },
     { "STI"   , &OutputByte     , 0xFB },
+    { "CLD"   , &OutputByte     , 0xFC },
+    { "STD"   , &OutputByte     , 0xFD },
     { "CALL"  , &InstCALL       , 0x00 },
     { "JMP"   , &InstJMP        , 0x00 },
     { "JO"    , &HandleJcc      , JO   },
