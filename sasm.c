@@ -75,7 +75,9 @@ __declspec(noreturn)
 void Error(const char* msg)
 {
     fprintf(stderr, "Line %u: %s (Current token: \"%s\")\n", CurrentLine, msg, TokenText);
+#if 0
     for (int i = 0; i < OutputOffset; ++i) printf("%02X ", OutputBuffer[i]);
+#endif
     exit(1);
 }
 
@@ -943,7 +945,22 @@ void InstROT(U1 r)
 {
     assert(r < 8);
     Get2Operands();
-    if (OperandLType == OP_REG && OperandType == OP_LIT) {
+    if (OperandType == OP_REG) {
+        if (OperandValue == R_CL) {
+            if (OperandLType == OP_REG) {
+                const bool is16bit = OperandLValue/8==1;
+                OutputByte(0xd2 | (is16bit?1:0));
+                OutputByte(0xc0 | (r<<3) | (OperandLValue&7));
+            } else {
+                if (ExplicitSize == 0xFF) {
+                    Error("Operand size not specified");
+                }
+                OutputByte(0xd2 | ExplicitSize);
+                OutputModRM(r);
+            }
+            return;
+        }
+    } else if (OperandLType == OP_REG && OperandType == OP_LIT) {
         const bool is16bit = OperandLValue/8==1;
         OutputByte(0xc0 | (is16bit?1:0));
         OutputByte(0xc0 | (r<<3) | (OperandLValue&7));

@@ -27,6 +27,16 @@ FILE_INFO_NCLUST equ 12 ; WORD  Next cluster to get
 
 FILE_BUFFER_SIZE equ SECTOR_SIZE
 
+; DOS error codes
+ERR_NONE         equ 0x00 ; No error
+ERR_FUNC_INV     equ 0x01 ; Function number invalid
+ERR_FILE_NOT_FND equ 0x02 ; File not found
+ERR_PATH_NOT_FND equ 0x03 ; Path not found
+ERR_TOO_MANY_FIL equ 0x04 ; Too many open files
+ERR_ACCESS_DENIE equ 0x05 ; Access denied
+ERR_INVALID_HAND equ 0x06 ; Invalid handle
+ERR_NO_MEM       equ 0x08 ; Insufficient memory
+
 Main:
         ; Save boot drive (passed by boot loader)
         mov [BootDrive], dl
@@ -121,6 +131,7 @@ Main:
         call OpenFileFromDE
 
         mov bx, ax
+        push bx
         push ds
         mov ax, [CmdpSeg]
         mov ds, ax
@@ -128,9 +139,11 @@ Main:
         mov cx, 0xFF00
         call ReadFile
         pop ds
+        pop bx
         ; AX = bytes read
 
-        ; TODO: Close file
+        ; Close again
+        call CloseFileHandle
 
         ; Start command interpreter.
         ; TODO: PSP
@@ -509,21 +522,36 @@ OpenFileFromDE:
 
 ; Return new file handle in AX
 GetFileHandle:
-        mov al, [FileOpenBitmap]
-        mov ah, 1
-        xor bx, bx
+        mov bl, [FileOpenBitmap]
+        mov bh, 1
+        xor ax, ax
 .L:
-        mov cl, al
-        and cl, ah
+        mov cl, bl
+        and cl, bh
         jz .Found
-        add ah, ah
+        inc al
+        add bh, bh
         jnz .L
         mov bx, MsgErrFileMax
         jmp Fatal
 .Found:
-        or [FileOpenBitmap], ah
-        mov ax, bx
+        or [FileOpenBitmap], bh
         ret
+
+; Close file handle in BX
+CloseFileHandle:
+        mov cl, bl
+        mov al, 1
+        shl al, cl
+        mov ah, [FileOpenBitmap]
+        and ah, al
+        jnz .OK
+        mov bx, MsgErrFNotOpen
+        jmp Fatal
+.OK:
+        sub [FileOpenBitmap], al
+        ret
+
 
 ; Read from file handle in BX, CX bytes to DS:DX
 ; Returns number of bytes read in AX
@@ -666,7 +694,10 @@ Int21Dispatch:
 
         cmp ah, 0x09
         je Int21_09
+        cmp ah, 0x3D
+        je Int21_3D
 
+Int21NotImpl:
         push ax
         xor bx, bx
         mov ds, bx
@@ -695,6 +726,50 @@ Int21_09:
         pop si
         iret
 
+; Int 21/AH=3Dh Open existing file
+; AL    access and sharing mode
+; DS:DX points to ASCIZ filename
+; CL    attribute mask of files to look for
+; Returns Carry clear on success, filehandle in AX
+;         Carry set on error and error code in AX
+Int21_3D:
+        push bx
+        push cx
+        push dx
+        push ds
+        push es
+
+        ; Point ES:BX at filename
+        mov ax, ds
+        mov es, ax
+        mov bx, dx
+        ; And DS at CS
+        mov ax, cs
+        mov ds, ax
+        call ExpandFName
+
+        ; Find file
+        call FindFileInRoot
+        cmp bx, 0xFFFF
+        jne .Found
+        mov ax, ERR_FILE_NOT_FND
+        stc
+        jmp .Out
+
+.Found:
+        call OpenFileFromDE
+
+        ; File handle in AX
+        clc
+.Out:
+        ; Careful not to modify flags here
+        pop es
+        pop ds
+        pop dx
+        pop cx
+        pop bx
+        iret
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants and data
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -708,6 +783,7 @@ MsgErrCluster:   db 'Cluster invalid', 0
 MsgErrCmdNotF:   db 'Command processor not found', 0
 MsgErrFileMax:   db 'Too many open files', 0
 MsgErrRead:      db 'Error reading from file', 0
+MsgErrFNotOpen:  db 'Invalid file handle', 0
 CmdpFName:       db 'CMDP.COM', 0
 
 DiskPacket:

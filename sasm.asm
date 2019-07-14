@@ -1701,11 +1701,24 @@ InstROT:
         call Get2Operands
         pop bx
         cmp byte [OperandLType], OP_REG
-        jne NotImplemented
-        cmp byte [OperandType], OP_LIT
-        jne NotImplemented
+        je .ROTr
+        ja InvalidOperand
+
+        mov al, [ExplicitSize]
+        dec al
+        jns .HasSize
+        mov bx, MsgErrNoSize
+        jmp Error
+.HasSize:
+        or al, 0xd2
+        push bx
+        call OutputByte
+        pop ax
+        jmp OutputModRM
+.ROTr:
+        ; AL = is16bit
+        ; AH = 0xC0 | r<<3 | (OperandLValue&7)
         mov ah, [OperandLValue]
-        ; Output 0xc0 | is16bit, 0xC0 | r<<3 | (OperandLValue&7)
         mov al, ah
         and ah, 7
         shl bl, 3
@@ -1713,6 +1726,15 @@ InstROT:
         or ah, 0xc0
         shr al, 3
         and al, 1
+
+        cmp byte [OperandType], OP_REG
+        ja .ROTrl
+        jb InvalidOperand
+        cmp byte [OperandValue], R_CL
+        jne InvalidOperand
+        or al, 0xd2
+        jmp OutputWord
+.ROTrl:
         or al, 0xc0
         call OutputWord
         jmp OutputImm8
@@ -1915,6 +1937,10 @@ DispatchList:
     dw OutputByte
     db 'STI',0,0,  0xFB
     dw OutputByte
+    db 'CLD',0,0,  0xFC
+    dw OutputByte
+    db 'STD',0,0,  0xFD
+    dw OutputByte
 
     ; Mul/Div instructions (argument is /r)
     db 'MUL',0,0,  0x04
@@ -1966,6 +1992,10 @@ DispatchList:
     db 'RET',0,0,  0xC3
     dw OutputByte
     db 'RETF',0,   0xCB
+    dw OutputByte
+    db 'IRET',0,   0xCF
+    dw OutputByte
+    db 'HLT',0,0,   0xF4
     dw OutputByte
     db 'INT',0,0,  0x00
     dw InstINT
