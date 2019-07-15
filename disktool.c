@@ -220,6 +220,35 @@ void MountDisk(void)
     ReadFAT();
 }
 
+void ForEachRootEntry(U1 (*F)(void *, const struct DirEntry*), void* context)
+{
+    struct DirEntry* RootDir = malloc(sizeof(struct DirEntry) * MAX_ROOT_ENTRIES);
+    if (!RootDir) {
+        Error("Memory allocation failure");
+    }
+    ReadSectors(ROOT_SECTOR, (U1*)RootDir, NUM_ROOT_SECTORS);
+    for (U2 i = 0; i < DiskBPB.MaxRootEntries; ++i) {
+        if (!F(context, &RootDir[i])) {
+            break;
+        }
+    }
+    free(RootDir);
+}
+
+U1 PrintDirEntry(void* context, const struct DirEntry* de)
+{
+    (void)context;
+    if (!de->Name[0]) {
+        return 0;
+    }
+    if (de->Attributes & ATTR_L) {
+        printf("Volume label: %11.11s\n", de->Name);
+    } else {
+        printf("%11.11s %02X %08X %04X\n", de->Name, de->Attributes, de->FileSize, de->FirstClusterLo);
+    }
+    return 1;
+}
+
 void ListDisk(void)
 {
 #define PR(f) printf("%-20s %u\n", #f, DiskBPB.f)
@@ -234,24 +263,7 @@ void ListDisk(void)
     PR(SectorsPerTrack);
     PR(NumHeads);
 #undef PR
-
-    struct DirEntry* RootDir = malloc(sizeof(struct DirEntry) * MAX_ROOT_ENTRIES);
-    if (!RootDir) {
-        Error("Memory allocation failure");
-    }
-    ReadSectors(ROOT_SECTOR, (U1*)RootDir, NUM_ROOT_SECTORS);
-    for (U2 i = 0; i < DiskBPB.MaxRootEntries; ++i) {
-        const struct DirEntry* de = &RootDir[i];
-        if (!de->Name[0]) {
-            break;
-        }
-        if (de->Attributes & ATTR_L) {
-            printf("Volume label: %11.11s\n", de->Name);
-            continue;
-        }
-        printf("%11.11s %02X %08X %04X\n", de->Name, de->Attributes, de->FileSize, de->FirstClusterLo);
-    }
-    free(RootDir);
+    ForEachRootEntry(&PrintDirEntry, NULL);
 }
 
 void ShowFATInfo(void)
@@ -320,29 +332,33 @@ U1 ToUpper(U1 ch)
     return ch >= 'a' && ch < 'z' ? ch - ('a' - 'A') : ch;
 }
 
-void CreateFile(const char* filename, const void* data, U4 size)
+void ExpandFileName(U1* Dst, const char* FileName)
 {
-    struct DirEntry DE;
-    memset(&DE, 0, sizeof(DE));
-    memset(DE.Name, ' ', 11);
-
+    memset(Dst, ' ', 11);
     int pos = 0;
-    for (; *filename && *filename != '.'; ++filename) {
+    for (; *FileName && *FileName != '.'; ++FileName) {
         if (pos < 8) {
-            DE.Name[pos++] = ToUpper(*filename);
+            Dst[pos++] = ToUpper(*FileName);
         }
     }
-    if (*filename == '.') {
-        ++filename;
+    if (*FileName == '.') {
+        ++FileName;
         pos = 8;
-        for (; *filename && pos < 11; ++filename) {
+        for (; *FileName && pos < 11; ++FileName) {
             if (pos < 11) {
-                DE.Name[pos++] = ToUpper(*filename);
+                Dst[pos++] = ToUpper(*FileName);
             }
         }
     }
+}
+
+void CreateFile(const char* FileName, const void* data, U4 size)
+{
+    struct DirEntry DE;
+    memset(&DE, 0, sizeof(DE));
     DE.Attributes = ATTR_A;
     DE.FileSize = size;
+    ExpandFileName(DE.Name, FileName);
 
     const U1* d = data;
     for (U2 LastCluster = 0; size;) {
@@ -434,6 +450,68 @@ const char* GetBaseName(const char* FileName)
     return FileName;
 }
 
+U1* GetFileFromDE(const struct DirEntry* DE)
+{
+    U1* data = malloc(DE->FileSize);
+    if (!data) Error("Memory allocation failure");
+    U2 cluster = DE->FirstClusterLo;
+    U1* d = data;
+    for (U4 size = DE->FileSize; size; size -= size > (U4)CLUSTER_SIZE ? CLUSTER_SIZE : size) {
+        if (cluster < 2 || cluster >= 0xff0) {
+            Error("Invalid cluster 0x%X for %11.11s", cluster, DE->Name);
+        }
+        if (size <= (U4)CLUSTER_SIZE) {
+            ReadCluster(cluster, ClusterBuffer);
+            memcpy(d, ClusterBuffer, size);
+            d += size;
+        } else {
+            ReadCluster(cluster, d);
+            d += CLUSTER_SIZE;
+        }
+        cluster = GetFATEntry(cluster);
+    }
+    return data;
+}
+
+struct FindFileContext {
+    U1 OK;
+    U1 FileName[11];
+    const char* DiskFileName;
+};
+
+U1 FindFile(void* context, const struct DirEntry* DE)
+{
+    if (!DE->Name[0]) return 0;
+    struct FindFileContext* ctx = context;
+    if (memcmp(ctx->FileName, DE->Name, 11)) return 1;
+
+    U1* data = GetFileFromDE(DE);
+    FILE* out = fopen(ctx->DiskFileName, "wb");
+    if (!out) {
+        Error("Error creating %s", ctx->DiskFileName);
+    }
+    if (!fwrite(data, DE->FileSize, 1, out) || ferror(out)) {
+        Error("Error writing to %s", ctx->DiskFileName);
+    }
+    fclose(out);
+    free(data);
+    printf("Writing %s 0x%X\n", ctx->DiskFileName, DE->FileSize);
+    ctx->OK = 1;
+    return 0;
+}
+
+void GetFile(const char* DiskFileName, const char* FileName)
+{
+    struct FindFileContext ctx;
+    ctx.OK = 0;
+    ctx.DiskFileName = DiskFileName;
+    ExpandFileName(ctx.FileName, FileName);
+    ForEachRootEntry(&FindFile, &ctx);
+    if (!ctx.OK) {
+        Error("%s not found in disk", FileName);
+    }
+}
+
 void PutFile(const char* FileName, const char* DiskFileName)
 {
     U4 size;
@@ -452,11 +530,12 @@ int main(int argc, char* argv[])
             "     fat                  Show FAT information\n"
             "     create               Create new disk\n"
             "     boot boot-file       Update bootloader (note: special format assumes org 0x%04X)\n"
+            "     get file [sysname]   Get file fromt root directory (optionally to another filename)\n"
             "     put file [diskname]  Put file into root directory (optionally with another filename)\n"
             , argv[0], 0x7c00 + BOOT_CODE_OFFSET);
     }
     const char* DiskImgFileName = argv[1];
-    enum {OP_LIST, OP_FAT, OP_CREATE, OP_BOOT, OP_PUT } op;
+    enum {OP_LIST, OP_FAT, OP_CREATE, OP_BOOT, OP_GET, OP_PUT } op;
     if (!strcmp(argv[2], "list")) {
         op = OP_LIST;
     } else if (!strcmp(argv[2], "fat")) {
@@ -468,6 +547,11 @@ int main(int argc, char* argv[])
             goto Usage;
         }
         op = OP_BOOT;
+    } else if (!strcmp(argv[2], "get")) {
+        if (argc < 4) {
+            goto Usage;
+        }
+        op = OP_GET;
     } else if (!strcmp(argv[2], "put")) {
         if (argc < 4) {
             goto Usage;
@@ -477,7 +561,7 @@ int main(int argc, char* argv[])
         goto Usage;
     }
 
-    const U1 ReadOnly = op == OP_LIST || op == OP_FAT;
+    const U1 ReadOnly = op == OP_LIST || op == OP_FAT || op == OP_GET;
     DiskImg = fopen(DiskImgFileName, ReadOnly ? "rb" : "rb+");
     if (!DiskImg && op == OP_CREATE) {
         DiskImg = fopen(DiskImgFileName, "wb+");
@@ -498,6 +582,8 @@ int main(int argc, char* argv[])
         CreateDisk();
     } else if (op == OP_BOOT) {
         UpdateBootLoader(argv[3]);
+    } else if (op == OP_GET) {
+        GetFile(argv[3], argc > 4 ? argv[4] : GetBaseName(argv[3]));
     } else if (op == OP_PUT) {
         PutFile(argv[3], argc > 4 ? argv[4] : GetBaseName(argv[3]));
     } else {
