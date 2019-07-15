@@ -48,7 +48,9 @@ add_custom_command(
     COMMAND disktool disk.img boot boot.bin
     COMMAND disktool disk.img put os.sys
     COMMAND disktool disk.img put cmdp.com
+    COMMAND disktool disk.img put sasm.com
     COMMAND disktool disk.img put "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
+    COMMAND disktool disk.img put "${CMAKE_CURRENT_SOURCE_DIR}/tests/t01.asm" in.asm
     COMMAND disktool disk.img list
     DEPENDS
         disktool

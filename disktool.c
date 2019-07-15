@@ -423,14 +423,22 @@ void UpdateBootLoader(const char* BootFileName)
     free(data);
 }
 
-void PutFile(const char* FileName)
+const char* GetBaseName(const char* FileName)
+{
+    const char* s = FileName + strlen(FileName);
+    for (; s > FileName; --s) {
+        if (*s == '/' || *s == '\\') {
+            return s + 1;
+        }
+    }
+    return FileName;
+}
+
+void PutFile(const char* FileName, const char* DiskFileName)
 {
     U4 size;
     U1* data = ReadFile(FileName, &size);
-    const char* s;
-    if ((s = strrchr(FileName, '\\')) != NULL) FileName = s+1;
-    if ((s = strrchr(FileName, '/')) != NULL) FileName = s+1;
-    CreateFile(FileName, data, size);
+    CreateFile(DiskFileName, data, size);
     free(data);
 }
 
@@ -440,11 +448,11 @@ int main(int argc, char* argv[])
     Usage:
         Error("Usage: %s disk-image op [args...]\n"
             "  Operations:\n"
-            "     list            List information\n"
-            "     fat             Show FAT information\n"
-            "     create          Create new disk\n"
-            "     boot boot-file  Update bootloader (note: special format assumes org 0x%04X)\n"
-            "     put file        Put file into root directory\n"
+            "     list                 List information\n"
+            "     fat                  Show FAT information\n"
+            "     create               Create new disk\n"
+            "     boot boot-file       Update bootloader (note: special format assumes org 0x%04X)\n"
+            "     put file [diskname]  Put file into root directory (optionally with another filename)\n"
             , argv[0], 0x7c00 + BOOT_CODE_OFFSET);
     }
     const char* DiskImgFileName = argv[1];
@@ -491,7 +499,7 @@ int main(int argc, char* argv[])
     } else if (op == OP_BOOT) {
         UpdateBootLoader(argv[3]);
     } else if (op == OP_PUT) {
-        PutFile(argv[3]);
+        PutFile(argv[3], argc > 4 ? argv[4] : GetBaseName(argv[3]));
     } else {
         assert(0);
     }

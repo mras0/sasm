@@ -79,6 +79,9 @@ CC_G             equ 0xf
         org 0x100
 
 ProgramEntry:
+        mov bx, MsgHello
+        call PutString
+
         call Init
         call MainLoop
         call Fini
@@ -525,7 +528,7 @@ TryGetU:
         jc .NoMatch
         ret
 .NoMatch:
-        or al, ' ' ; ToUpper
+        or al, ' ' ; ToLower
         jmp TryGet
 
 SkipWS:
@@ -592,7 +595,7 @@ GetToken:
         sub ah, '0'
         cmp ah, 9
         jbe .Store
-        and al, 0xDF ; to lower case
+        and al, 0xDF ; to upper case
         mov ah, al
         sub ah, 'A'
         cmp ah, 26
@@ -1845,6 +1848,7 @@ InstJCC:
 FileName:         db 'in.asm', 0
 OutFileName:      db 'a.com', 0
 
+MsgHello:         db 'SASM 1.0 Running', 13, 10, 0
 MsgCurToken:      db 'Current token: "', 0
 MsgErrInLine:     db 'Error in line ', 0
 MsgErrNotImpl:    db 'Not implemented', 0

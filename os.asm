@@ -22,8 +22,9 @@ FILE_INFO_SIZE   equ 16 ; Size of file info
 FILE_INFO_FSIZE  equ 0  ; DWORD File size
 FILE_INFO_FOFF   equ 4  ; DWORD Current file offset
 FILE_INFO_BUFSEG equ 8  ; WORD  Buffer segment
-FILE_INFO_BUFSZ  equ 10 ; WORD  Number of valid bytes in buffer
-FILE_INFO_NCLUST equ 12 ; WORD  Next cluster to get
+FILE_INFO_BUFOFF equ 10 ; WORD  Offset into buffer
+FILE_INFO_BUFSZ  equ 12 ; WORD  Number of valid bytes in buffer
+FILE_INFO_NCLUST equ 14 ; WORD  Next cluster to get
 
 FILE_BUFFER_SIZE equ SECTOR_SIZE
 
@@ -75,6 +76,7 @@ Main:
         mov [es:bx+FILE_INFO_FSIZE+2], ax
         mov [es:bx+FILE_INFO_FOFF], ax
         mov [es:bx+FILE_INFO_FOFF+2], ax
+        mov [es:bx+FILE_INFO_BUFOFF], ax
         mov [es:bx+FILE_INFO_BUFSZ], ax
         mov [es:bx+FILE_INFO_NCLUST], ax
         push es
@@ -152,6 +154,7 @@ Main:
         mov ax, [CmdpSeg]
         mov es, ax
         mov word [es:0], 0x20CD ; Int 20h
+        mov word [es:2], 0x9FFF ; Segment of first byte beyond memory allocated by program
         mov byte [es:0x80], 0   ; No command line arguments
 
         ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
@@ -233,6 +236,8 @@ PutHexDigit:
 
 ; Dump CX bytes from DS:SI
 HexDump:
+        push si
+.Main:
         mov bx, cx
         cmp bx, 16
         jbe .P
@@ -277,7 +282,8 @@ HexDump:
         add si, dx
         call PutCrLf
         and cx, cx
-        jnz HexDump
+        jnz .Main
+        pop si
         ret
 
 ; Read CX sectors starting from AX into ES:DI
@@ -373,9 +379,7 @@ ExpandFName:
         je .Dot
         and al, al
         jz .FillRest
-        stosb
-        inc bx
-        inc cl
+        call .Store
         jmp .FName
 .Dot:
         inc bx
@@ -390,9 +394,7 @@ ExpandFName:
         mov al, [bx]
         and al, al
         jz .FillRest
-        stosb
-        inc bx
-        inc cl
+        call .Store
         jmp .Ext
 .FillRest:
         cmp cl, 11
@@ -404,10 +406,22 @@ ExpandFName:
 .FillDone:
         pop di
         ret
+.Store:
+        cmp al, 'a'
+        jb .R
+        cmp al, 'z'
+        ja .R
+        and al, 0xDF ; to upper case
+.R:
+        stosb
+        inc bx
+        inc cl
+        ret
 
 ; Try to find CurFileName in Root Directory
 ; Returns pointer to directory entry in BX
 ; or 0xFFFF
+; DS must point to cs
 FindFileInRoot:
         push si
         push di
@@ -526,6 +540,7 @@ OpenFileFromDE:
         xor cx, cx
         mov [es:bx+FILE_INFO_FOFF], cx
         mov [es:bx+FILE_INFO_FOFF+2], cx
+        mov [es:bx+FILE_INFO_BUFOFF], cx
         mov [es:bx+FILE_INFO_BUFSZ], cx
         pop di
         pop si
@@ -616,12 +631,12 @@ ReadFile:
         push ds
         push es
         mov cx, ax
-        mov si, [es:bx+FILE_INFO_BUFSEG]
-        mov di, dx
+        mov di, [es:bx+FILE_INFO_BUFSEG]
+        mov si, [es:bx+FILE_INFO_BUFOFF]
         mov ax, ds
         mov es, ax
-        mov ds, si
-        xor si, si
+        mov ds, di
+        mov di, dx
         rep movsb
         pop es
         pop ds
@@ -630,15 +645,8 @@ ReadFile:
         pop cx
         pop ax
 
+        add [es:bx+FILE_INFO_BUFOFF], ax
         sub [es:bx+FILE_INFO_BUFSZ], ax
-        jz .CompleteBufferUsed
-
-        mov bx, cs
-        mov ds, bx
-        mov bx, .MsgUpdateBuffer
-        jmp Fatal
-
-.CompleteBufferUsed:
         add dx, ax
         sub cx, ax
         jnz .Again
@@ -675,17 +683,21 @@ FillFileBuffer:
         and dx, dx
         jnz .Limit
         cmp cx, FILE_BUFFER_SIZE
-        jbe .DoRead
+        jbe .Update
 .Limit:
         mov cx, FILE_BUFFER_SIZE
-.DoRead:
+.Update:
+        mov word [es:bx+FILE_INFO_BUFOFF], 0
         mov [es:bx+FILE_INFO_BUFSZ], cx
         add [es:bx+FILE_INFO_FOFF], cx
         adc word [es:bx+FILE_INFO_FOFF+2], 0
+        and cx, cx ; EOF?
+        jz .Done
 
         ; Assume FILE_BUFFER_SIZE == SECTOR_SIZE
         ; If increased, loop here
         mov ax, [es:bx+FILE_INFO_NCLUST]
+
         push es
         pusha
         mov di, [es:bx+FILE_INFO_BUFSEG]
@@ -693,15 +705,20 @@ FillFileBuffer:
         xor di, di
         call ReadCluster
         popa
+        push bx
         call NextCluster
+        pop bx
         pop es
+
         mov [es:bx+FILE_INFO_NCLUST], ax
 
+.Done:
         popa
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Main INT 21h dispatch routine
+;; Reference: Ralf Browns Interrupt List
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 Int21Dispatch:
         cld ; Make sure direction flag is always clear
@@ -710,6 +727,8 @@ Int21Dispatch:
         je Int21_02
         cmp ah, 0x09
         je Int21_09
+        cmp ah, 0x3C
+        je Int21_3C
         cmp ah, 0x3D
         je Int21_3D
         cmp ah, 0x3E
@@ -773,6 +792,48 @@ Int21_09:
 .Done:
         pop si
         jmp IRETC
+
+; Int 21/AH=3Ch Create or truncate file
+; CX    File attributes
+; DS:DX ASCIZ filename
+; Returns Carry clear on success, filehandle in AX
+;         Carry set on error and error code in AX
+Int21_3C:
+        push bx
+        push cx
+        push dx
+        push ds
+        push es
+
+        pusha
+        mov bx, dx
+        call PutString
+        call PutCrLf
+        popa
+
+        call ExpandFName
+
+        mov ax, cs
+        mov ds, ax
+
+        ; Find file
+        call FindFileInRoot
+        cmp bx, 0xFFFF
+        jne .Found
+        mov bx, .MsgN
+        jmp Fatal
+.Found:
+        mov bx, .MsgF
+        jmp Fatal
+
+        pop es
+        pop ds
+        pop dx
+        pop cx
+        pop bx
+        jmp IRETC
+.MsgF: db 'TODO: File exists in INT21/AH=3Ch', 0
+.MsgN: db 'TODO: File does not exist in INT21/AH=3Ch', 0
 
 ; Int 21/AH=3Dh Open existing file
 ; AL    access and sharing mode
@@ -875,7 +936,8 @@ MsgErrCmdNotF:   db 'Command processor not found', 0
 MsgErrFileMax:   db 'Too many open files', 0
 MsgErrRead:      db 'Error reading from file', 0
 MsgErrFNotOpen:  db 'Invalid file handle', 0
-CmdpFName:       db 'CMDP.COM', 0
+;CmdpFName:       db 'CMDP.COM', 0
+CmdpFName:       db 'SASM.COM', 0 ; XXX TODO TEMP
 
 DiskPacket:
         dw 0x0010   ; Size of disk packet
