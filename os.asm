@@ -9,22 +9,33 @@ DIR_ENTRY_LCLUST equ 0x1A ; WORD    Low word of start cluster (high word only us
 DIR_ENTRY_FSIZE  equ 0x1C ; DWORD   File size
 DIR_ENTRY_SIZE   equ 0x20
 
+ROOT_MAX_IDX     equ 0x1C00 ; MaxRootEntries * DIR_ENTRY_SIZE
+
 FAT_RES_SECS     equ 1  ; Number of reserved sectors
 FAT_NUM_FATS     equ 2  ; Number of FATS
 FAT_SEC_CNT      equ 9  ; SectorsPerFat
 FAT_ROOT_SEC     equ 19 ; FAT_RES_SECS + FAT_NUM_FATS * FAT_SEC_CNT
-FAT_MAX_ROOTES   equ 14 ; MaxRootEntries * DIR_ENTRY_SIZE / SECTOR_SIZE
+FAT_MAX_ROOTES   equ 14 ; ROOT_MAX_IDX / SECTOR_SIZE
 FAT_DATA_SEC     equ 33 ; FAT_ROOT_SEC + FAT_MAX_ROOTES
 
-MAX_FILES        equ 8  ; Note: Check FileOpenBitmap
+EOC_CLUSTER      equ 0xFFF ; End of cluster chain marker (other values might be present on disk)
 
+MAX_FILES        equ 8
+
+FILE_INFO_FOFF   equ 0  ; DWORD Current file offset
+FILE_INFO_BUFSEG equ 4  ; WORD  Buffer segment
+FILE_INFO_BUFOFF equ 6  ; WORD  Offset into buffer
+FILE_INFO_BUFSZ  equ 8  ; WORD  Number of valid bytes in buffer
+FILE_INFO_CLUST  equ 10 ; WORD  Next cluster to get / Last cluster written
+FILE_INFO_DIRENT equ 12 ; WORD  Offset into RootSeg of file entry
+FILE_INFO_MODE   equ 14 ; BYTE  Mode (0 = Closed, 1 = Open for reading, 2 = Open for writing)
+; Spare          equ 15
 FILE_INFO_SIZE   equ 16 ; Size of file info
-FILE_INFO_FSIZE  equ 0  ; DWORD File size
-FILE_INFO_FOFF   equ 4  ; DWORD Current file offset
-FILE_INFO_BUFSEG equ 8  ; WORD  Buffer segment
-FILE_INFO_BUFOFF equ 10 ; WORD  Offset into buffer
-FILE_INFO_BUFSZ  equ 12 ; WORD  Number of valid bytes in buffer
-FILE_INFO_NCLUST equ 14 ; WORD  Next cluster to get
+
+; Legal values for FILE_INFO_MODE
+FMODE_CLOSED     equ 0
+FMODE_READ_ONLY  equ 1
+FMODE_WRITE_ONLY equ 2
 
 FILE_BUFFER_SIZE equ SECTOR_SIZE
 
@@ -37,6 +48,8 @@ ERR_TOO_MANY_FIL equ 0x04 ; Too many open files
 ERR_ACCESS_DENIE equ 0x05 ; Access denied
 ERR_INVALID_HAND equ 0x06 ; Invalid handle
 ERR_NO_MEM       equ 0x08 ; Insufficient memory
+
+NOT_FOUND        equ 0xFFFF ; Returned when entry/pointer not found
 
 Main:
         ; Save boot drive (passed by boot loader)
@@ -72,13 +85,13 @@ Main:
         xor bx, bx
 .InitFile:
         xor ax, ax
-        mov [es:bx+FILE_INFO_FSIZE], ax
-        mov [es:bx+FILE_INFO_FSIZE+2], ax
         mov [es:bx+FILE_INFO_FOFF], ax
         mov [es:bx+FILE_INFO_FOFF+2], ax
         mov [es:bx+FILE_INFO_BUFOFF], ax
         mov [es:bx+FILE_INFO_BUFSZ], ax
-        mov [es:bx+FILE_INFO_NCLUST], ax
+        mov [es:bx+FILE_INFO_CLUST], ax
+        mov word [es:bx+FILE_INFO_DIRENT], NOT_FOUND
+        mov [es:bx+FILE_INFO_MODE], al
         push es
         push bx
         push cx
@@ -125,7 +138,7 @@ Main:
         call ExpandFName
 
         call FindFileInRoot
-        cmp bx, 0xFFFF
+        cmp bx, NOT_FOUND
         jne .FoundCmdP
         mov bx, MsgErrCmdNotF
         jmp Fatal
@@ -180,6 +193,8 @@ Main:
 ; Halt with error message in BX
 Fatal:
         push bx
+        mov bx, cs
+        mov ds, bx
         mov bx, MsgErrFatal
         call PutString
         pop bx
@@ -286,6 +301,14 @@ HexDump:
         pop si
         ret
 
+; Read cluster in AX to ES:DI
+ReadCluster:
+        call ClusterValid
+        jc InvalidCluster
+        add ax, 31 ; FAT_DATA_SEC - 2
+        mov cx, 1
+        ; Fall through
+
 ; Read CX sectors starting from AX into ES:DI
 ReadSectors:
         mov [DP_Start], ax
@@ -300,7 +323,33 @@ ReadSectors:
         jc .DiskReadErr
         ret
 .DiskReadErr:
-        mov bx, MsgErrDisk
+        mov bx, MsgErrWrite
+        jmp Fatal
+
+; Write cluster in AX from ES:DI
+; See also ReadCluster
+WriteCluster:
+        call ClusterValid
+        jc InvalidCluster
+        add ax, 31 ; FAT_DATA_SEC - 2
+        mov cx, 1
+        ; Fall through
+
+; Write CX sectors starting from AX from ES:DI
+WriteSectors:
+        mov [cs:DP_Start], ax
+        mov [cs:DP_Count], cx
+        mov ax, es
+        mov [cs:DP_Seg], ax
+        mov [cs:DP_Off], di
+        mov dl, [cs:BootDrive]
+        mov ah, 0x43
+        mov si, DiskPacket
+        int 0x13
+        jc .DiskWriteErr
+        ret
+.DiskWriteErr:
+        mov bx, MsgErrWrite
         jmp Fatal
 
 ; Alloc AX*BX bytes (Must be < 64K)
@@ -336,7 +385,6 @@ ClusterValid:
         stc
         ret
 
-
 ; Return next cluster after AX in AX
 NextCluster:
         call ClusterValid
@@ -357,13 +405,72 @@ InvalidCluster:
         mov bx, MsgErrCluster
         jmp Fatal
 
-; Read cluster in AX to ES:DI
-ReadCluster:
+; Add new cluster to chain in AX
+; Returns new cluster in AX
+AddCluster:
+        push si
+        mov si, ax ; Save previous cluster in SI
+        mov bx, [cs:FatSeg]
+        mov es, bx
+        ; First find free cluster
+        xor bx, bx ; FAT pointer
+        xor cx, cx ; cluster
+.Search:
+        ; TODO: Handle disk full...
+        mov dx, [es:bx]   ; DX=H0L2L1L0
+        mov ax, dx        ; AX=H0L2L1L0
+        and ax, 0xfff     ; AX=__L2L1L0
+        jz .Found
+        inc cx
+        add bx, 2
+        shr dx, 8         ; DX=____H0L2
+        mov dh, [es:bx]   ; DX=H2H1H0L2
+        shr dx, 4         ; DX=__H2H1H0
+        jz .Found
+        inc cx
+        add bx, 1
+        jmp .Search
+.Found:
+        push cx
+        mov ax, si
         call ClusterValid
-        jc InvalidCluster
-        add ax, 31 ; FAT_DATA_SEC - 2
-        mov cx, 1
-        jmp ReadSectors
+        jc .Done
+        ; mov bx, cx
+        ; mov ax, si
+        ; call .UpdateCluster
+        mov bx, .Msg
+        jmp Fatal
+.Done:
+        pop ax
+        push ax
+        mov bx, ax
+        mov ax, EOC_CLUSTER
+        call .UpdateCluster
+        pop ax
+        pop si
+        ret
+.Msg: db 'TODO in AddCluster: Update last cluster', 0
+
+; Update cluster in BX to point to AX
+; Assumes ES=FatSeg
+.UpdateCluster:
+        and ax, 0x0FFF ; Ensure we're not messing with bits we shouldn't be
+        mov cx, bx
+        add bx, bx
+        add bx, cx
+        mov cx, [es:bx]
+        shr bx, 1
+        jnc .Even
+        shl ax, 4
+        and cl, 0xF0
+        or al, cl
+        jmp .UCDone
+.Even:
+        and ch, 0x0F
+        or ah, ch
+.UCDone:
+        mov [es:bx], ax
+        ret
 
 ; Expand filename in DS:DX to CurFileName
 ExpandFName:
@@ -420,7 +527,7 @@ ExpandFName:
 
 ; Try to find CurFileName in Root Directory
 ; Returns pointer to directory entry in BX
-; or 0xFFFF
+; or 0xFFFF (NOT_FOUND)
 ; DS must point to cs
 FindFileInRoot:
         push si
@@ -429,7 +536,9 @@ FindFileInRoot:
         mov es, ax
         xor bx, bx
 .DirLoop:
-        ; TODO Check if out of range
+        cmp bx, ROOT_MAX_IDX
+        jae .NotFound
+
         mov al, [es:bx]
         and al, al
         jz .NotFound
@@ -452,11 +561,46 @@ FindFileInRoot:
         add bx, DIR_ENTRY_SIZE
         jmp .DirLoop
 .NotFound:
-        mov bx, 0xFFFF
+        mov bx, NOT_FOUND
 .Done:
         pop di
         pop si
         ret
+
+; Returns pointer to free entry in root directory in ES:BX
+; The entry is initialized with CurFileName (but not written to disk)
+; Assumes DS=CS
+NewRootEntry:
+        push si
+        push di
+        mov bx, [RootSeg]
+        mov es, bx
+        xor bx, bx
+.Search:
+        cmp byte [es:bx], 0 ; Maybe also allow '?' as first char (TODO)
+        je .Found
+        add bx, DIR_ENTRY_SIZE
+        cmp bx, ROOT_MAX_IDX
+        jae .RootFull
+        jmp .Search
+.Found:
+        ; Copy filename
+        mov si, CurFileName
+        mov di, bx
+        mov cx, 11
+        rep movsb
+        ; Clear the rest
+        xor ax, ax
+        mov cx, 21 ; DIR_ENTRY_SIZE - 11
+        rep stosb
+        mov byte [es:bx+DIR_ENTRY_ATTR], 0x20 ; Set archive bit
+        mov word [es:bx+DIR_ENTRY_LCLUST], 0xFFF
+        pop di
+        pop si
+        ret
+.RootFull:
+        mov bx, MsgErrRootFull
+        jmp Fatal
 
 ; Print directory entry in ES:BX
 PrintDirEntry:
@@ -511,73 +655,252 @@ PrintDirEntry:
         pop si
         ret
 
+; Returns size from file info at ES:BX in DX:AX
+; Other registers preserved
+GetFileSize:
+        mov ax, [es:bx+FILE_INFO_DIRENT]
+        push es
+        push bx
+        mov bx, [RootSeg]
+        mov es, bx
+        mov bx, ax
+        mov ax, [es:bx+DIR_ENTRY_FSIZE]
+        mov dx, [es:bx+DIR_ENTRY_FSIZE+2]
+        pop bx
+        pop es
+        ret
+
+
+; Print root directory
+PrintRootDir:
+        mov bx, [cs:RootSeg]
+        mov es, bx
+        xor bx, bx
+.L:
+        cmp byte [es:bx], 0
+        jz .Skip
+        push bx
+        call PrintDirEntry
+        pop bx
+.Skip:
+        add bx, DIR_ENTRY_SIZE
+        cmp bx, ROOT_MAX_IDX
+        jb .L
+        ret
+
 ; Open file from directory entry in ES:BX
 ; Returns file handle in AX
 OpenFileFromDE:
         push si
         push di
         ; Grab needed info from DE
-        mov di, [es:bx+DIR_ENTRY_FSIZE]
-        mov cx, [es:bx+DIR_ENTRY_FSIZE+2]
         mov si, [es:bx+DIR_ENTRY_LCLUST]
-        push cx
+        mov di, bx
         call GetFileHandle
-        pop cx
-        push ax
-        mov bx, FILE_INFO_SIZE
-        mul bx
-        mov bx, ax
-        mov ax, [FileInfoSeg]
-        mov es, ax
-        pop ax
         ; AX    = FileHandle
         ; ES:BX = FileInfoPtr
-        ; CX:DI = Filesize
         ; SI    = FirstCluster
-        mov [es:bx+FILE_INFO_FSIZE], di
-        mov [es:bx+FILE_INFO_FSIZE+2], cx
-        mov [es:bx+FILE_INFO_NCLUST], si
-        xor cx, cx
-        mov [es:bx+FILE_INFO_FOFF], cx
-        mov [es:bx+FILE_INFO_FOFF+2], cx
-        mov [es:bx+FILE_INFO_BUFOFF], cx
-        mov [es:bx+FILE_INFO_BUFSZ], cx
+        ; DI    = Directory entry
+        mov [es:bx+FILE_INFO_CLUST], si
+        mov [es:bx+FILE_INFO_DIRENT], di
+        xor ax, ax
+        mov [es:bx+FILE_INFO_FOFF], ax
+        mov [es:bx+FILE_INFO_FOFF+2], ax
+        mov [es:bx+FILE_INFO_BUFOFF], ax
+        mov [es:bx+FILE_INFO_BUFSZ], ax
+        ; Make sure some other mode than FMODE_CLOSED is set
+        mov byte [es:bx+FILE_INFO_MODE], FMODE_READ_ONLY
         pop di
         pop si
         ret
 
-; Return new file handle in AX
+; Return new file handle in AX and file info in ES:BX
 GetFileHandle:
-        mov bl, [FileOpenBitmap]
-        mov bh, 1
-        xor ax, ax
-.L:
-        mov cl, bl
-        and cl, bh
-        jz .Found
-        inc al
-        add bh, bh
-        jnz .L
+        mov bx, [FileInfoSeg]
+        mov es, bx
+        xor bx, bx
+        xor cx, cx
+.Search:
+        cmp byte [es:bx+FILE_INFO_MODE], FMODE_CLOSED
+        je .Found
+        add bx, FILE_INFO_SIZE
+        inc cl
+        cmp cl, MAX_FILES
+        jne .Search
         mov bx, MsgErrFileMax
         jmp Fatal
 .Found:
-        or [FileOpenBitmap], bh
+        mov ax, cx
         ret
 
 ; Close file handle in BX
 CloseFileHandle:
-        mov cl, bl
-        mov al, 1
-        shl al, cl
-        mov ah, [FileOpenBitmap]
-        and ah, al
-        jnz .OK
+        cmp bx, MAX_FILES
+        jae .Error
+        mov ax, [FileInfoSeg]
+        mov es, ax
+        mov ax, FILE_INFO_SIZE
+        mul bx
+        mov bx, ax
+        xor ax, ax
+        xchg al, [es:bx+FILE_INFO_MODE] ; Mark file closed
+        and al, al
+        jz .Error ;Not open
+        cmp al, FMODE_READ_ONLY
+        je .Done
+        call FlushFileBuffer
+        call WriteRootDir
+        call WriteFAT
+.Done:
+        ret
+.Error:
         mov bx, MsgErrFNotOpen
         jmp Fatal
-.OK:
-        sub [FileOpenBitmap], al
+
+WriteRootDir:
+        mov ax, [cs:RootSeg]
+        mov es, ax
+        xor di, di
+        mov ax, FAT_ROOT_SEC
+        mov cx, FAT_MAX_ROOTES
+        jmp WriteSectors
+
+WriteFAT:
+        mov ax, [cs:FATSeg]
+        mov es, ax
+        xor di, di
+        mov ax, FAT_RES_SECS
+        mov cx, FAT_SEC_CNT
+        add cx, cx ; Write bot FATs
+        jmp WriteSectors
+
+; Flush file (write) buffer for file with info in ES:BX
+FlushFileBuffer:
+        mov cx, [es:bx+FILE_INFO_BUFOFF]
+        and cx, cx
+        jnz .Flush
+        ret ; Nothing to flush
+.Flush:
+        ; TODO: Clear from BUFOFF to FILE_BUFFER_SIZE to avoid writing junk to file
+
+        ; Alloc free cluster
+        mov ax, [es:bx+FILE_INFO_CLUST]
+        push ax
+        push bx
+        push es
+        call AddCluster
+        pop es
+        pop bx
+        pop dx ; Last cluster
+        mov [es:bx+FILE_INFO_CLUST], ax
+
+        ; Update directory entry
+        push bx
+        push si
+        push es
+        mov si, [es:bx+FILE_INFO_BUFOFF]
+        mov bx, [es:bx+FILE_INFO_DIRENT]
+        mov cx, [cs:RootSeg]
+        mov es, cx
+        add [es:bx+DIR_ENTRY_FSIZE], si
+        adc word [es:bx+DIR_ENTRY_FSIZE+2], 0
+        ; Need to update first cluster ?
+        cmp dx, EOC_CLUSTER
+        jne .DontUpdate
+        mov [es:bx+DIR_ENTRY_LCLUST], ax
+.DontUpdate:
+        pop es
+        pop si
+        pop bx
+
+        ; Write buffer to cluster in AX
+        push es
+        push di
+        mov di, [es:bx+FILE_INFO_BUFSEG]
+        mov es, di
+        xor di, di
+        call WriteCluster
+        pop di
+        pop es
+        mov word [es:bx+FILE_INFO_BUFOFF], 0
+        mov word [es:bx+FILE_INFO_BUFSZ], FILE_BUFFER_SIZE
         ret
 
+; Write to from file handle in BX, CX bytes from DS:DX
+; Returns number of bytes written in AX and carry clear on success
+;         carry set on error with error code in AX
+; Preserves BX, CX, DX and ES
+; Tries to match the expected behavior of Int21_3F
+WriteFile:
+        push bx
+        push cx
+        push dx
+        push si
+        push es
+
+        cmp bx, MAX_FILES
+        jae .InvalidHandle
+
+        mov si, cx ; Store original count in si
+
+        push dx
+        mov ax, FILE_INFO_SIZE
+        mul bx
+        mov bx, ax
+        mov ax, [cs:FileInfoSeg]
+        mov es, ax
+        pop dx
+        ; ES:BX -> File Info
+
+        cmp byte [es:bx+FILE_INFO_MODE], FMODE_WRITE_ONLY
+        jne .InvalidHandle
+
+        ; CX: Number of bytes remaining
+        ; DS:DX Source
+.WriteLoop:
+        and cx, cx
+        jz .Done
+
+        mov ax, [es:bx+FILE_INFO_BUFSZ]
+        cmp ax, cx
+        jbe .DoCopy ; Limited by buffer
+        mov ax, cx
+.DoCopy:
+        ; Copy AX bytes to buffer
+        pusha
+        push es
+        mov cx, ax
+        mov di, [es:bx+FILE_INFO_BUFOFF]
+        mov si, [es:bx+FILE_INFO_BUFSEG]
+        mov es, si
+        mov si, dx
+        rep movsb
+        pop es
+        popa
+
+        add dx, ax ; TODO: Handle if this overflows?
+        sub cx, ax
+        add [es:bx+FILE_INFO_BUFOFF], ax
+        sub [es:bx+FILE_INFO_BUFSZ], ax
+        jnz .WriteLoop
+
+        mov bx, .MsgFlush
+        jmp Fatal
+.Done:
+        mov ax, si ; All bytes written
+        clc
+        jmp .Ret
+.InvalidHandle:
+        mov ax, ERR_INVALID_HAND
+        stc
+.Ret:
+        pop es
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        ret
+.MsgFlush: db 'TODO: WriteFile: Flush!', 0
 
 ; Read from file handle in BX, CX bytes to DS:DX
 ; Returns number of bytes read in AX and carry clear on success
@@ -600,6 +923,8 @@ ReadFile:
 
         ; ES:BX -> File info
 
+        cmp byte [es:bx+FILE_INFO_MODE], FMODE_READ_ONLY
+        jne .InvalidHandle
 .Again:
         ; First check if there's data in the buffer
         cmp word [es:bx+FILE_INFO_BUFSZ], 0
@@ -647,7 +972,7 @@ ReadFile:
 
         add [es:bx+FILE_INFO_BUFOFF], ax
         sub [es:bx+FILE_INFO_BUFSZ], ax
-        add dx, ax
+        add dx, ax ; TODO: Handle if this overflows?
         sub cx, ax
         jnz .Again
 .EOF:
@@ -661,11 +986,16 @@ ReadFile:
         xchg cx, ax
         clc
         ret
-
+.InvalidHandle:
+        pop es
+        pop dx
+        pop cx
+        pop bx
+        mov ax, ERR_INVALID_HAND
+        stc
+        ret
 .Err:
-        mov bx, cs
-        mov ds, bx
-        mov bx, MsgErrRead
+        mov bx, MsgErrReadFile
         jmp Fatal
 
 .MsgUpdateBuffer: db 'TODO: Data left in file buffer...', 0
@@ -675,8 +1005,8 @@ ReadFile:
 FillFileBuffer:
         pusha
         ; How many bytes left in file?
-        mov cx, [es:bx+FILE_INFO_FSIZE]
-        mov dx, [es:bx+FILE_INFO_FSIZE+2]
+        call GetFileSize
+        mov cx, ax
         sub cx, [es:bx+FILE_INFO_FOFF]
         sbb dx, [es:bx+FILE_INFO_FOFF+2]
 
@@ -696,7 +1026,7 @@ FillFileBuffer:
 
         ; Assume FILE_BUFFER_SIZE == SECTOR_SIZE
         ; If increased, loop here
-        mov ax, [es:bx+FILE_INFO_NCLUST]
+        mov ax, [es:bx+FILE_INFO_CLUST]
 
         push es
         pusha
@@ -710,7 +1040,7 @@ FillFileBuffer:
         pop bx
         pop es
 
-        mov [es:bx+FILE_INFO_NCLUST], ax
+        mov [es:bx+FILE_INFO_CLUST], ax
 
 .Done:
         popa
@@ -735,6 +1065,8 @@ Int21Dispatch:
         je Int21_3E
         cmp ah, 0x3F
         je Int21_3F
+        cmp ah, 0x40
+        je Int21_40
         cmp ah, 0x4C
         je Int21_4C
 
@@ -805,11 +1137,7 @@ Int21_3C:
         push ds
         push es
 
-        pusha
-        mov bx, dx
-        call PutString
-        call PutCrLf
-        popa
+        push cx ; File attributes
 
         call ExpandFName
 
@@ -818,13 +1146,23 @@ Int21_3C:
 
         ; Find file
         call FindFileInRoot
-        cmp bx, 0xFFFF
-        jne .Found
-        mov bx, .MsgN
-        jmp Fatal
-.Found:
+        cmp bx, NOT_FOUND
+        je .NotFound
+
+        ; TODO Truncate file then continue somewhere below
         mov bx, .MsgF
         jmp Fatal
+.NotFound:
+        call NewRootEntry
+        pop cx ; File attributes
+        mov [es:bx+DIR_ENTRY_ATTR], cl ; Set attributes
+
+        call OpenFileFromDE
+        mov byte [es:bx+FILE_INFO_MODE], FMODE_WRITE_ONLY
+        mov word [es:bx+FILE_INFO_BUFSZ], FILE_BUFFER_SIZE
+        mov word [es:bx+FILE_INFO_CLUST], EOC_CLUSTER
+        ; AX = File handle
+        clc
 
         pop es
         pop ds
@@ -833,7 +1171,6 @@ Int21_3C:
         pop bx
         jmp IRETC
 .MsgF: db 'TODO: File exists in INT21/AH=3Ch', 0
-.MsgN: db 'TODO: File does not exist in INT21/AH=3Ch', 0
 
 ; Int 21/AH=3Dh Open existing file
 ; AL    access and sharing mode
@@ -855,7 +1192,7 @@ Int21_3D:
 
         ; Find file
         call FindFileInRoot
-        cmp bx, 0xFFFF
+        cmp bx, NOT_FOUND
         jne .Found
         mov ax, ERR_FILE_NOT_FND
         stc
@@ -882,7 +1219,6 @@ Int21_3D:
 ; Returns carry clear on success
 ;         carry set on error and error code in AX
 Int21_3E:
-        ; TODO: Flush buffers if output file
         pusha
         push ds
         mov ax, cs
@@ -901,6 +1237,16 @@ Int21_3E:
 ;         Carry set on error and error code in AX
 Int21_3F:
         call ReadFile
+        jmp IRETC
+
+; Int 21/AH=40h Write to file or device
+; BX    file handle
+; CX    number of bytes to write
+; DS:DX buffer for data
+; Returns Carry clear on success, number of bytes written in AX
+;         Carry set on error and error code in AX
+Int21_40:
+        call WriteFile
         jmp IRETC
 
 Int21_4C:
@@ -929,13 +1275,15 @@ Int20Dispatch:
 MsgLoading:      db 'Loading SDOS 1.0', 0
 MsgErrFatal:     db 'Fatal error: ', 0
 MsgErrNotSupp:   db 'Not implemented: INT 21h/AH=', 0
-MsgErrDisk:      db 'Error reading from disk', 0
+MsgErrRead:      db 'Error reading from disk', 0
+MsgErrWrite:     db 'Error writing to disk', 0
 MsgErrOOM:       db 'Out of memory', 0
 MsgErrCluster:   db 'Cluster invalid', 0
 MsgErrCmdNotF:   db 'Command processor not found', 0
 MsgErrFileMax:   db 'Too many open files', 0
-MsgErrRead:      db 'Error reading from file', 0
+MsgErrReadFile:  db 'Error reading from file', 0
 MsgErrFNotOpen:  db 'Invalid file handle', 0
+MsgErrRootFull:  db 'Root directory full', 0
 ;CmdpFName:       db 'CMDP.COM', 0
 CmdpFName:       db 'SASM.COM', 0 ; XXX TODO TEMP
 
@@ -959,5 +1307,4 @@ FileInfoSeg:     dw 0
 RootSeg:         dw 0
 CmdpSeg:         dw 0
 
-FileOpenBitmap:  db 0 ; Must match MAX_FILES in size
 CurFileName:     db '           ' ; 8+3 spaces
