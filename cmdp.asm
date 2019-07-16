@@ -7,6 +7,24 @@ Main:
         mov ah, 9
         int 0x21
 
+        mov si, 4
+.L:
+        ; Test file truncation
+        mov dx, TempFileName
+        mov ax, 0x3c00
+        mov cx, 0x20
+        int 0x21
+        mov dx, MsgErrOpenOut
+        jc Error
+        ; Close file
+        mov bx, ax
+        mov ah, 0x3e
+        int 0x21
+        jc GenericError
+        dec si
+        jnz .L
+
+
         ; Open file for reading
         mov dx, InFileName
         mov ax, 0x3d00
@@ -148,10 +166,13 @@ HexDump:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+TempFileName:     db 'Foo.txt', 0
 InFileName:       db 'SASM.ASM', 0
 MsgErrGeneric:    db 'Generic error message$'
 MsgErrOpenIn:     db 'Could not open input file$'
+MsgErrOpenOut:    db 'Could not open output file$'
 MsgErrRead:       db 'Error reading from file$'
+MsgErrWrite:      db 'Error writing to file$'
 
 HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 

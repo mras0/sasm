@@ -442,37 +442,52 @@ AddCluster:
         ; Update last cluster
         mov bx, ax
         mov ax, cx
-        call .UpdateCluster
+        call UpdateCluster
 .Done:
         pop ax
         push ax
         mov bx, ax
         mov ax, EOC_CLUSTER
-        call .UpdateCluster
+        call UpdateCluster
         pop ax
         pop si
         ret
 
 ; Update cluster in BX to point to AX
 ; Assumes ES=FatSeg
-.UpdateCluster:
+UpdateCluster:
         and ax, 0x0FFF ; Ensure we're not messing with bits we shouldn't be
         mov cx, bx
         add bx, bx
         add bx, cx
-        mov cx, [es:bx]
         shr bx, 1
+        mov cx, [es:bx]
         jnc .Even
         shl ax, 4
-        and cl, 0xF0
+        and cl, 0x0F
         or al, cl
         jmp .UCDone
 .Even:
-        and ch, 0x0F
+        and ch, 0xF0
         or ah, ch
 .UCDone:
         mov [es:bx], ax
         ret
+
+; Free cluster chain in AX
+FreeClusterChain:
+        call ClusterValid
+        jnc .Free
+        ret
+.Free:
+        push ax
+        call NextCluster
+        pop bx
+        push ax
+        xor ax, ax ; Mark as free
+        call UpdateCluster
+        pop ax
+        jmp FreeClusterChain
 
 ; Expand filename in DS:DX to CurFileName
 ExpandFName:
@@ -1150,16 +1165,20 @@ Int21_3C:
         ; Find file
         call FindFileInRoot
         cmp bx, NOT_FOUND
-        je .NotFound
-
-        ; TODO Truncate file then continue somewhere below
-        mov bx, .MsgF
-        jmp Fatal
-.NotFound:
+        jne .Found
         call NewRootEntry
+        jmp .OpenFromDE
+.Found:
+        ; File found, truncate
+        mov ax, [es:bx+DIR_ENTRY_LCLUST]
+        push es
+        push bx
+        call FreeClusterChain
+        pop bx
+        pop es
+.OpenFromDE:
         pop cx ; File attributes
         mov [es:bx+DIR_ENTRY_ATTR], cl ; Set attributes
-
         call OpenFileFromDE
         mov byte [es:bx+FILE_INFO_MODE], FMODE_WRITE_ONLY
         mov word [es:bx+FILE_INFO_BUFSZ], FILE_BUFFER_SIZE
@@ -1287,8 +1306,7 @@ MsgErrFileMax:   db 'Too many open files', 0
 MsgErrReadFile:  db 'Error reading from file', 0
 MsgErrFNotOpen:  db 'Invalid file handle', 0
 MsgErrRootFull:  db 'Root directory full', 0
-;CmdpFName:       db 'CMDP.COM', 0
-CmdpFName:       db 'SASM.COM', 0 ; XXX TODO TEMP
+CmdpFName:       db 'CMDP.COM', 0
 
 DiskPacket:
         dw 0x0010   ; Size of disk packet
