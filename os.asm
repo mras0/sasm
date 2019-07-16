@@ -337,16 +337,20 @@ WriteCluster:
 
 ; Write CX sectors starting from AX from ES:DI
 WriteSectors:
-        mov [cs:DP_Start], ax
-        mov [cs:DP_Count], cx
+        push ds
+        mov dx, cs
+        mov ds, dx
+        mov [DP_Start], ax
+        mov [DP_Count], cx
         mov ax, es
-        mov [cs:DP_Seg], ax
-        mov [cs:DP_Off], di
-        mov dl, [cs:BootDrive]
+        mov [DP_Seg], ax
+        mov [DP_Off], di
+        mov dl, [BootDrive]
         mov ah, 0x43
         mov si, DiskPacket
         int 0x13
         jc .DiskWriteErr
+        pop ds
         ret
 .DiskWriteErr:
         mov bx, MsgErrWrite
@@ -435,11 +439,10 @@ AddCluster:
         mov ax, si
         call ClusterValid
         jc .Done
-        ; mov bx, cx
-        ; mov ax, si
-        ; call .UpdateCluster
-        mov bx, .Msg
-        jmp Fatal
+        ; Update last cluster
+        mov bx, ax
+        mov ax, cx
+        call .UpdateCluster
 .Done:
         pop ax
         push ax
@@ -449,7 +452,6 @@ AddCluster:
         pop ax
         pop si
         ret
-.Msg: db 'TODO in AddCluster: Update last cluster', 0
 
 ; Update cluster in BX to point to AX
 ; Assumes ES=FatSeg
@@ -884,8 +886,10 @@ WriteFile:
         sub [es:bx+FILE_INFO_BUFSZ], ax
         jnz .WriteLoop
 
-        mov bx, .MsgFlush
-        jmp Fatal
+        pusha
+        call FlushFileBuffer
+        popa
+        jmp .WriteLoop
 .Done:
         mov ax, si ; All bytes written
         clc
@@ -900,7 +904,6 @@ WriteFile:
         pop cx
         pop bx
         ret
-.MsgFlush: db 'TODO: WriteFile: Flush!', 0
 
 ; Read from file handle in BX, CX bytes to DS:DX
 ; Returns number of bytes read in AX and carry clear on success
