@@ -7,22 +7,33 @@ Main:
         mov ah, 9
         int 0x21
 
-        mov si, 4
-.L:
-        ; Test file truncation
-        mov dx, TempFileName
-        mov ax, 0x3c00
-        mov cx, 0x20
-        int 0x21
-        mov dx, MsgErrOpenOut
-        jc Error
-        ; Close file
-        mov bx, ax
-        mov ah, 0x3e
+        ; Free remaining memory if running under DOS
+        mov ah, 0x4a
+        mov bx, Buffer
+        add bx, 15
+        and bx, 0xFFF0
+        add bx, BUFFER_SIZE
+        shr bx, 4
         int 0x21
         jc GenericError
-        dec si
-        jnz .L
+
+        ; Run SASM
+
+        mov word [.ArgPtr], .Args
+        mov ax, ds
+        mov [.ArgPtr+2], ax
+        mov ax, 0x4b00           ; Load and execute
+        mov dx, .ProgramName     ; DS:DX -> program name
+        mov bx, .ParameterBlock  ; ES:BX -> parameter block
+        int 0x21
+        jnc .CallOk
+        call PutHexWord
+        call PutCrLf
+        jmp GenericError
+.CallOk:
+        mov dx, .OKMsg
+        mov ah, 9
+        int 0x21
 
 
         ; Open file for reading
@@ -49,7 +60,18 @@ Main:
         mov bx, [InputFile]
         int 0x21
         jc GenericError
+
+
         ret
+.OKMsg: db 'Back in CMDP!', 13, 10, '$'
+.ProgramName: db 'SASM.COM', 0
+.Args: db 'foo!', 0x0D
+.ParameterBlock:
+        dw 0 ; Segment of environment to copy (0 = use caller's)
+.ArgPtr:
+        dw 0, 0 ; Pointer to arguments
+        dw 0, 0 ; Pointer to first FCB
+        dw 0, 0 ; Pointer second first FCB
 
 GenericError:
         mov dx, MsgErrGeneric
@@ -166,8 +188,7 @@ HexDump:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-TempFileName:     db 'Foo.txt', 0
-InFileName:       db 'SASM.ASM', 0
+InFileName:       db 'A.COM', 0
 MsgErrGeneric:    db 'Generic error message$'
 MsgErrOpenIn:     db 'Could not open input file$'
 MsgErrOpenOut:    db 'Could not open output file$'

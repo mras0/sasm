@@ -126,69 +126,23 @@ Main:
         mov cx, FAT_MAX_ROOTES
         call ReadSectors
 
-        ; Allocate room for command processor
-        mov ax, 0x1000
-        call Malloc
-        mov [CmdpSeg], ax
-
         call PutCrLf ; Terminate Loading... message
 
-        ; Find CmdpFName in RootSeg
+        ; Load command interpreter
         mov dx, CmdpFName
         call ExpandFName
-
-        call FindFileInRoot
-        cmp bx, NOT_FOUND
-        jne .FoundCmdP
+        call LoadProgram
+        and ax, ax
+        jnz .LoadOK
         mov bx, MsgErrCmdNotF
         jmp Fatal
-.FoundCmdP:
-        ; Open file and read
+.LoadOK:
+        mov [CmdpSeg], ax
+        ; Start command interpreter
+        call StartProgram ; Shouldn't return
 
-        call OpenFileFromDE
-
-        mov bx, ax
-        push bx
-        push ds
-        mov ax, [CmdpSeg]
-        mov ds, ax
-        mov dx, 0x0100
-        mov cx, 0xFF00
-        call ReadFile
-        pop ds
-        pop bx
-        ; AX = bytes read
-
-        ; Close again
-        call CloseFileHandle
-
-        ; Start command interpreter.
-        ; Build PSP (TODO: More...)
-        mov ax, [CmdpSeg]
-        mov es, ax
-        mov word [es:0], 0x20CD ; Int 20h
-        mov word [es:2], 0x9FFF ; Segment of first byte beyond memory allocated by program
-        mov byte [es:0x80], 0   ; No command line arguments
-
-        ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
-        cli
-        mov ax, [CmdpSeg]
-        mov ss, ax
-        mov ds, ax
-        mov es, ax
-        mov dx, ax
-        mov sp, 0xFFFE
-        xor ax, ax
-        xor bx, bx
-        mov cx, 0x00FF
-        mov si, 0x0100
-        mov di, sp
-        mov bp, 0x0900
-        push bx ; So a local return will execute the INT 20 instruction at [cs:0]
-        push dx
-        push si
-        sti
-        retf
+        mov bx, MsgErrCmdpRet
+        ; Fall through
 
 ; Halt with error message in BX
 Fatal:
@@ -376,6 +330,93 @@ Malloc:
 MallocOOM:
         mov bx, MsgErrOOM
         jmp Fatal
+
+
+; Load program from CurFileName
+; Returns AX=Loaded segment (0 on error)
+; Assumes CS=DS
+LoadProgram:
+        ; Allocate room
+        mov ax, 0x1000
+        call Malloc
+        mov [LastProcSeg], ax
+
+        call FindFileInRoot
+        cmp bx, NOT_FOUND
+        jne .Found
+        xor ax, ax
+        ret
+.Found:
+        ; Open file and read
+
+        call OpenFileFromDE
+
+        mov bx, ax
+        push bx
+        push ds
+        mov ax, [LastProcSeg]
+        mov ds, ax
+        mov dx, 0x0100
+        mov cx, 0xFF00
+        call ReadFile
+        pop ds
+        pop bx
+        ; AX = bytes read
+
+        ; Close again
+        call CloseFileHandle
+
+        ; Build PSP (TODO: More...)
+        mov ax, [LastProcSeg]
+        mov es, ax
+        mov word [es:0], 0x20CD ; Int 20h
+        mov word [es:2], 0x9FFF ; Segment of first byte beyond memory allocated by program
+        mov byte [es:0x80], 0   ; No command line arguments
+        ; Return with segment in ax
+        ret
+
+; Start loaded program at segment AX
+StartProgram:
+        cli
+        mov bx, cs
+        mov ds, bx
+        ; Push last stack pointer
+        mov bx, [LastProcStack]
+        push bx
+        mov bx, [LastProcStack+2]
+        push bx
+        push .Done ; Local return in Int21_4C should go here
+        ; Save stack pointer
+        mov [LastProcStack], sp
+        mov sp, ss
+        mov [LastProcStack+2], sp
+        ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
+        mov ss, ax
+        mov ds, ax
+        mov es, ax
+        mov dx, ax
+        mov sp, 0xFFFE
+        xor ax, ax
+        xor bx, bx
+        mov cx, 0x00FF
+        mov si, 0x0100
+        mov di, sp
+        mov bp, 0x0900
+        push bx ; So a local return will execute the INT 20 instruction at [cs:0]
+        push 2 ; Push flags
+        push dx
+        push si
+        iret
+.Done:
+        ; Take care to preserve return code in AL
+
+        ; Restore LastProcStack
+        pop bx
+        mov [cs:LastProcStack+2], bx
+        pop bx
+        mov [cs:LastProcStack], bx
+        ret
+
 
 ; Return carry clear if cluster index in AX is valid
 ClusterValid:
@@ -1085,6 +1126,10 @@ Int21Dispatch:
         je Int21_3F
         cmp ah, 0x40
         je Int21_40
+        cmp ah, 0x4A
+        je Int21_4A
+        cmp ah, 0x4B
+        je Int21_4B
         cmp ah, 0x4C
         je Int21_4C
 
@@ -1271,19 +1316,91 @@ Int21_40:
         call WriteFile
         jmp IRETC
 
-Int21_4C:
-        push ax
+; Int 21/AH=4Ah Resize memory block
+; BX    New size in paragraphs
+; ES    Segment to resize
+Int21_4A:
+        ; HACK: Only allow resize of last loaded program
+        mov ax, [cs:LastProcSeg]
+        cmp es, ax
+        je .OK
+        mov bx, .MsgNotImpl
+        jmp Fatal
+.OK:
+        mov ax, es
+        add ax, bx
+        cmp ax, [cs:FreeSeg]
+        jbe .OK2
+        mov bx, .MsgNotImpl
+        jmp Fatal
+.OK2:
+        mov [cs:FreeSeg], ax
+        clc
+        jmp IRETC
+.MsgNotImpl: db 'FIXME in Int21_4A', 0
+
+; Int 21/AH=4Bh Exec
+; AL    Type of load (0 = load and execute)
+; DS:DX Program name
+; ES:BX Parameter block (mostly ignored for now)
+;       Far pointe at [es:bx+2] points to command line arguments
+Int21_4B:
+        cmp al, 0
+        jne .NotImpl
+
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+        push bp
+        push ds
+        push es
+
+        call ExpandFName
         mov ax, cs
         mov ds, ax
-        mov bx, .MsgExited
-        call PutString
-        pop ax
-        call PutHexByte
-        call PutCrLf
-        mov bx, .MsgTODO
+        call LoadProgram
+        and ax, ax
+        jnz .LoadOK
+        mov ax, ERR_FILE_NOT_FND ; Assume this is the cause...
+        stc
+        jmp .Ret
+.LoadOK:
+        call StartProgram
+        mov word [cs:LastProcSeg], 0 ; TODO handle this better
+        ; Leave return code in AL
+        clc
+.Ret:
+        pop es
+        pop ds
+        pop bp
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        jmp IRETC
+.NotImpl:
+        mov bx, .MsgNotImpl
         jmp Fatal
-.MsgExited: db 'Program exited with AL=0x', 0
-.MsgTODO:   db 'TODO: Handle this...', 0
+.MsgNotImpl: db 'TODO: Not implemented: Int21_4B', 0
+
+; Int 21/AH=4Ch Terminate with return code
+; AL    Return code
+Int21_4C:
+        ; TODO: Ensure files are closed and other
+        ;       book keeping is done
+
+        ; Preserve value of AL
+        mov bx, cs
+        mov ds, bx
+        mov bx, [LastProcStack]
+        mov sp, bx
+        mov bx, [LastProcStack+2]
+        mov ss, bx
+        ret ; local return assumed to be to StartProgram
+
 
 Int20Dispatch:
         ; INT 20 is the same as INT 21/AX=4C00h
@@ -1306,6 +1423,7 @@ MsgErrFileMax:   db 'Too many open files', 0
 MsgErrReadFile:  db 'Error reading from file', 0
 MsgErrFNotOpen:  db 'Invalid file handle', 0
 MsgErrRootFull:  db 'Root directory full', 0
+MsgErrCmdpRet:   db 'Command processor returned', 0
 CmdpFName:       db 'CMDP.COM', 0
 
 DiskPacket:
@@ -1327,5 +1445,7 @@ FATSeg:          dw 0
 FileInfoSeg:     dw 0
 RootSeg:         dw 0
 CmdpSeg:         dw 0
+LastProcSeg:     dw 0 ; Segment of last started process
+LastProcStack:   dw 0, 0 ; Stack before StartProgram
 
 CurFileName:     db '           ' ; 8+3 spaces

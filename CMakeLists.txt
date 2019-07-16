@@ -75,7 +75,8 @@ add_custom_target(
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com" "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
 )
 
-if (WIN32)
+if (MSVC)
+    # TODO: Get this working when using MSYS Makefiles....
     add_custom_target(test_sasm_c
         COMMAND set ASM="$<TARGET_FILE:sasm>"
         COMMAND test.cmd
