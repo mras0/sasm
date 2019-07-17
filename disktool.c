@@ -50,6 +50,8 @@ struct DirEntry {
 #define ATTR_D 0x10 // directory
 #define ATTR_A 0x20 // archive
 
+#define ENTRY_DELETED 0xE5
+
 #define OEM_NAME_OFFSET     0x03
 #define BPB_OFFSET          0x0B
 
@@ -239,12 +241,27 @@ U1 PrintDirEntry(void* context, const struct DirEntry* de)
 {
     (void)context;
     if (!de->Name[0]) {
-        return 0;
-    }
-    if (de->Attributes & ATTR_L) {
+        // Unused entry
+    } else if (de->Attributes & ATTR_L) {
         printf("Volume label: %11.11s\n", de->Name);
     } else {
-        printf("%11.11s %02X %08X %04X\n", de->Name, de->Attributes, de->FileSize, de->FirstClusterLo);
+        U1 temp[13];
+        U1* p = temp;
+        for (int i = 0; i < 8 && de->Name[i] != ' '; ++i) {
+            *p++ = de->Name[i];
+        }
+        *p++ = '.';
+        for (int i = 8; i < 11 && de->Name[i] != ' '; ++i) {
+            *p++ = de->Name[i];
+        }
+        *p++ = '\0';
+        if (temp[0] == ENTRY_DELETED) {
+            temp[0] = '?';
+        } else if (temp[0] == 0x05) {
+            temp[0] = ENTRY_DELETED;
+        }
+
+        printf("%-12s %02X %08X %04X\n", temp, de->Attributes, de->FileSize, de->FirstClusterLo);
     }
     return 1;
 }

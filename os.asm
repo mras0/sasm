@@ -9,6 +9,8 @@ DIR_ENTRY_LCLUST equ 0x1A ; WORD    Low word of start cluster (high word only us
 DIR_ENTRY_FSIZE  equ 0x1C ; DWORD   File size
 DIR_ENTRY_SIZE   equ 0x20
 
+ENTRY_DELETED    equ 0xE5 ; Special value of DIR_ENTRY_FNAME[0]
+
 ROOT_MAX_IDX     equ 0x1C00 ; MaxRootEntries * DIR_ENTRY_SIZE
 
 FAT_RES_SECS     equ 1  ; Number of reserved sectors
@@ -107,7 +109,7 @@ Main:
 
         ; Read FAT
         xor di, di
-        mov ax, [FatSeg]
+        mov ax, [FATSeg]
         mov es, ax
         mov ax, FAT_RES_SECS
         mov cx, FAT_SEC_CNT
@@ -455,7 +457,7 @@ InvalidCluster:
 AddCluster:
         push si
         mov si, ax ; Save previous cluster in SI
-        mov bx, [cs:FatSeg]
+        mov bx, [cs:FATSeg]
         mov es, bx
         ; First find free cluster
         xor bx, bx ; FAT pointer
@@ -569,6 +571,11 @@ ExpandFName:
         inc cl
         jmp .FillRest
 .FillDone:
+        ; If the first character is 0xE5 replace it with 0x05
+        cmp byte [es:CurFileName], ENTRY_DELETED
+        jne .ND
+        mov byte [es:CurFileName], 0x05
+.ND:
         pop di
         ret
 .Store:
@@ -586,7 +593,7 @@ ExpandFName:
 ; Try to find CurFileName in Root Directory
 ; Returns pointer to directory entry in BX
 ; or 0xFFFF (NOT_FOUND)
-; DS must point to cs
+; DS must point to CS
 FindFileInRoot:
         push si
         push di
@@ -599,7 +606,9 @@ FindFileInRoot:
 
         mov al, [es:bx]
         and al, al
-        jz .NotFound
+        jz .NextEntry
+        cmp al, ENTRY_DELETED
+        je .NextEntry
 
         mov di, bx
         mov si, CurFileName
@@ -635,8 +644,11 @@ NewRootEntry:
         mov es, bx
         xor bx, bx
 .Search:
-        cmp byte [es:bx], 0 ; Maybe also allow '?' as first char (TODO)
-        je .Found
+        mov al, [es:bx]
+        and al, al
+        jz .Found
+        cmp al, ENTRY_DELETED
+        jz .Found
         add bx, DIR_ENTRY_SIZE
         cmp bx, ROOT_MAX_IDX
         jae .RootFull
@@ -735,7 +747,10 @@ PrintRootDir:
         mov es, bx
         xor bx, bx
 .L:
-        cmp byte [es:bx], 0
+        mov al, [es:bx]
+        cmp al, 0
+        jz .Skip
+        cmp al, ENTRY_DELETED
         jz .Skip
         push bx
         call PrintDirEntry
@@ -807,13 +822,16 @@ CloseFileHandle:
         cmp al, FMODE_READ_ONLY
         je .Done
         call FlushFileBuffer
-        call WriteRootDir
-        call WriteFAT
+        call WriteFSMeta
 .Done:
         ret
 .Error:
         mov bx, MsgErrFNotOpen
         jmp Fatal
+
+WriteFSMeta:
+        call WriteFAT
+        ; Fall through
 
 WriteRootDir:
         mov ax, [cs:RootSeg]
@@ -1126,6 +1144,8 @@ Int21Dispatch:
         je Int21_3F
         cmp ah, 0x40
         je Int21_40
+        cmp ah, 0x41
+        je Int21_41
         cmp ah, 0x4A
         je Int21_4A
         cmp ah, 0x4B
@@ -1155,7 +1175,7 @@ Int21NotImpl:
 IRETC:
         push bp
         mov bp, sp
-        jc .c
+        jc .C
         and byte [bp+6], 0xfe ; clear carry
         jmp .Ret
 .C:
@@ -1316,17 +1336,61 @@ Int21_40:
         call WriteFile
         jmp IRETC
 
+; Int 21/AH=41h Delete file
+; DS:DX File to delete
+Int21_41:
+        push bx
+        push cx
+        push dx
+        push ds
+        push es
+
+        call ExpandFName
+
+        mov ax, cs
+        mov ds, ax
+
+        call FindFileInRoot
+
+        cmp bx, NOT_FOUND
+        jne .Found
+        mov ax, ERR_FILE_NOT_FND
+        stc
+        jmp .Ret
+.Found:
+        push es
+        push bx
+        mov ax, [es:bx+DIR_ENTRY_LCLUST]
+        call FreeClusterChain
+        pop bx
+        pop es
+
+        mov byte [es:bx+DIR_ENTRY_FNAME], ENTRY_DELETED
+        call WriteFSMeta
+        clc
+.Ret:
+        pop es
+        pop ds
+        pop dx
+        pop cx
+        pop bx
+        jmp IRETC
+
+
 ; Int 21/AH=4Ah Resize memory block
 ; BX    New size in paragraphs
 ; ES    Segment to resize
 Int21_4A:
+        push bx
         ; HACK: Only allow resize of last loaded program
         mov ax, [cs:LastProcSeg]
-        cmp es, ax
+        mov bx, es
+        cmp bx, ax
         je .OK
         mov bx, .MsgNotImpl
         jmp Fatal
 .OK:
+        pop bx
         mov ax, es
         add ax, bx
         cmp ax, [cs:FreeSeg]

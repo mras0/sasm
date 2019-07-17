@@ -61,8 +61,28 @@ Main:
         int 0x21
         jc GenericError
 
+        ; Create file and delete it
+        mov dx, OutFileName
+        mov cx, 0x0020 ; Attributes
+        mov ah, 0x3c
+        int 0x21
+        mov dx, MsgErrOpenOut
+        jc Error
+        ; Close immediately
+        mov bx, ax
+        mov ah, 0x3e
+        int 0x21
+        jc GenericError
+        ; Delete file
+        mov ah, 0x41
+        mov dx, OutFileName
+        int 0x21
+        jc GenericError
 
+        ; Return.. (Shouldn't actually do that)
         ret
+
+
 .OKMsg: db 'Back in CMDP!', 13, 10, '$'
 .ProgramName: db 'SASM.COM', 0
 .Args: db 'foo!', 0x0D
@@ -188,7 +208,8 @@ HexDump:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-InFileName:       db 'A.COM', 0
+InFileName:       db 'SASM.COM', 0
+OutFileName:      db 'Foo.TMP', 0
 MsgErrGeneric:    db 'Generic error message$'
 MsgErrOpenIn:     db 'Could not open input file$'
 MsgErrOpenOut:    db 'Could not open output file$'
