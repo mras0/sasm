@@ -9,11 +9,13 @@ Main:
 
         ; Free remaining memory if running under DOS
         mov ah, 0x4a
-        mov bx, Buffer
-        add bx, 15
-        and bx, 0xFFF0
-        add bx, BUFFER_SIZE
-        shr bx, 4
+        ; Handle Stack...
+        ;mov bx, Buffer
+        ;add bx, 15
+        ;and bx, 0xFFF0
+        ;add bx, BUFFER_SIZE
+        ;shr bx, 4
+        mov bx, 0x1000 ; 64K
         int 0x21
         jc GenericError
 
@@ -36,48 +38,27 @@ Main:
         int 0x21
 
 
-        ; Open file for reading
-        mov dx, InFileName
-        mov ax, 0x3d00
-        int 0x21
-        jnc .OK
-        mov dx, MsgErrOpenIn
-        jmp Error
-.OK:
-        mov [InputFile], ax
+        call OpenInput
 
         call ReadToBuffer
+        mov cx, ax
         mov si, Buffer
-        mov cx, [BytesRead]
         cmp cx, 256
         jb .hd
         mov cx, 256
 .hd:
         call HexDump
 
-        ; Close input file
-        mov ah, 0x3e
-        mov bx, [InputFile]
-        int 0x21
-        jc GenericError
+        call CloseInput
 
-        ; Create file and delete it
-        mov dx, OutFileName
-        mov cx, 0x0020 ; Attributes
-        mov ah, 0x3c
-        int 0x21
-        mov dx, MsgErrOpenOut
-        jc Error
-        ; Close immediately
-        mov bx, ax
-        mov ah, 0x3e
-        int 0x21
-        jc GenericError
-        ; Delete file
-        mov ah, 0x41
-        mov dx, OutFileName
-        int 0x21
-        jc GenericError
+        ;call OpenOutput
+        ;call CloseOutput
+        ;; Delete file
+        ;mov ah, 0x41
+        ;mov dx, OutFileName
+        ;int 0x21
+        ;jc GenericError
+        call CopyFile
 
         ; Return.. (Shouldn't actually do that)
         ret
@@ -107,20 +88,6 @@ Error:
         call PutChar
         mov ax, 0x4cff
         int 0x21
-
-ReadToBuffer:
-        mov ah, 0x3f
-        mov bx, [InputFile]
-        mov cx, BUFFER_SIZE
-        mov dx, Buffer
-        int 0x21
-        jc .ReadError
-        mov [BytesRead], ax
-        ret
-.ReadError:
-        mov dx, MsgErrRead
-        jmp Error
-
 
 ; Put character in AL
 PutChar:
@@ -206,6 +173,83 @@ HexDump:
         jnz HexDump
         ret
 
+OpenInput:
+        ; Open input file for reading
+        mov dx, InFileName
+        mov ax, 0x3d00
+        int 0x21
+        mov dx, MsgErrOpenIn
+        jc Error
+        mov [InputFile], ax
+        ret
+
+OpenOutput:
+        mov dx, OutFileName
+        mov cx, 0x0020 ; Attributes
+        mov ah, 0x3c
+        int 0x21
+        mov dx, MsgErrOpenOut
+        jc Error
+        mov [OutputFile], ax
+        ret
+
+CloseInput:
+        mov bx, [InputFile]
+        jmp CloseFile
+
+CloseOutput:
+        mov bx, [OutputFile]
+        jmp CloseFile
+
+CloseFile:
+        mov ah, 0x3e
+        int 0x21
+        jc GenericError
+        ret
+
+; Read from InputFile. Returns number of bytes read in AX
+ReadToBuffer:
+        mov ah, 0x3f
+        mov bx, [InputFile]
+        mov cx, BUFFER_SIZE
+        mov dx, Buffer
+        int 0x21
+        jc .ReadError
+        ; Return number of bytes read in AX
+        ret
+.ReadError:
+        mov dx, MsgErrRead
+        jmp Error
+
+; Write CX bytes from buffer to OutputFile
+WriteFromBuffer:
+        mov ah, 0x40
+        mov bx, [OutputFile]
+        mov dx, Buffer
+        int 0x21
+        jc .WriteError
+        ret
+.WriteError:
+        mov dx, MsgErrWrite
+        jmp Error
+
+
+; Copy from InFileName to OutFileName
+CopyFile:
+        call OpenInput
+        call OpenOutput
+.Loop:
+        call ReadToBuffer
+        and ax, ax
+        jz .Done
+        mov cx, ax
+        call WriteFromBuffer
+        jmp .Loop
+.Done:
+        call CloseOutput
+        call CloseInput
+        ret
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 InFileName:       db 'SASM.COM', 0
@@ -219,5 +263,5 @@ MsgErrWrite:      db 'Error writing to file$'
 HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 
 InputFile:        dw 0
-BytesRead:        dw 0 ; Number of bytes read to Buffer
+OutputFile:       dw 0
 Buffer:  ; Must be at end!

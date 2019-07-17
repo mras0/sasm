@@ -104,6 +104,7 @@ Main:
         pop bx
         pop es
         mov [es:bx+FILE_INFO_BUFSEG], ax
+        add bx, FILE_INFO_SIZE
         dec cl
         jnz .InitFile
 
@@ -776,13 +777,14 @@ OpenFileFromDE:
         ; DI    = Directory entry
         mov [es:bx+FILE_INFO_CLUST], si
         mov [es:bx+FILE_INFO_DIRENT], di
-        xor ax, ax
-        mov [es:bx+FILE_INFO_FOFF], ax
-        mov [es:bx+FILE_INFO_FOFF+2], ax
-        mov [es:bx+FILE_INFO_BUFOFF], ax
-        mov [es:bx+FILE_INFO_BUFSZ], ax
+        xor cx, cx
+        mov [es:bx+FILE_INFO_FOFF], cx
+        mov [es:bx+FILE_INFO_FOFF+2], cx
+        mov [es:bx+FILE_INFO_BUFOFF], cx
+        mov [es:bx+FILE_INFO_BUFSZ], cx
         ; Make sure some other mode than FMODE_CLOSED is set
         mov byte [es:bx+FILE_INFO_MODE], FMODE_READ_ONLY
+        ; Return file handle in AX
         pop di
         pop si
         ret
@@ -912,18 +914,25 @@ WriteFile:
         push cx
         push dx
         push si
+        push di
+        push ds
         push es
 
         cmp bx, MAX_FILES
         jae .InvalidHandle
 
-        mov si, cx ; Store original count in si
+        mov di, ds ; Save original DS in DI
+
+        mov si, cs
+        mov ds, si
+
+        mov si, cx ; Store original count in SI
 
         push dx
         mov ax, FILE_INFO_SIZE
         mul bx
         mov bx, ax
-        mov ax, [cs:FileInfoSeg]
+        mov ax, [FileInfoSeg]
         mov es, ax
         pop dx
         ; ES:BX -> File Info
@@ -946,6 +955,7 @@ WriteFile:
         pusha
         push es
         mov cx, ax
+        mov ds, di
         mov di, [es:bx+FILE_INFO_BUFOFF]
         mov si, [es:bx+FILE_INFO_BUFSEG]
         mov es, si
@@ -973,6 +983,8 @@ WriteFile:
         stc
 .Ret:
         pop es
+        pop ds
+        pop di
         pop si
         pop dx
         pop cx
