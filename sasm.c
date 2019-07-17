@@ -620,8 +620,9 @@ void MoveToOperandL(void)
     CurrentFixup = NULL;
 }
 
-void DirectiveOrg(void)
+void DirectiveOrg(U1 arg)
 {
+    (void)arg;
     const U2 org = GetNumber();
     if (org < CurrentAddress) {
         Error("Invalid ORG (moving backwards)");
@@ -664,8 +665,9 @@ void DirectiveDx(U1 size)
     } while (TryConsume(','));
 }
 
-void InstINT(void)
+void InstINT(U1 arg)
 {
+    (void)arg;
     const U2 i = GetNumber();
     if (i > 0xff) {
         Error("Interrupt no. out of range");
@@ -692,7 +694,7 @@ void OutputImm16(void)
 
 void OutputImm8(void)
 {
-    if ((U1)OperandValue > 255) {
+    if (!IsShort(OperandValue) && OperandValue > 0xFF) {
         Error("8-bit immediate out of range");
     }
     OutputByte(OperandValue & 0xff);
@@ -771,8 +773,9 @@ void OutputMImm(U1 inst, U1 r)
     OutputImm(ExplicitSize);           // Immediate
 }
 
-void InstMOV(void)
+void InstMOV(U1 arg)
 {
+    (void)arg;
     Get2Operands();
     // TODO: Use optimized opcodes when moving to from AL/AX
 
@@ -853,8 +856,9 @@ void InstMOVXX(U1 op2)
     Error("Invalid/unsupported operands to MOVZX");
 }
 
-void InstXCHG(void)
+void InstXCHG(U1 arg)
 {
+    (void)arg;
     Get2Operands();
     // TODO: Could use 0x90+r if either operand is AX
     if (OperandLType == OP_REG) {
@@ -874,8 +878,9 @@ void InstXCHG(void)
     Error("Invalid/unsupported operands to XCHG");
 }
 
-void InstIncDec(bool dec)
+void InstIncDec(U1 dec)
 {
+    assert(dec == 0 || dec == 1);
     GetOperand();
     if (OperandType == OP_REG) {
         if (OperandValue / 8 == 0) {
@@ -982,8 +987,9 @@ void InstMulDiv(U1 r)
     OutputByte(0xC0 | (r<<3) | (OperandValue&7));
 }
 
-void InstPUSH(void)
+void InstPUSH(U1 arg)
 {
+    (void)arg;
     GetOperand();
     if (OperandType == OP_REG) {
         if (OperandValue < R_AX) {
@@ -1008,8 +1014,9 @@ void InstPUSH(void)
     }
 }
 
-void InstPOP(void)
+void InstPOP(U1 arg)
 {
+    (void)arg;
     GetOperand();
     if (OperandType != OP_REG || OperandValue < R_AX) {
         Error("Invalid/unsupported POP");
@@ -1047,8 +1054,9 @@ bool HandleShortRel(U1 inst)
     return true;
 }
 
-void InstCALL(void)
+void InstCALL(U1 arg)
 {
+    (void)arg;
     GetOperand();
     if (OperandType == OP_REG) {
         if (OperandValue/8 != 1) {
@@ -1062,8 +1070,9 @@ void InstCALL(void)
     HandleRel16();
 }
 
-void InstJMP(void)
+void InstJMP(U1 arg)
 {
+    (void)arg;
     GetOperand();
     if (!HandleShortRel(0xEB)) {
         OutputByte(0xE9);
@@ -1099,7 +1108,7 @@ void HandleJcc(U1 cc) {
 
 static const struct {
     const char text[6];
-    void (*func)();
+    void (*func)(U1);
     U1 arg;
 } DispatchList[] = {
 //  { "12345" , &Directive12345 , 0x12 }

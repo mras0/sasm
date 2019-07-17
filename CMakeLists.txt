@@ -12,7 +12,7 @@ if (MSVC)
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
     add_definitions("-D_CRT_SECURE_NO_WARNINGS")
 else()
-    message(ERROR "Not implemented")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ggdb -Wall -Wextra -pedantic -std=c99")
 endif()
 
 
