@@ -26,10 +26,11 @@ Main:
         int 0x21
         jc GenericError
 
-        ; Run SASM
+        ; Run Program
 
         mov word [.ArgPtr], .Args
         mov ax, ds
+        mov es, ax
         mov [.ArgPtr+2], ax
         mov ax, 0x4b00           ; Load and execute
         mov dx, .ProgramName     ; DS:DX -> program name
@@ -49,8 +50,9 @@ Main:
         ret
 
 .OKMsg: db 'Back in CMDP!', 13, 10, '$'
-.ProgramName: db 'SASM.COM', 0
-.Args: db 'foo!', 0x0D
+.ProgramName: db 'CMDLINE.COM', 0
+.Args:
+ db 4, 'foo!', 0x0D
 .ParameterBlock:
         dw 0 ; Segment of environment to copy (0 = use caller's)
 .ArgPtr:
@@ -586,9 +588,9 @@ MsgPressAnyKey:   db 'Press any key$'
 
 HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 
-CommandLine:      db 'HD cmdp.com', 0x0D
+;CommandLine:      db 'HD cmdp.com', 0x0D
 ;CommandLine:      db ' copy    sasm.com   foo.tmp', 0x0D
-;CommandLine:      db '    dir.com',0x0D
+CommandLine:      db '    dir.com',0x0D
 ;CommandLine:      db '    echo.Hello world!',0x0D
 
 InputFile:        resw 1

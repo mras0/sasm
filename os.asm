@@ -1675,16 +1675,40 @@ Int21_4B:
         push ds
         push es
 
+        ; Push command line
+        mov ax, [es:bx+2]
+        push ax
+        mov ax, [es:bx+4]
+        push ax
+
         call ExpandFName
         mov ax, cs
         mov ds, ax
         call LoadProgram
+        pop ds ; Command line seg
+        pop si ; Command line offset
         and ax, ax
         jnz .LoadOK
         mov ax, ERR_FILE_NOT_FND ; Assume this is the cause...
         stc
         jmp .Ret
 .LoadOK:
+        ; Copy command line (DS:SI from above)
+        ; It's a one byte length byte and a CR terimanted
+        ; string (NOTE: the CR doesn't count towards the length!)
+        mov es, ax
+        mov di, 0x80 ; Copy to PSP:80h (The command line)
+        mov cl, [si]    ; Copy as many bytes as requested
+        mov ch, 0x7E
+        cmp cl, ch      ; .. But limit
+        jbe .CopyCmdLine
+        mov cl, ch
+.CopyCmdLine:
+        xor ch, ch
+        inc cl
+        rep movsb
+
+        mov byte [es:di], 0x0D ; Make sure the string is always CR terminated
         call StartProgram
         mov word [cs:LastProcSeg], 0 ; TODO handle this better
         ; Leave return code in AL

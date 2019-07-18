@@ -36,6 +36,7 @@ SASM(sasm.asm sasm.com)
 SASM(boot.asm boot.bin)
 SASM(os.asm os.sys)
 SASM(cmdp.asm cmdp.com)
+SASM(tests/cmdline.asm cmdline.com)
 
 add_custom_target(sasm_com DEPENDS sasm.com)
 
@@ -49,6 +50,7 @@ add_custom_command(
     COMMAND disktool disk.img put os.sys
     COMMAND disktool disk.img put cmdp.com
     COMMAND disktool disk.img put sasm.com
+    COMMAND disktool disk.img put cmdline.com
     COMMAND disktool disk.img put "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" in.asm
     COMMAND disktool disk.img list
     DEPENDS
@@ -57,6 +59,7 @@ add_custom_command(
         ${CMAKE_CURRENT_BINARY_DIR}/os.sys
         ${CMAKE_CURRENT_BINARY_DIR}/sasm.com
         ${CMAKE_CURRENT_BINARY_DIR}/cmdp.com
+        ${CMAKE_CURRENT_BINARY_DIR}/cmdline.com
     )
 
 add_custom_target(build_disk ALL DEPENDS "${DISK_IMG}")
