@@ -2,6 +2,13 @@
 
 BUFFER_SIZE       EQU 512
 
+; Offsets into FindFile structure
+FF_FATTR         equ 0x15 ; BYTE     File attribute
+FF_FTIME         equ 0x16 ; WORD     File time
+FF_FDATE         equ 0x18 ; WORD     File date
+FF_FSIZE         equ 0x1A ; DWORD    File size
+FF_FNAME         equ 0x1E ; BYTE[13] File name and extension (ASCIIZ with dot)
+
 Main:
         mov dx, HelloMsg
         mov ah, 9
@@ -85,20 +92,34 @@ Main:
         int 0x21
         jc .Done
 .Find:
-        mov si, 0x9E ; DTA defaults to PSP:80h, Offset of filename is 0x1E
+        mov si, 0x80 ; DTA defaults to PSP:80h, Offset of filename is 0x1E
+        add si, FF_FNAME
+        mov cl, 11
 .Print:
         lodsb
         and al, al
-        jz .Done
+        jz .Pad
         call PutChar
+        dec cl
         jmp .Print
-.Done:
+.Pad:
+        and cl, cl
+        jz .PadDone
+        mov al, ' '
+        call PutChar
+        dec cl
+        jmp .Pad
+.PadDone:
+        mov si, 0x80
+        mov ax, [si+FF_FSIZE]
+        mov dx, [si+FF_FSIZE+2]
+        call PutDec9
         call PutCrLf
         ; Find next
         mov ah, 0x4F
         int 0x21
         jnc .Find
-
+.Done:
         ; Return.. (Shouldn't actually do that)
         ret
 
@@ -210,6 +231,51 @@ HexDump:
         call PutCrLf
         and cx, cx
         jnz HexDump
+        ret
+
+; Print 9 digit decimal number in DX:AX (space padded)
+PutDec9:
+        push ds
+        push bp
+        mov bx, 10
+        mov bp, sp
+        sub sp, 10
+        dec bp
+        mov byte [bp], '$'
+.Cvt:
+        push ax
+        mov ax, dx
+        xor dx, dx
+        div bx
+        mov cx, ax
+        pop ax
+        div bx
+        xchg cx, dx
+        push ax
+        mov al, cl
+        add al, '0'
+        dec bp
+        mov [bp], al
+        pop ax
+        mov cx, dx
+        or cx, ax
+        jnz .Cvt
+        mov al, ' '
+.Pad:
+        cmp bp, sp
+        je .Print
+        dec bp
+        mov [bp], al
+        jmp .Pad
+.Print:
+        mov bx, ss
+        mov ds, bx
+        mov dx, bp
+        mov ah, 0x09
+        int 0x21
+        add sp, 10
+        pop bp
+        pop ds
         ret
 
 OpenInput:
