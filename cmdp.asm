@@ -37,7 +37,6 @@ Main:
         mov ah, 9
         int 0x21
 
-
         call OpenInput
 
         call ReadToBuffer
@@ -60,10 +59,50 @@ Main:
         ;jc GenericError
         call CopyFile
 
+        ; Int21/AH=2Fh
+        ; Get disk transfer area address
+        ; Returns DTA pointer in ES:BX
+        mov ah, 0x2F
+        int 0x21
+        push bx
+        mov ax, es
+        call PutHexWord
+        mov al, ':'
+        call PutChar
+        pop ax
+        call PutHexWord
+        call PutCrLf
+
+        ; Int21/AH=1Ah Set disk transfer area address
+        ; DS:DX points to DTA
+        mov ah, 0x1a
+        mov dx, 0x80
+        int 0x21
+
+        mov ah, 0x4e
+        xor cx, cx
+        mov dx, .SearchPattern
+        int 0x21
+        jc .Done
+.Find:
+        mov si, 0x9E ; DTA defaults to PSP:80h, Offset of filename is 0x1E
+.Print:
+        lodsb
+        and al, al
+        jz .Done
+        call PutChar
+        jmp .Print
+.Done:
+        call PutCrLf
+        ; Find next
+        mov ah, 0x4F
+        int 0x21
+        jnc .Find
+
         ; Return.. (Shouldn't actually do that)
         ret
 
-
+.SearchPattern: db '*.COM', 0
 .OKMsg: db 'Back in CMDP!', 13, 10, '$'
 .ProgramName: db 'SASM.COM', 0
 .Args: db 'foo!', 0x0D

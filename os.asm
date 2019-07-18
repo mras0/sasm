@@ -5,6 +5,8 @@ SECTOR_SIZE      equ 512
 DIR_ENTRY_FNAME  equ 0x00 ; BYTE[8] File name
 DIR_ENTRY_EXT    equ 0x08 ; BYTE[3] Extension
 DIR_ENTRY_ATTR   equ 0x0B ; BYTE    File attributes
+DIR_ENTRY_FTIME  equ 0x16 ; WORD    File time
+DIR_ENTRY_FDATE  equ 0x18 ; WORD    File date
 DIR_ENTRY_LCLUST equ 0x1A ; WORD    Low word of start cluster (high word only used for FAT32)
 DIR_ENTRY_FSIZE  equ 0x1C ; DWORD   File size
 DIR_ENTRY_SIZE   equ 0x20
@@ -41,6 +43,16 @@ FMODE_WRITE_ONLY equ 2
 
 FILE_BUFFER_SIZE equ SECTOR_SIZE
 
+; Find First offsets into DTA
+FF_STEMPLATE     equ 0x01 ; BYTE[11] Search template
+FF_SATTR         equ 0x0C ; BYTE     Search attribute mask
+FF_ROOT_IDX      equ 0x0D ; WORD     Current index (offset) into RootSeg
+FF_FATTR         equ 0x15 ; BYTE     File attribute
+FF_FTIME         equ 0x16 ; WORD     File time
+FF_FDATE         equ 0x18 ; WORD     File date
+FF_FSIZE         equ 0x1A ; DWORD    File size
+FF_FNAME         equ 0x1E ; BYTE[13] File name and extension (ASCIIZ with dot)
+
 ; DOS error codes
 ERR_NONE         equ 0x00 ; No error
 ERR_FUNC_INV     equ 0x01 ; Function number invalid
@@ -50,6 +62,7 @@ ERR_TOO_MANY_FIL equ 0x04 ; Too many open files
 ERR_ACCESS_DENIE equ 0x05 ; Access denied
 ERR_INVALID_HAND equ 0x06 ; Invalid handle
 ERR_NO_MEM       equ 0x08 ; Insufficient memory
+ERR_NO_FILES     equ 0x12 ; No more files
 
 NOT_FOUND        equ 0xFFFF ; Returned when entry/pointer not found
 
@@ -383,6 +396,11 @@ StartProgram:
         cli
         mov bx, cs
         mov ds, bx
+
+        ; Point DTA at PSP:80h
+        mov [DTA+2], ax
+        mov word [DTA], 0x80
+
         ; Push last stack pointer
         mov bx, [LastProcStack]
         push bx
@@ -533,6 +551,39 @@ FreeClusterChain:
         pop ax
         jmp FreeClusterChain
 
+; Compress filename in DS:SI to ES:DI
+CompressFName:
+        push si
+        push di
+        push si
+        mov cl, 8
+.Name:
+        lodsb
+        cmp al, ' '
+        je .NameDone
+        stosb
+        dec cl
+        jnz .Name
+.NameDone:
+        mov al, '.'
+        stosb
+        pop si
+        add si, 8
+        mov cl, 3
+.Ext:
+        lodsb
+        cmp al, ' '
+        je .ExtDone
+        stosb
+        dec cl
+        jnz .Ext
+.ExtDone:
+        xor al, al
+        stosb
+        pop di
+        pop si
+        ret
+
 ; Expand filename in DS:DX to CurFileName
 ExpandFName:
         push di
@@ -591,16 +642,85 @@ ExpandFName:
         inc cl
         ret
 
-; Try to find CurFileName in Root Directory
-; Returns pointer to directory entry in BX
-; or 0xFFFF (NOT_FOUND)
-; DS must point to CS
-FindFileInRoot:
+; Expand file specification in DS:DX to Find file template in DTA (ES:BX)
+; Follows the algorithm from https://devblogs.microsoft.com/oldnewthing/20071217-00/?p=24143
+; Preserves DS:DX and ES:BX
+ExpandFSpec:
+        push bx
         push si
         push di
-        mov ax, [RootSeg]
-        mov es, ax
-        xor bx, bx
+
+        mov si, dx
+        add bx, FF_STEMPLATE
+
+        ; 1. Start with 11 spaces and the cursor at position 1
+        mov di, bx
+        mov cx, 11
+        mov al, ' '
+        rep stosb
+
+        mov di, bx ; Cursor at position 1
+
+.ReadChar:
+        ; 2. Read a character from input and stop if at end
+        lodsb
+        and al, al
+        jz .Stop
+
+        ; 3. If the next character is a dot then set extension to '   ',
+        ;    mov the cursor to position 9 and go to step 2
+        cmp al, '.'
+        jne .CheckAsterisk
+        mov word [es:bx+8], '  '
+        mov byte [es:bx+10], ' '
+        mov di, bx
+        add di, 8
+        jmp .ReadChar
+
+.CheckAsterisk:
+        ; 4. If the next character is an asterisk, then fill the rest of
+        ;    the pattern with question marks and move the cursor past the end
+        ;    and go to step 2
+        cmp al, '*'
+        jne .NotAsterisk
+        mov cx, bx
+        sub cx, di
+        add cx, 11
+        mov al, '?'
+        rep stosb
+        mov di, bx
+        add di, 11
+        jmp .ReadChar
+
+.NotAsterisk:
+        ; 5. If not past the end, copy the character, and go to step 2
+        mov cx, di
+        sub cx, bx
+        cmp cl, 11
+        jae .ReadChar
+        ; ToUpper
+        cmp al, 'a'
+        jb .Store
+        cmp al, 'z'
+        ja .Store
+        and al, 0xDF
+.Store:
+        stosb
+        jmp .ReadChar
+
+.Stop:
+        pop di
+        pop si
+        pop bx
+        ret
+
+; Search for next file matching DS:SI from Directory in ES:BX
+; Return pointer to next matching file in ES:BX or
+; BX = 0xFFFF (NOT_FOUND) if no match is found.
+FindNextFile:
+        push si
+        push di
+        mov dx, si ; Preserve original filename in DX
 .DirLoop:
         cmp bx, ROOT_MAX_IDX
         jae .NotFound
@@ -612,13 +732,15 @@ FindFileInRoot:
         je .NextEntry
 
         mov di, bx
-        mov si, CurFileName
+        mov si, dx
         mov cl, 11
 .Compare:
-        mov al, [es:di]
-        cmp [si], al
+        lodsb
+        cmp al, '?'
+        je .Wild
+        cmp al, [es:di]
         jne .NextEntry
-        inc si
+.Wild:
         inc di
         dec cl
         jnz .Compare
@@ -630,6 +752,88 @@ FindFileInRoot:
         jmp .DirLoop
 .NotFound:
         mov bx, NOT_FOUND
+.Done:
+        pop di
+        pop si
+        ret
+
+; Try to find CurFileName in Root Directory
+; Returns pointer to directory entry in BX
+; or 0xFFFF (NOT_FOUND)
+; DS must point to CS
+FindFileInRoot:
+        push si
+        mov ax, [RootSeg]
+        mov es, ax
+        xor bx, bx
+        mov si, CurFileName
+        call FindNextFile
+        pop si
+        ret
+
+; Search for next file based on Find File structure in ES:BX
+; Returns carry clear if file found
+;         carry set and error code in AX if not found
+DoFindFile:
+        push si
+        push di
+
+.Redo:
+        ; CX = Where to start search
+        ; FF_ROOT_IDX points to last checked entry
+        mov cx, [es:bx+FF_ROOT_IDX]
+        add cx, DIR_ENTRY_SIZE
+
+        push es
+        push bx
+        ; Point DS:SI at search template
+        mov ax, es
+        mov ds, ax
+        mov si, bx
+        add si, FF_STEMPLATE
+        ; Point ES:BX at root dir
+        mov ax, [cs:RootSeg]
+        mov es, ax
+        mov bx, cx
+        call FindNextFile
+        mov si, es
+        mov ds, si
+        mov si, bx
+        ; DS:SI = DirEntry
+        pop bx
+        pop es
+        ; ES:BX = Find File structure
+
+        mov [es:bx+FF_ROOT_IDX], si ; Preserve updated root pointer
+
+        cmp si, NOT_FOUND
+        je .NotFound
+
+        ; Check if the attribute filter matches
+        mov al, [si+DIR_ENTRY_ATTR]
+        and al, [es:bx+FF_SATTR]
+        jnz .Redo
+
+        ; Copy dir entry data to find file structure
+        mov ax, [si+DIR_ENTRY_FTIME]
+        mov [es:bx+FF_FTIME], ax
+        mov ax, [si+DIR_ENTRY_FDATE]
+        mov [es:bx+FF_FDATE], ax
+        mov ax, [si+DIR_ENTRY_FSIZE]
+        mov [es:bx+FF_FSIZE], ax
+        mov ax, [si+DIR_ENTRY_FSIZE+2]
+        mov [es:bx+FF_FSIZE+2], ax
+
+        mov di, bx
+        add di, FF_FNAME
+        add si, DIR_ENTRY_FNAME
+        call CompressFName
+
+        clc
+        jmp .Done
+.NotFound:
+        stc
+        mov ax, ERR_NO_FILES
 .Done:
         pop di
         pop si
@@ -1146,6 +1350,10 @@ Int21Dispatch:
         je Int21_02
         cmp ah, 0x09
         je Int21_09
+        cmp ah, 0x1A
+        je Int21_1A
+        cmp ah, 0x2F
+        je Int21_2F
         cmp ah, 0x3C
         je Int21_3C
         cmp ah, 0x3D
@@ -1164,6 +1372,10 @@ Int21Dispatch:
         je Int21_4B
         cmp ah, 0x4C
         je Int21_4C
+        cmp ah, 0x4E
+        je Int21_4E
+        cmp ah, 0x4F
+        je Int21_4F
 
 Int21NotImpl:
         push ax
@@ -1219,6 +1431,24 @@ Int21_09:
 .Done:
         pop si
         jmp IRETC
+
+; Int 21/AH=1Ah Set disk transfer area address
+; DS:DX points to DTA
+Int21_1A:
+        push dx
+        mov [cs:DTA], dx
+        mov dx, ds
+        mov [cs:DTA+2], dx
+        pop dx
+        iret
+
+; Int 21/AH=2Fh Get disk transfer area address
+; Returns DTA pointer in ES:BX
+Int21_2F:
+        mov bx, [cs:DTA+2]
+        mov es, bx
+        mov bx, [cs:DTA]
+        iret
 
 ; Int 21/AH=3Ch Create or truncate file
 ; CX    File attributes
@@ -1477,6 +1707,74 @@ Int21_4C:
         mov ss, bx
         ret ; local return assumed to be to StartProgram
 
+; Int 21/AH=4Eh Find first matching file
+; CX    File attribute mask (bits 0 and 5 ignored)
+; DS:DX ASCIIZ file specification
+; Returns carry clear and DTA filled on success
+;         carray set and error code in AX on error
+Int21_4E:
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+        push ds
+        push es
+
+        ; Point ES:BX at find file structure (in DTA)
+        mov bx, [cs:DTA+2]
+        mov es, bx
+        mov bx, [cs:DTA]
+
+        ; Save search attribute
+        or cl, 0x21 ; bit 0 and 5 (R/O and archive) are ignored
+        xor cl, 0xff ;not cl
+        mov [es:bx+FF_SATTR], cl
+
+        ; Exapnd file specification to DTA
+        call ExpandFSpec
+
+        ; Set dir index (DoFindFile increments at the start)
+        xor ax, ax
+        sub ax, DIR_ENTRY_SIZE
+        mov word [es:bx+FF_ROOT_IDX], ax
+
+        ; Jump to common code
+        call DoFindFile
+
+        pop es
+        pop ds
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        jmp IRETC
+
+; Int 21/AH=4F Find next matching file
+; Returns carry clear and DTA filled on success
+;         carray set and error code in AX on error
+Int21_4F:
+        push bx
+        push cx
+        push dx
+        push ds
+        push es
+
+        ; Point ES:BX at find file structure (in DTA)
+        mov bx, [cs:DTA+2]
+        mov es, bx
+        mov bx, [cs:DTA]
+
+        ; Find next matching file
+        call DoFindFile
+
+        pop es
+        pop ds
+        pop dx
+        pop cx
+        pop bx
+        jmp IRETC
 
 Int20Dispatch:
         ; INT 20 is the same as INT 21/AX=4C00h
@@ -1521,7 +1819,8 @@ FATSeg:          dw 0
 FileInfoSeg:     dw 0
 RootSeg:         dw 0
 CmdpSeg:         dw 0
-LastProcSeg:     dw 0 ; Segment of last started process
-LastProcStack:   dw 0, 0 ; Stack before StartProgram
+LastProcSeg:     dw 0     ; Segment of last started process
+LastProcStack:   dw 0, 0  ; Stack before StartProgram
+DTA:             dw 0, 0  ; Disk Transfer Area (defaults to PSP:80h)
 
 CurFileName:     db '           ' ; 8+3 spaces
