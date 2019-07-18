@@ -1348,8 +1348,11 @@ FillFileBuffer:
 Int21Dispatch:
         cld ; Make sure direction flag is always clear
 
+        ; TODO: Convert to table...
         cmp ah, 0x02
         je Int21_02
+        cmp ah, 0x08
+        je Int21_08
         cmp ah, 0x09
         je Int21_09
         cmp ah, 0x1A
@@ -1417,6 +1420,13 @@ Int21_02:
         mov al, dl
         call PutChar
         jmp IRETC
+
+; Int 21/AH=08h Character input without echo
+; Returns character read in AL
+Int21_08:
+        xor ah, ah
+        int 0x16
+        iret
 
 ; Int 21/AH=09h Write string to standard output
 ; DS:DX points to '$' terminated string

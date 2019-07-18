@@ -44,19 +44,6 @@ Main:
         mov ah, 9
         int 0x21
 
-        call OpenInput
-
-        call ReadToBuffer
-        mov cx, ax
-        mov si, Buffer
-        cmp cx, 256
-        jb .hd
-        mov cx, 256
-.hd:
-        call HexDump
-
-        call CloseInput
-
         call HandleCommand
         ; Return.. (Shouldn't actually do that)
         ret
@@ -251,9 +238,11 @@ CloseFile:
 
 ; Read from InputFile. Returns number of bytes read in AX
 ReadToBuffer:
+        mov cx, BUFFER_SIZE
+        ; Fall through
+ReadToBufferN: ; Read CX bytes
         mov ah, 0x3f
         mov bx, [InputFile]
-        mov cx, BUFFER_SIZE
         mov dx, Buffer
         int 0x21
         jc .ReadError
@@ -340,6 +329,12 @@ HandleCommand:
         jmp CmdEcho
 .NotEcho:
 .NotExit:
+        cmp word [bx], 'HD'
+        jne .NotHd
+        cmp byte [bx+2], 0
+        jne .NotInternal
+        jmp CmdHd
+.NotHd:
 .NotRen:
 
 .NotInternal:
@@ -397,6 +392,15 @@ CCopyFName:
         xor al, al
         stosb
         mov al, ch
+        ret
+
+CWaitKey:
+        mov dx, MsgPressAnyKey
+        mov ah, 9
+        int 0x21
+        mov ah, 8
+        int 0x21
+        call PutCrLf
         ret
 
 CArgError:
@@ -530,6 +534,38 @@ CmdEcho:
         call PutCrLf
         ret
 
+CmdHd:
+        mov ax, cs
+        mov es, ax
+
+        lodsb
+        call CSkipSpaces
+        cmp al, 0x0D
+        je CArgError
+        mov di, InFileName
+        call CCopyFName
+        call CSkipSpaces
+        cmp al, 0x0D
+        jne CArgError
+
+        call OpenInput
+
+.L:
+        mov cx, 0x180 ; 24*16
+        call ReadToBufferN
+        and ax, ax
+        jz .Done
+        mov cx, ax
+        mov si, Buffer
+.hd:
+        call HexDump
+        call CWaitKey
+        jmp .L
+.Done:
+        call CloseInput
+        ret
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 InFileName:       db 'SASM.COM', 0
@@ -546,9 +582,12 @@ MsgErrBadCommand: db 'Unknown command$'
 MsgErrInvArgs:    db 'Invalid argument(s)$'
 MsgErrNotImpl:    db 'Not implemented$'
 
+MsgPressAnyKey:   db 'Press any key$'
+
 HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 
-CommandLine:      db ' copy    sasm.com   foo.tmp', 0x0D
+CommandLine:      db 'HD cmdp.com', 0x0D
+;CommandLine:      db ' copy    sasm.com   foo.tmp', 0x0D
 ;CommandLine:      db '    dir.com',0x0D
 ;CommandLine:      db '    echo.Hello world!',0x0D
 
