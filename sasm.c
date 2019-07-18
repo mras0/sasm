@@ -15,6 +15,7 @@ typedef short S2;
 #define EQU_MAX   100
 #define OUTPUT_MAX 0x2000
 #define INVALID_ADDR 0xFFFF
+#define NO_SIZE 0xFF // ExplicitSize when no size specified
 
 struct Label {
     char Name[TOKEN_MAX+1];
@@ -41,6 +42,7 @@ U1 TokenLen;
 U2 CurrentAddress;
 U1 OutputBuffer[OUTPUT_MAX];
 U2 OutputOffset;
+U2 PendingZeros;
 struct Label Labels[LABEL_MAX];
 struct Fixup Fixups[FIXUP_MAX];
 struct Equ   Equs[EQU_MAX];
@@ -83,8 +85,13 @@ void Error(const char* msg)
 
 void OutputByte(U1 b)
 {
-    if (OutputOffset == OUTPUT_MAX) {
+    if (OutputOffset + PendingZeros >= OUTPUT_MAX) {
         Error("Output overflow");
+    }
+    if (PendingZeros) {
+        memset(OutputBuffer + OutputOffset, 0, PendingZeros);
+        OutputOffset += PendingZeros;
+        PendingZeros = 0;
     }
     OutputBuffer[OutputOffset++] = b;
     ++CurrentAddress;
@@ -602,7 +609,7 @@ void GetOperand(void)
             return;
         }
         if (!strcmp(TokenText, "BYTE") || !strcmp(TokenText, "WORD")) {
-            assert(ExplicitSize == 0xFF);
+            assert(ExplicitSize == NO_SIZE);
             ExplicitSize = TokenText[0] == 'W';
             GetOperandMem();
             return;
@@ -643,6 +650,7 @@ void OutputDx(U1 size, U2 val)
 
 void DirectiveDx(U1 size)
 {
+    assert(size == 1 || size == 2);
     do {
         if (TryGet('\'')) {
             while (!TryConsume('\'')) {
@@ -663,6 +671,17 @@ void DirectiveDx(U1 size)
             }
         }
     } while (TryConsume(','));
+}
+
+void DirectiveResx(U1 size)
+{
+    assert(size == 1 || size == 2);
+    const U2 count = GetNumber();
+    if (count * size + CurrentAddress > 0xFFFF) {
+        Error("Memory overflow in RESX");
+    }
+    CurrentAddress += count * size;
+    PendingZeros += count * size;
 }
 
 void InstINT(U1 arg)
@@ -739,7 +758,7 @@ void OutputRR(U1 inst)
 
 void OutputMR(U1 inst)
 {
-    if (ExplicitSize != 0xFF && ExplicitSize != OperandValue/8) {
+    if (ExplicitSize != NO_SIZE && ExplicitSize != OperandValue/8) {
         Error("Invalid register sizes");
     }
     OutputByte(inst | (OperandValue/8 ? 1 : 0)); // 16 or 8-bit?
@@ -765,7 +784,7 @@ void OutputRM(U1 inst)
 
 void OutputMImm(U1 inst, U1 r)
 {
-    if (ExplicitSize == 0xFF) {
+    if (ExplicitSize == NO_SIZE) {
         Error("Unknown operand size");
     }
     OutputByte(inst | ExplicitSize);   // Opcode
@@ -892,7 +911,7 @@ void InstIncDec(U1 dec)
             return;
         }
     } else if (OperandType < OP_REG) {
-        if (ExplicitSize == 0xFF) {
+        if (ExplicitSize == NO_SIZE) {
             Error("Operand size not specified");
         }
         OutputByte(0xFE | ExplicitSize);
@@ -903,6 +922,30 @@ void InstIncDec(U1 dec)
 
     PrintInstr(dec?"DEC":"INC", false);
     Error("TODO");
+}
+
+void InstNotNeg(U1 r)
+{
+    assert(r == 2 || r == 3);
+    GetOperand();
+    if (OperandType == OP_REG) {
+        if (OperandValue/8>1) {
+            // NOT/NEG S-Reg invalid
+            Error("Invalid operand");
+        }
+        OutputByte(0xF6 | (U1)(OperandValue/8));
+        OutputByte(0xC0 | r<<3 | (OperandValue&7));
+    } else if (OperandType < OP_REG) {
+        if (ExplicitSize == NO_SIZE) {
+            Error("Unknown operand size");
+        }
+        OutputByte(0xF6 | ExplicitSize);
+        SwapOperands();
+        OutputModRM(r);
+    } else {
+        // Literal not allowed
+        Error("Invalid operand");
+    }
 }
 
 void InstALU(U1 base)
@@ -957,7 +1000,7 @@ void InstROT(U1 r)
                 OutputByte(0xd2 | (is16bit?1:0));
                 OutputByte(0xc0 | (r<<3) | (OperandLValue&7));
             } else {
-                if (ExplicitSize == 0xFF) {
+                if (ExplicitSize == NO_SIZE) {
                     Error("Operand size not specified");
                 }
                 OutputByte(0xd2 | ExplicitSize);
@@ -1115,6 +1158,8 @@ static const struct {
     { "ORG"   , &DirectiveOrg   , 0x00 },
     { "DB"    , &DirectiveDx    , 0x01 },
     { "DW"    , &DirectiveDx    , 0x02 },
+    { "RESB"  , &DirectiveResx  , 0x01 },
+    { "RESW"  , &DirectiveResx  , 0x02 },
     { "REP"   , &OutputByte     , 0xF3 },
     { "MOV"   , &InstMOV        , 0x00 },
     { "MOVZX" , &InstMOVXX      , 0xB6 },
@@ -1122,6 +1167,8 @@ static const struct {
     { "XCHG"  , &InstXCHG       , 0x00 },
     { "INC"   , &InstIncDec     , 0x00 },
     { "DEC"   , &InstIncDec     , 0x01 },
+    { "NOT"   , &InstNotNeg     , 0x02 },
+    { "NEG"   , &InstNotNeg     , 0x03 },
     { "ADD"   , &InstALU        , 0x00 },
     { "OR"    , &InstALU        , 0x08 },
     { "ADC"   , &InstALU        , 0x10 },
@@ -1199,7 +1246,7 @@ void Dispatch(void)
         DefineLabel();
         return;
     }
-    ExplicitSize = 0xFF;
+    ExplicitSize = NO_SIZE;
     for (unsigned i = 0; i < sizeof(DispatchList)/sizeof(*DispatchList); ++i) {
         if (!strcmp(TokenText, DispatchList[i].text)) {
             DispatchList[i].func(DispatchList[i].arg);

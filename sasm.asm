@@ -424,22 +424,38 @@ WriteOutput:
 ; Output byte in AL to output buffer
 ; Doesn't modify any registers
 OutputByte:
-        cmp word [NumOutBytes], OUTPUT_MAX
-        jb .OK
-        mov bx, MsgErrOutMax
-        jmp Error
-.OK:
+        push cx
         push di
         push es
         mov di, [OutputSeg]
         mov es, di
         mov di, [NumOutBytes]
+        xor cx, cx
+        xchg cx, [PendingZeros]
+        and cx, cx
+        jnz .Zeros
+        cmp word [NumOutBytes], OUTPUT_MAX
+        jb .Output
+.Overflow:
+        mov bx, MsgErrOutMax
+        jmp Error
+.Output:
         stosb
         inc word [NumOutBytes]
         inc word [CurrentAddress]
         pop es
         pop di
+        pop cx
         ret
+.Zeros:
+        add [NumOutBytes], cx
+        cmp word [NumOutBytes], OUTPUT_MAX
+        jae .Overflow
+        push ax
+        xor al, al
+        rep stosb
+        pop ax
+        jmp .Output
 
 ; Output word in AX
 OutputWord:
@@ -1149,7 +1165,7 @@ RegisterFixup:
         mov ax, INVALID_ADDR
         cmp bx, ax
         jne .OK
-        mov bx, MsgErrInternalErr
+        mov bx, MsgErrInternalE
         jmp Error
 .OK:
         mov [CurrentFixup], ax
@@ -1364,6 +1380,23 @@ DirDX:
         jnc .Main
         pop si
         ret
+
+; AL = 1 if RESB 2 if RESW
+DirResX:
+        push ax
+        call GetNumber
+        pop bx
+        xor dx, dx
+        mul bx
+        and dx, dx
+        jnz .Overflow
+        add [CurrentAddress], ax
+        jc .Overflow
+        add [PendingZeros], ax
+        ret
+.Overflow:
+        mov bx, MsgErrMemOvrflow
+        jmp Error
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
@@ -1631,6 +1664,40 @@ InstIncDec:
         mov al, 0xfe
         jmp OutputWord
 
+; AL=/r (e.g. 3 for NEG)
+InstNotNeg:
+        push ax
+        call GetOperand
+        cmp byte [OperandType], OP_REG
+        je .NNr
+        ja InvalidOperand
+        mov al, [ExplicitSize]
+        dec al
+        jns .HasSize
+        mov bx, MsgErrNoSize
+        jmp Error
+.HasSize:
+        or al, 0xF6
+        call OutputByte
+        call SwapOperands
+        pop ax
+        jmp OutputModRM
+.NNr:
+        mov al, [OperandValue]
+        mov ah, al
+        shr al, 3
+        cmp al, 1
+        ja InvalidOperand
+        or al, 0xF6
+        call OutputByte
+        and ah, 7
+        pop bx
+        shl bl, 3
+        or ah, bl
+        or ah, 0xc0
+        mov al, ah
+        jmp OutputByte
+
 ; Base instruction in AL (e.g. 0x38 for CMP)
 InstALU:
         push ax
@@ -1869,7 +1936,8 @@ MsgErrNoSize:     db 'Size missing for memory operand', 0
 MsgErrDupEqu:     db 'Duplicate EQU', 0
 MsgErrEquMax:     db 'Too many EQUs', 0
 MsgErrOutMax:     db 'Output buffer full', 0
-MsgErrInternalErr: db 'No fixup to register?', 0
+MsgErrInternalE:  db 'No fixup to register?', 0
+MsgErrMemOvrflow: db 'Address exceeds segment', 0
 MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
 
 
@@ -1887,6 +1955,10 @@ DispatchList:
     dw DirDX
     db 'DW',0,0,0, 0x02
     dw DirDX
+    db 'RESB',0,   0x01
+    dw DirResX
+    db 'RESW',0,   0x02
+    dw DirResX
     db 'ORG',0,0,  0x00
     dw DirORG
 
@@ -1907,6 +1979,12 @@ DispatchList:
     dw InstIncDec
     db 'DEC',0,0,  0x01
     dw InstIncDec
+
+    ; NOT/NEG (argument is /r)
+    db 'NOT',0,0,  0x02
+    dw InstNotNeg
+    db 'NEG',0,0,  0x03
+    dw InstNotNeg
 
     ; ALU instructions (argument is base instruction)
     db 'ADD',0,0,  0x00
@@ -2102,6 +2180,7 @@ NumEqus:          dw 0
 OutputSeg:        dw 0
 CurrentAddress:   dw 0 ; Current memory address of code (e.g. 0x100 first in a COM file)
 NumOutBytes:      dw 0 ; Number of bytes output
+PendingZeros:     dw 0 ; Number of zeros to output before next actual byte
 
 ;;; Keep last
 ProgramEnd:

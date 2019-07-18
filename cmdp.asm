@@ -367,6 +367,6 @@ MsgErrWrite:      db 'Error writing to file$'
 
 HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 
-InputFile:        dw 0
-OutputFile:       dw 0
-Buffer:  ; Must be at end!
+InputFile:        resw 1
+OutputFile:       resw 1
+Buffer:           resb BUFFER_SIZE

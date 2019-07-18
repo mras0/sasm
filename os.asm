@@ -281,11 +281,12 @@ ReadCluster:
 
 ; Read CX sectors starting from AX into ES:DI
 ReadSectors:
+        mov byte [DiskPacket], 0x10 ; Size of disk packet structure
         mov [DP_Start], ax
         mov [DP_Count], cx
         mov ax, es
-        mov [DP_Seg], ax
-        mov [DP_Off], di
+        mov [DP_Ptr+2], ax
+        mov [DP_Ptr], di
         mov dl, [BootDrive]
         mov ah, 0x42
         mov si, DiskPacket
@@ -310,11 +311,12 @@ WriteSectors:
         push ds
         mov dx, cs
         mov ds, dx
+        mov byte [DiskPacket], 0x10 ; Size of disk packet structure
         mov [DP_Start], ax
         mov [DP_Count], cx
         mov ax, es
-        mov [DP_Seg], ax
-        mov [DP_Off], di
+        mov [DP_Ptr+2], ax
+        mov [DP_Ptr], di
         mov dl, [BootDrive]
         mov ah, 0x43
         mov si, DiskPacket
@@ -1728,7 +1730,7 @@ Int21_4E:
 
         ; Save search attribute
         or cl, 0x21 ; bit 0 and 5 (R/O and archive) are ignored
-        xor cl, 0xff ;not cl
+        not cl
         mov [es:bx+FF_SATTR], cl
 
         ; Exapnd file specification to DTA
@@ -1800,27 +1802,22 @@ MsgErrRootFull:  db 'Root directory full', 0
 MsgErrCmdpRet:   db 'Command processor returned', 0
 CmdpFName:       db 'CMDP.COM', 0
 
-DiskPacket:
-        dw 0x0010   ; Size of disk packet
-DP_Count:
-        dw 0x0001   ; Number of blocks
-DP_Off:
-        dw 0        ; Offset
-DP_Seg:
-        dw 0x0000   ; Segment
-DP_Start:
-        dw 0x0000   ; Starting block number
-        dw 0,0,0
-
-BootDrive:       db 0
 FreeSeg:         dw 0x0800
-SectorBufSeg:    dw 0
-FATSeg:          dw 0
-FileInfoSeg:     dw 0
-RootSeg:         dw 0
-CmdpSeg:         dw 0
-LastProcSeg:     dw 0     ; Segment of last started process
-LastProcStack:   dw 0, 0  ; Stack before StartProgram
-DTA:             dw 0, 0  ; Disk Transfer Area (defaults to PSP:80h)
 
-CurFileName:     db '           ' ; 8+3 spaces
+DiskPacket:      resw 1 ; Size of disk packet
+DP_Count:        resw 1 ; Number of blocks
+DP_Ptr:          resw 2 ; Segment:Offset
+DP_Start:        resw 1 ; Starting block number
+                 resw 3
+
+BootDrive:       resb 1
+SectorBufSeg:    resw 1
+FATSeg:          resw 1
+FileInfoSeg:     resw 1
+RootSeg:         resw 1
+CmdpSeg:         resw 1
+LastProcSeg:     resw 1  ; Segment of last started process
+LastProcStack:   resw 2  ; Stack before StartProgram
+DTA:             resw 2  ; Disk Transfer Area (defaults to PSP:80h)
+
+CurFileName:     resb 11
