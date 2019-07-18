@@ -80,50 +80,10 @@ Main:
         call PutHexWord
         call PutCrLf
 
-        ; Int21/AH=1Ah Set disk transfer area address
-        ; DS:DX points to DTA
-        mov ah, 0x1a
-        mov dx, 0x80
-        int 0x21
-
-        mov ah, 0x4e
-        xor cx, cx
-        mov dx, .SearchPattern
-        int 0x21
-        jc .Done
-.Find:
-        mov si, 0x80 ; DTA defaults to PSP:80h, Offset of filename is 0x1E
-        add si, FF_FNAME
-        mov cl, 11
-.Print:
-        lodsb
-        and al, al
-        jz .Pad
-        call PutChar
-        dec cl
-        jmp .Print
-.Pad:
-        and cl, cl
-        jz .PadDone
-        mov al, ' '
-        call PutChar
-        dec cl
-        jmp .Pad
-.PadDone:
-        mov si, 0x80
-        mov ax, [si+FF_FSIZE]
-        mov dx, [si+FF_FSIZE+2]
-        call PutDec9
-        call PutCrLf
-        ; Find next
-        mov ah, 0x4F
-        int 0x21
-        jnc .Find
-.Done:
+        call HandleCommand
         ; Return.. (Shouldn't actually do that)
         ret
 
-.SearchPattern: db '*.COM', 0
 .OKMsg: db 'Back in CMDP!', 13, 10, '$'
 .ProgramName: db 'SASM.COM', 0
 .Args: db 'foo!', 0x0D
@@ -355,17 +315,220 @@ CopyFile:
         call CloseInput
         ret
 
+HandleCommand:
+        mov si, CommandLine
+.SkipSpace:
+        lodsb
+        cmp al, 0x0D
+        je .Ret ; Empty line
+        cmp al, ' '
+        jbe .SkipSpace
+        dec si ; unget non-space character
+
+        ; Copy command name to InFileName up till possible extension
+        mov di, cs
+        mov es, di
+        mov di, InFileName
+        mov cl, 8 ; Don't overflow comand
+.CopyCommand:
+        je .CmdDone
+        lodsb
+        cmp al, '0' ; Characters less than 0x30 cannot be part of legal filename
+        jb .CmdDone ; In particular this will stop on '.', '/' and CR
+        cmp al, 'a'
+        jb .StoreCmd
+        cmp al, 'z'
+        ja .StoreCmd
+        and al, 0xDF ; to upper case
+.StoreCmd:
+        stosb
+        dec cl
+        jnz .CopyCommand
+        inc si ; undo 'unget' (we actually consumed the character)
+.CmdDone:
+        dec si ; unget
+        xor al, al
+        stosb ; NUL-terminate
+
+        ; SI points at CommandLine after command (possibly at '.' before extension)
+        ; DI points at InFileName after NUL terminator (at most 9 bytes in)
+
+        mov bx, InFileName
+
+        cmp word [bx], 'CO'
+        jne .NotCopy
+        cmp word [bx+2], 'PY'
+        jne .NotInternal
+        cmp byte [bx+4], 0
+        jne .NotInternal
+        jmp .NotImpl
+.NotCopy:
+.NotDel:
+        cmp word [bx], 'DI'
+        jne .NotDir
+        cmp word [bx+2], 'R'
+        jne .NotInternal
+        jmp CmdDir
+.NotDir:
+        cmp word [bx], 'EC'
+        jne .NotEcho
+        cmp word [bx+2], 'HO'
+        jne .NotInternal
+        cmp byte [bx+4], 0
+        jne .NotInternal
+        jmp CmdEcho
+.NotEcho:
+.NotExit:
+.NotRen:
+
+.NotInternal:
+        mov dx, MsgErrBadCommand
+        jmp .Error
+
+.Ret:
+        ret
+
+.NotImpl:
+        mov dx, MsgErrNotImpl
+        ; Fall through
+; Print command and exit with error message from dx
+.Error:
+        mov si, InFileName
+.NIpr:
+        lodsb
+        and al, al
+        jz .NId
+        call PutChar
+        jmp .NIpr
+.NId:
+        call PutCrLf
+        jmp Error
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Internal Commands
+;;
+;; Called with SI pointing at the command line after the command name
+;; (possibly at a '.')
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CmdDir:
+        mov di, cs
+        mov es, di
+        ; Fill pattern into InFileName
+        mov di, InFileName
+.SkipSp:
+        lodsb
+        ; Skip spaces
+        cmp al, ' '
+        je .SkipSp
+
+        ; No pattern means '*.*' = '*'
+        cmp al, 0x0D
+        jne .NotEmpty
+
+        mov ax, '*'
+        stosw
+        jmp .Main
+
+.NotEmpty:
+        ; '.EXT' means '*.EXT'
+        cmp al, '.'
+        jne .CopyPattern
+        mov ax, '*.'
+        stosw
+        lodsb ; Consumed '.'
+
+.CopyPattern:
+        cmp di, InFileNameEnd
+        je .CopyDone
+        cmp al, ' '
+        jbe .CopyDone
+        stosb
+        lodsb
+        jmp .CopyPattern
+
+.CopyDone:
+        xor al, al
+        stosb
+.Main:
+        ; Int21/AH=1Ah Set disk transfer area address
+        ; DS:DX points to DTA
+        mov ah, 0x1a
+        mov dx, 0x80
+        int 0x21
+
+        mov ah, 0x4e
+        xor cx, cx
+        mov dx, InFileName
+        int 0x21
+        jc .Done
+.Find:
+        mov si, 0x80 ; DTA defaults to PSP:80h, Offset of filename is 0x1E
+        add si, FF_FNAME
+        mov cl, 11
+.Print:
+        lodsb
+        and al, al
+        jz .Pad
+        call PutChar
+        dec cl
+        jmp .Print
+.Pad:
+        and cl, cl
+        jz .PadDone
+        mov al, ' '
+        call PutChar
+        dec cl
+        jmp .Pad
+.PadDone:
+        mov si, 0x80
+        mov ax, [si+FF_FSIZE]
+        mov dx, [si+FF_FSIZE+2]
+        call PutDec9
+        call PutCrLf
+        ; Find next
+        mov ah, 0x4F
+        int 0x21
+        jnc .Find
+.Done:
+        ret
+
+CmdEcho:
+        lodsb
+        cmp al, '.'
+        je .Next
+        cmp al, ' '
+        je .Next
+.Loop:
+        cmp al, 0x0D
+        je .Done
+        call PutChar
+.Next:
+        lodsb
+        jmp .Loop
+.Done:
+        call PutCrLf
+        ret
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 InFileName:       db 'SASM.COM', 0
+resb 12 ; XX TEMP Just ensure enough space
+InFileNameEnd: resb 1
 OutFileName:      db 'Foo.TMP', 0
+resb 13 ; XX TEMP Just ensure enough space
 MsgErrGeneric:    db 'Generic error message$'
 MsgErrOpenIn:     db 'Could not open input file$'
 MsgErrOpenOut:    db 'Could not open output file$'
 MsgErrRead:       db 'Error reading from file$'
 MsgErrWrite:      db 'Error writing to file$'
+MsgErrBadCommand: db 'Unknown command$'
+MsgErrNotImpl:    db 'Not implemented$'
 
 HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
+
+CommandLine:      db '    dir',0x0D
+;CommandLine:      db '    echo.Hello world!',0x0D
 
 InputFile:        resw 1
 OutputFile:       resw 1

@@ -2067,7 +2067,11 @@ DispatchList:
     dw OutputByte
     db 'STOSB',    0xAA
     dw OutputByte
+    db 'STOSW',    0xAB
+    dw OutputByte
     db 'LODSB',    0xAC
+    dw OutputByte
+    db 'LODSW',    0xAD
     dw OutputByte
 
     ; Flow control
