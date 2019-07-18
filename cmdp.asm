@@ -57,29 +57,6 @@ Main:
 
         call CloseInput
 
-        ;call OpenOutput
-        ;call CloseOutput
-        ;; Delete file
-        ;mov ah, 0x41
-        ;mov dx, OutFileName
-        ;int 0x21
-        ;jc GenericError
-        call CopyFile
-
-        ; Int21/AH=2Fh
-        ; Get disk transfer area address
-        ; Returns DTA pointer in ES:BX
-        mov ah, 0x2F
-        int 0x21
-        push bx
-        mov ax, es
-        call PutHexWord
-        mov al, ':'
-        call PutChar
-        pop ax
-        call PutHexWord
-        call PutCrLf
-
         call HandleCommand
         ; Return.. (Shouldn't actually do that)
         ret
@@ -299,22 +276,6 @@ WriteFromBuffer:
         jmp Error
 
 
-; Copy from InFileName to OutFileName
-CopyFile:
-        call OpenInput
-        call OpenOutput
-.Loop:
-        call ReadToBuffer
-        and ax, ax
-        jz .Done
-        mov cx, ax
-        call WriteFromBuffer
-        jmp .Loop
-.Done:
-        call CloseOutput
-        call CloseInput
-        ret
-
 HandleCommand:
         mov si, CommandLine
 .SkipSpace:
@@ -361,7 +322,7 @@ HandleCommand:
         jne .NotInternal
         cmp byte [bx+4], 0
         jne .NotInternal
-        jmp .NotImpl
+        jmp CmdCopy
 .NotCopy:
 .NotDel:
         cmp word [bx], 'DI'
@@ -411,16 +372,75 @@ HandleCommand:
 ;; (possibly at a '.')
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+; Skip spaces, returns next character in AL
+CSkipSpaces:
+        cmp al, ' '
+        jne .Done
+        lodsb
+        jmp CSkipSpaces
+.Done:
+        ret
+
+; Copy filename and zero terminate string in ES:DI from SI
+; Next character returned in AL
+CCopyFName:
+        mov cl, 12
+.L:
+        cmp al, ' '
+        jbe .Done
+        stosb
+        lodsb
+        dec cl
+        jnz .L
+.Done:
+        mov ch, al
+        xor al, al
+        stosb
+        mov al, ch
+        ret
+
+CArgError:
+        mov dx, MsgErrInvArgs
+        jmp Error
+
+CmdCopy:
+        mov di, cs
+        mov es, di
+
+        lodsb
+        call CSkipSpaces
+        cmp al, 0x0D
+        je CArgError
+        mov di, InFileName
+        call CCopyFName
+        call CSkipSpaces
+        cmp al, 0x0D
+        je CArgError
+        mov di, OutFileName
+        call CCopyFName
+
+        call OpenInput
+        call OpenOutput
+.Loop:
+        call ReadToBuffer
+        and ax, ax
+        jz .Done
+        mov cx, ax
+        call WriteFromBuffer
+        jmp .Loop
+.Done:
+        call CloseOutput
+        call CloseInput
+        ret
+
 CmdDir:
         mov di, cs
         mov es, di
         ; Fill pattern into InFileName
         mov di, InFileName
-.SkipSp:
+
         lodsb
-        ; Skip spaces
-        cmp al, ' '
-        je .SkipSp
+        call CSkipSpaces
 
         ; No pattern means '*.*' = '*'
         cmp al, 0x0D
@@ -523,11 +543,13 @@ MsgErrOpenOut:    db 'Could not open output file$'
 MsgErrRead:       db 'Error reading from file$'
 MsgErrWrite:      db 'Error writing to file$'
 MsgErrBadCommand: db 'Unknown command$'
+MsgErrInvArgs:    db 'Invalid argument(s)$'
 MsgErrNotImpl:    db 'Not implemented$'
 
 HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 
-CommandLine:      db '    dir',0x0D
+CommandLine:      db ' copy    sasm.com   foo.tmp', 0x0D
+;CommandLine:      db '    dir.com',0x0D
 ;CommandLine:      db '    echo.Hello world!',0x0D
 
 InputFile:        resw 1
