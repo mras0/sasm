@@ -1355,6 +1355,8 @@ Int21Dispatch:
         je Int21_08
         cmp ah, 0x09
         je Int21_09
+        cmp ah, 0x0A
+        je Int21_0A
         cmp ah, 0x1A
         je Int21_1A
         cmp ah, 0x2F
@@ -1443,6 +1445,69 @@ Int21_09:
 .Done:
         pop si
         jmp IRETC
+
+; Int 21/AH=0Ah Buffered input
+; DS:DX points to buffer (first byte: maximum size,
+; second byte: bytes read excluding CR)
+Int21_0A:
+        pusha
+        push ds
+        push es
+
+        push ds
+        pop es ; ES=DS
+
+        mov di, dx
+        mov cx, [di] ; CH=Characters already used, CL=Maximum characters
+        add di, 2
+        and cl, cl
+        jz .Ret
+        dec cl ; CL = Maximum characters excuding CR
+        cmp ch, cl
+        jae .Ret
+        xor bh, bh
+        mov bl, ch
+        add di, bx
+.GetChars:
+        xor ax, ax
+        int 0x16
+        cmp al, 0x0D ; CR
+        je .Done
+        cmp al, 0x08 ; Backspace
+        jne .NotBS
+        and ch, ch
+        jz .GetChars
+        ; Erase character
+        call .EraseChar
+        dec ch
+        dec di
+        jmp .GetChars
+.NotBS:
+        ; Don't go beyond limit
+        cmp ch, cl
+        jae .GetChars
+        stosb
+        call PutChar ; Echo
+        inc ch
+        jmp .GetChars
+.Done:
+        ; Ensure buffer is always CR terminated
+        mov al, 0x0D
+        stosb
+        mov di, dx
+        mov [di+1], ch
+.Ret:
+        pop es
+        pop ds
+        popa
+        iret
+.EraseChar:
+        mov al, 8
+        call PutChar
+        mov al, ' '
+        call PutChar
+        mov al, 8
+        jmp PutChar
 
 ; Int 21/AH=1Ah Set disk transfer area address
 ; DS:DX points to DTA

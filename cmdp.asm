@@ -1,6 +1,7 @@
         org 0x100
 
 BUFFER_SIZE       EQU 512
+CMDLINE_MAX       EQU 0x7F ; Including terminating CR
 
 ; Offsets into FindFile structure
 FF_FATTR         equ 0x15 ; BYTE     File attribute
@@ -10,10 +11,6 @@ FF_FSIZE         equ 0x1A ; DWORD    File size
 FF_FNAME         equ 0x1E ; BYTE[13] File name and extension (ASCIIZ with dot)
 
 Main:
-        mov dx, HelloMsg
-        mov ah, 9
-        int 0x21
-
         ; Free remaining memory if running under DOS
         mov ah, 0x4a
         ; Handle Stack...
@@ -26,14 +23,15 @@ Main:
         int 0x21
         jc GenericError
 
-        call CommandDispatch
-        mov dx, .OKMsg
+.CmdLoop:
+        call PutCrLf
+        mov dx, MsgPrompt
         mov ah, 9
         int 0x21
-        ; Return.. (Shouldn't actually do that)
-        ret
+        call GetCommandLine
+        call CommandDispatch
+        jmp .CmdLoop
 
-.OKMsg: db 'Back in CMDP!', 13, 10, '$'
 
 GenericError:
         mov dx, MsgErrGeneric
@@ -179,6 +177,17 @@ PutDec9:
         pop ds
         ret
 
+GetCommandLine:
+        mov bx, CL_BufferInfo
+        xor ah, ah
+        mov al, CMDLINE_MAX
+        mov [bx], ax
+        mov dx, bx
+        mov ah, 0x0a
+        int 0x21
+        call PutCrLf
+        ret
+
 OpenInput:
         ; Open input file for reading
         mov dx, InFileName
@@ -242,7 +251,7 @@ WriteFromBuffer:
         jmp Error
 
 CommandDispatch:
-        mov si, CommandLine
+        mov si, CL_Buffer
 .SkipSpace:
         lodsb
         cmp al, 0x0D
@@ -298,6 +307,13 @@ CommandDispatch:
         jne .NotInternal
         jmp CmdEcho
 .NotEcho:
+        cmp word [bx], 'EX'
+        jne .NotExit
+        cmp word [bx+2], 'IT'
+        jne .NotInternal
+        cmp byte [bx+4], 0
+        jne .NotInternal
+        jmp CmdExit
 .NotExit:
         cmp word [bx], 'HD'
         jne .NotHd
@@ -316,7 +332,8 @@ CommandDispatch:
         lodsb
         cmp al, ' '
         jbe .ExtCopyDone
-        movsb
+        call CToUpper
+        stosb
         dec cl
         jnz .CopyExt
         inc si ; undo 'unget' (we actually consumed the character)
@@ -370,8 +387,20 @@ CommandDispatch:
         int 0x21
         jnc .Ret
 .BadCommand:
+        mov si, InFileName
+.BCP:
+        lodsb
+        and al, al
+        jz .BCPD
+        call PutChar
+        jmp .BCP
+.BCPD:
+        call PutCrLf
+
         mov dx, MsgErrBadCommand
-        jmp Error
+        mov ah, 0x09
+        int 0x21
+        call PutCrLf
 .Ret:
         ret
 
@@ -472,10 +501,12 @@ CmdDir:
         lodsb
         call CSkipSpaces
 
-        ; No pattern means '*.*' = '*'
+        ; No pattern means '*.*'
         cmp al, 0x0D
         jne .NotEmpty
 
+        mov ax, '*.'
+        stosw
         mov ax, '*'
         stosw
         jmp .Main
@@ -507,6 +538,10 @@ CmdDir:
         mov dx, 0x80
         int 0x21
 
+        ; di:bp contains total number of bytes
+        xor di, di
+        xor bp, bp
+
         mov ah, 0x4e
         xor cx, cx
         mov dx, InFileName
@@ -522,7 +557,7 @@ CmdDir:
         jz .Pad
         call PutChar
         dec cl
-        jmp .Print
+        jnz .Print
 .Pad:
         and cl, cl
         jz .PadDone
@@ -534,6 +569,8 @@ CmdDir:
         mov si, 0x80
         mov ax, [si+FF_FSIZE]
         mov dx, [si+FF_FSIZE+2]
+        add bp, ax
+        adc di, dx
         call PutDec9
         call PutCrLf
         ; Find next
@@ -541,6 +578,12 @@ CmdDir:
         int 0x21
         jnc .Find
 .Done:
+        mov ax, bp
+        mov dx, di
+        call PutDec9
+        mov dx, MsgBytesTotal
+        mov ah, 9
+        int 0x21
         ret
 
 CmdEcho:
@@ -559,6 +602,14 @@ CmdEcho:
 .Done:
         call PutCrLf
         ret
+
+CmdExit:
+        mov dx, MsgExiting
+        mov ah, 9
+        int 0x21
+        call PutCrLf
+        mov ax, 0x4c00
+        int 0x21
 
 CmdHd:
         mov ax, cs
@@ -602,16 +653,10 @@ MsgErrWrite:      db 'Error writing to file$'
 MsgErrBadCommand: db 'Unknown command$'
 MsgErrInvArgs:    db 'Invalid argument(s)$'
 MsgErrNotImpl:    db 'Not implemented$'
-
+MsgExiting:       db 'Command interpreter exiting$'
+MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
-
-HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
-
-;CommandLine:      db 'HD cmdp.com', 0x0D
-;CommandLine:      db ' copy    sasm.com   foo.tmp', 0x0D
-;CommandLine:      db '    dir.com',0x0D
-CommandLine:      db '    echo.Hello world!',0x0D
-;CommandLine:      db ' cmdline  12345 67    ', 0x0D
+MsgBytesTotal:    db ' bytes total', 13, 10, '$'
 
 InputFile:        resw 1
 OutputFile:       resw 1
@@ -624,4 +669,9 @@ PB_ArgPtr:        resw 2 ; Pointer to arguments
 InFileName:       resb 12
 InFileNameEnd:    resb 1
 OutFileName:      resb 13
+
+; Command line
+CL_BufferInfo:    resb 2 ; For use with Int 21/AH=0Ah (must precede CL_Buffer)
+CL_Buffer:        resb CMDLINE_MAX
+
 Buffer:           resb BUFFER_SIZE
