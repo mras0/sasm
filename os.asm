@@ -121,6 +121,17 @@ Main:
         dec cl
         jnz .InitFile
 
+        ; Init DiskPacket
+        mov ax, cs
+        mov ds, ax
+        mov es, ax
+        mov di, DiskPacket
+        mov ax, 0x10
+        stosw
+        xor al, al
+        mov cx, 0x0e
+        rep stosb
+
         ; Read FAT
         xor di, di
         mov ax, [FATSeg]
@@ -281,7 +292,6 @@ ReadCluster:
 
 ; Read CX sectors starting from AX into ES:DI
 ReadSectors:
-        mov byte [DiskPacket], 0x10 ; Size of disk packet structure
         mov [DP_Start], ax
         mov [DP_Count], cx
         mov ax, es
@@ -294,7 +304,11 @@ ReadSectors:
         jc .DiskReadErr
         ret
 .DiskReadErr:
-        mov bx, MsgErrWrite
+        mov al, ah
+        call PutHexByte
+        mov al, ' '
+        call PutChar
+        mov bx, MsgErrRead
         jmp Fatal
 
 ; Write cluster in AX from ES:DI
@@ -311,7 +325,6 @@ WriteSectors:
         push ds
         mov dx, cs
         mov ds, dx
-        mov byte [DiskPacket], 0x10 ; Size of disk packet structure
         mov [DP_Start], ax
         mov [DP_Count], cx
         mov ax, es
@@ -1383,6 +1396,8 @@ Int21Dispatch:
         je Int21_4E
         cmp ah, 0x4F
         je Int21_4F
+        cmp ah, 0x56
+        je Int21_56
 
 Int21NotImpl:
         push ax
@@ -1852,7 +1867,7 @@ Int21_4E:
         pop bx
         jmp IRETC
 
-; Int 21/AH=4F Find next matching file
+; Int 21/AH=4Fh Find next matching file
 ; Returns carry clear and DTA filled on success
 ;         carray set and error code in AX on error
 Int21_4F:
@@ -1876,6 +1891,76 @@ Int21_4F:
         pop cx
         pop bx
         jmp IRETC
+
+; Int 21/AH=56h Rename file
+; DS:DX ASCIIZ filename of existing file
+; ES:DI ASCIIZ new filename
+; Returns carry clear
+;         carray set and error code in AX on error
+Int21_56:
+        push bx
+        push cx
+        push dx
+        push ds
+        push es
+
+        ; First check if the destination already exists
+        push dx
+        push ds
+        push es
+        mov dx, es
+        mov ds, dx
+        mov dx, di
+        call ExpandFName
+        mov ax, cs
+        mov ds, ax
+        call FindFileInRoot
+        cmp bx, NOT_FOUND
+        je .DestOK
+        add sp, 6 ; pop 3 words
+        mov ax, ERR_ACCESS_DENIE
+        stc
+        jmp .Ret
+.DestOK:
+        ; Copy expanded filename to DTA
+        mov cx, cs
+        mov ds, cx
+        mov cx, 11
+        mov si, CurFileName
+        mov di, [DTA+2]
+        mov es, di
+        mov di, [DTA]
+        rep movsb
+        pop es
+        pop ds
+        pop dx
+
+        call ExpandFName
+        mov ax, cs
+        mov ds, ax
+        call FindFileInRoot
+        cmp bx, NOT_FOUND
+        jne .SourceOK
+        mov ax, ERR_FILE_NOT_FND
+        stc
+        jmp .Ret
+.SourceOK:
+        mov di, bx
+        mov si, [cs:DTA+2]
+        mov ds, si
+        mov si, [cs:DTA]
+        mov cx, 11
+        rep movsb
+        call WriteRootDir
+        clc
+.Ret:
+        pop es
+        pop ds
+        pop dx
+        pop cx
+        pop bx
+        jmp IRETC
+
 
 Int20Dispatch:
         ; INT 20 is the same as INT 21/AX=4C00h

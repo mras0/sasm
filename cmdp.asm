@@ -327,6 +327,12 @@ CommandDispatch:
         jne .NotInternal
         jmp CmdHd
 .NotHd:
+        cmp word [bx], 'RE'
+        jne .NotRen
+        ; TODO: 'REM' support goes here
+        cmp word [bx+2], 'N'
+        jne .NotInternal
+        jmp CmdRen
 .NotRen:
 
 .NotInternal:
@@ -498,7 +504,7 @@ CCheckCR:
         jne CArgError
         ret
 
-CmdCopy:
+CGetInOut:
         mov di, cs
         mov es, di
         lodsb
@@ -506,7 +512,10 @@ CmdCopy:
         call CGetFilename
         mov di, OutFileName
         call CGetFilename
-        call CCheckCR
+        jmp CCheckCR
+
+CmdCopy:
+        call CGetInOut
 
         call OpenInput
         jc COpenInError
@@ -683,6 +692,15 @@ CmdHd:
         call CloseInput
         ret
 
+CmdRen:
+        call CGetInOut
+        mov dx, InFileName
+        mov di, OutFileName
+        mov ah, 0x56
+        int 0x21
+        mov dx, MsgErrRename
+        jc CError
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -696,6 +714,7 @@ MsgErrInvArgs:    db 'Invalid argument(s)$'
 MsgErrNotImpl:    db 'Not implemented$'
 MsgExiting:       db 'Command interpreter exiting$'
 MsgErrDelete:     db 'Could not delete file$'
+MsgErrRename:     db 'Could not rename file$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'
