@@ -193,9 +193,9 @@ OpenInput:
         mov dx, InFileName
         mov ax, 0x3d00
         int 0x21
-        mov dx, MsgErrOpenIn
-        jc Error
+        jc .Ret
         mov [InputFile], ax
+.Ret:
         ret
 
 OpenOutput:
@@ -203,9 +203,9 @@ OpenOutput:
         mov cx, 0x0020 ; Attributes
         mov ah, 0x3c
         int 0x21
-        mov dx, MsgErrOpenOut
-        jc Error
+        jc .Ret
         mov [OutputFile], ax
+.Ret:
         ret
 
 CloseInput:
@@ -251,6 +251,7 @@ WriteFromBuffer:
         jmp Error
 
 CommandDispatch:
+        mov [CmdOldSp], sp ; Save SP at entry (to allow easy exit)
         mov si, CL_Buffer
 .SkipSpace:
         lodsb
@@ -292,6 +293,11 @@ CommandDispatch:
         jne .NotInternal
         jmp CmdCopy
 .NotCopy:
+        cmp word [bx], 'DE'
+        jne .NotDel
+        cmp word [bx+2], 'L'
+        jne .NotInternal
+        jmp CmdDel
 .NotDel:
         cmp word [bx], 'DI'
         jne .NotDir
@@ -458,28 +464,56 @@ CWaitKey:
         call PutCrLf
         ret
 
+COpenInError:
+        mov dx, MsgErrOpenIn
+        jmp CError
+
+COpenOutError:
+        mov dx, MsgErrOpenOut
+        jmp CError
+
 CArgError:
         mov dx, MsgErrInvArgs
-        jmp Error
+        ; Fall through
+
+; Display error in DX and longjump to main loop
+CError:
+        mov ah, 0x09
+        int 0x21
+        call PutCrLf
+        mov sp, [CmdOldSp]
+        ret
+
+; Get filename from command line to ES:DI
+CGetFilename:
+        call CSkipSpaces
+        cmp al, 0x0D
+        je CArgError
+        call CCopyFName
+        ret
+
+CCheckCR:
+        call CSkipSpaces
+        cmp al, 0x0D
+        jne CArgError
+        ret
 
 CmdCopy:
         mov di, cs
         mov es, di
-
         lodsb
-        call CSkipSpaces
-        cmp al, 0x0D
-        je CArgError
         mov di, InFileName
-        call CCopyFName
-        call CSkipSpaces
-        cmp al, 0x0D
-        je CArgError
+        call CGetFilename
         mov di, OutFileName
-        call CCopyFName
+        call CGetFilename
+        call CCheckCR
 
         call OpenInput
+        jc COpenInError
         call OpenOutput
+        jnc .Loop
+        call CloseInput
+        jmp COpenOutError
 .Loop:
         call ReadToBuffer
         and ax, ax
@@ -490,6 +524,19 @@ CmdCopy:
 .Done:
         call CloseOutput
         call CloseInput
+        ret
+
+CmdDel:
+        mov di, cs
+        mov es, di
+        lodsb
+        mov di, InFileName
+        call CGetFilename
+        mov dx, InFileName
+        mov ah, 0x41
+        int 0x21
+        mov dx, MsgErrDelete
+        jc CError
         ret
 
 CmdDir:
@@ -612,20 +659,14 @@ CmdExit:
         int 0x21
 
 CmdHd:
-        mov ax, cs
-        mov es, ax
-
+        mov di, cs
+        mov es, di
         lodsb
-        call CSkipSpaces
-        cmp al, 0x0D
-        je CArgError
         mov di, InFileName
-        call CCopyFName
-        call CSkipSpaces
-        cmp al, 0x0D
-        jne CArgError
+        call CGetFilename
 
         call OpenInput
+        jc COpenInError
 
 .L:
         mov cx, 0x180 ; 24*16
@@ -654,6 +695,7 @@ MsgErrBadCommand: db 'Unknown command$'
 MsgErrInvArgs:    db 'Invalid argument(s)$'
 MsgErrNotImpl:    db 'Not implemented$'
 MsgExiting:       db 'Command interpreter exiting$'
+MsgErrDelete:     db 'Could not delete file$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'
@@ -669,6 +711,8 @@ PB_ArgPtr:        resw 2 ; Pointer to arguments
 InFileName:       resb 12
 InFileNameEnd:    resb 1
 OutFileName:      resb 13
+
+CmdOldSp:         resw 1 ; SP on entry to CommandDispatch
 
 ; Command line
 CL_BufferInfo:    resb 2 ; For use with Int 21/AH=0Ah (must precede CL_Buffer)
