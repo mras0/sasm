@@ -26,39 +26,14 @@ Main:
         int 0x21
         jc GenericError
 
-        ; Run Program
-
-        mov word [.ArgPtr], .Args
-        mov ax, ds
-        mov es, ax
-        mov [.ArgPtr+2], ax
-        mov ax, 0x4b00           ; Load and execute
-        mov dx, .ProgramName     ; DS:DX -> program name
-        mov bx, .ParameterBlock  ; ES:BX -> parameter block
-        int 0x21
-        jnc .CallOk
-        call PutHexWord
-        call PutCrLf
-        jmp GenericError
-.CallOk:
+        call CommandDispatch
         mov dx, .OKMsg
         mov ah, 9
         int 0x21
-
-        call HandleCommand
         ; Return.. (Shouldn't actually do that)
         ret
 
 .OKMsg: db 'Back in CMDP!', 13, 10, '$'
-.ProgramName: db 'CMDLINE.COM', 0
-.Args:
- db 4, 'foo!', 0x0D
-.ParameterBlock:
-        dw 0 ; Segment of environment to copy (0 = use caller's)
-.ArgPtr:
-        dw 0, 0 ; Pointer to arguments
-        dw 0, 0 ; Pointer to first FCB
-        dw 0, 0 ; Pointer second first FCB
 
 GenericError:
         mov dx, MsgErrGeneric
@@ -266,8 +241,7 @@ WriteFromBuffer:
         mov dx, MsgErrWrite
         jmp Error
 
-
-HandleCommand:
+CommandDispatch:
         mov si, CommandLine
 .SkipSpace:
         lodsb
@@ -283,15 +257,10 @@ HandleCommand:
         mov di, InFileName
         mov cl, 8 ; Don't overflow comand
 .CopyCommand:
-        je .CmdDone
         lodsb
         cmp al, '0' ; Characters less than 0x30 cannot be part of legal filename
         jb .CmdDone ; In particular this will stop on '.', '/' and CR
-        cmp al, 'a'
-        jb .StoreCmd
-        cmp al, 'z'
-        ja .StoreCmd
-        and al, 0xDF ; to upper case
+        call CToUpper
 .StoreCmd:
         stosb
         dec cl
@@ -299,11 +268,10 @@ HandleCommand:
         inc si ; undo 'unget' (we actually consumed the character)
 .CmdDone:
         dec si ; unget
-        xor al, al
-        stosb ; NUL-terminate
+        mov byte [es:di], 0 ; NUL-terminate
 
         ; SI points at CommandLine after command (possibly at '.' before extension)
-        ; DI points at InFileName after NUL terminator (at most 9 bytes in)
+        ; DI points at InFileName at NUL terminator (at most 9 bytes in)
 
         mov bx, InFileName
 
@@ -340,27 +308,72 @@ HandleCommand:
 .NotRen:
 
 .NotInternal:
-        mov dx, MsgErrBadCommand
-        jmp .Error
+        ; Copy extension (if present)
+        cmp byte [si], '.'
+        jne .AppendExt
+        mov cl, 4
+.CopyExt:
+        lodsb
+        cmp al, ' '
+        jbe .ExtCopyDone
+        movsb
+        dec cl
+        jnz .CopyExt
+        inc si ; undo 'unget' (we actually consumed the character)
+.ExtCopyDone:
+        dec si
+        jmp .AppendNUL
 
+.AppendExt:
+        mov ax, '.C'
+        stosw
+        mov ax, 'OM'
+        stosw
+
+.AppendNUL:
+        xor al, al
+        stosb
+
+        ; Figure out argument length
+        xor bx, bx
+        mov al, 0x0D
+.FindLen:
+        cmp [bx+si], al
+        je .RTrim
+        inc bx
+        cmp bl, 0x7E
+        jbe .FindLen ; Don't go too long
+.RTrim:
+        ; Remove spaces just before the CR
+        and bx, bx
+        jz .CmdLineDone
+        cmp byte [si+bx+0xFFFF], ' '
+        ja .CmdLineDone
+        dec bx
+        jmp .RTrim
+.CmdLineDone:
+        mov byte [si+bx], 0x0D ; Ensure CR terminated even if trimmed
+        ; The command line is length prefixed
+        ; and the count doesn't include the 0x0D
+        dec si
+        mov [si], bl
+
+        ; Run Program
+.TryRun:
+        mov word [PB_ArgPtr], si
+        mov ax, ds
+        mov es, ax
+        mov [PB_ArgPtr+2], ax
+        mov ax, 0x4b00           ; Load and execute
+        mov dx, InFileName       ; DS:DX -> program name
+        mov bx, ParameterBlock   ; ES:BX -> parameter block
+        int 0x21
+        jnc .Ret
+.BadCommand:
+        mov dx, MsgErrBadCommand
+        jmp Error
 .Ret:
         ret
-
-.NotImpl:
-        mov dx, MsgErrNotImpl
-        ; Fall through
-; Print command and exit with error message from dx
-.Error:
-        mov si, InFileName
-.NIpr:
-        lodsb
-        and al, al
-        jz .NId
-        call PutChar
-        jmp .NIpr
-.NId:
-        call PutCrLf
-        jmp Error
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Internal Commands
@@ -368,6 +381,17 @@ HandleCommand:
 ;; Called with SI pointing at the command line after the command name
 ;; (possibly at a '.')
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Upper case AL
+CToUpper:
+        cmp al, 'a'
+        jb .Ret
+        cmp al, 'z'
+        ja .Ret
+        and al, 0xDF ; to upper case
+.Ret:
+        ret
+
 
 ; Skip spaces, returns next character in AL
 CSkipSpaces:
@@ -570,11 +594,6 @@ CmdHd:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-InFileName:       db 'SASM.COM', 0
-resb 12 ; XX TEMP Just ensure enough space
-InFileNameEnd: resb 1
-OutFileName:      db 'Foo.TMP', 0
-resb 13 ; XX TEMP Just ensure enough space
 MsgErrGeneric:    db 'Generic error message$'
 MsgErrOpenIn:     db 'Could not open input file$'
 MsgErrOpenOut:    db 'Could not open output file$'
@@ -590,9 +609,19 @@ HelloMsg:         db 'Hello from command interpreter!', 13, 10, '$'
 
 ;CommandLine:      db 'HD cmdp.com', 0x0D
 ;CommandLine:      db ' copy    sasm.com   foo.tmp', 0x0D
-CommandLine:      db '    dir.com',0x0D
-;CommandLine:      db '    echo.Hello world!',0x0D
+;CommandLine:      db '    dir.com',0x0D
+CommandLine:      db '    echo.Hello world!',0x0D
+;CommandLine:      db ' cmdline  12345 67    ', 0x0D
 
 InputFile:        resw 1
 OutputFile:       resw 1
+
+ParameterBlock:   resw 1 ; Segment of environment to copy (0 = use caller's)
+PB_ArgPtr:        resw 2 ; Pointer to arguments
+                  resw 2 ; Pointer to first FCB
+                  resw 2 ; Pointer second first FCB
+
+InFileName:       resb 12
+InFileNameEnd:    resb 1
+OutFileName:      resb 13
 Buffer:           resb BUFFER_SIZE
