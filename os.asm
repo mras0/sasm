@@ -1569,6 +1569,9 @@ Int21_3C:
         jmp .OpenFromDE
 .Found:
         ; File found, truncate
+        xor ax, ax
+        mov [es:bx+DIR_ENTRY_FSIZE], ax
+        mov [es:bx+DIR_ENTRY_FSIZE+2], ax
         mov ax, [es:bx+DIR_ENTRY_LCLUST]
         push es
         push bx

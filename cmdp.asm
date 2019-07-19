@@ -23,6 +23,16 @@ Main:
         int 0x21
         jc GenericError
 
+        ;
+        ; Run autoexec.bat if it exists
+        ;
+
+        mov dx, Autoexec
+        mov ax, 0x3d00
+        int 0x21
+        jc .CmdLoop
+        call RunCommandFile
+
 .CmdLoop:
         call PutCrLf
         mov dx, MsgPrompt
@@ -32,6 +42,52 @@ Main:
         call CommandDispatch
         jmp .CmdLoop
 
+; Run command file in AX
+; Returns carry clear on success
+;         carry set on error and error code in AX
+RunCommandFile:
+        mov bx, ax
+.LineLoop:
+        mov si, CL_Buffer
+.CharLoop:
+        mov cx, 1
+        mov ah, 0x3f
+        mov dx, si
+        int 0x21
+        jnc .ReadOK
+        push ax
+        mov ah, 0x3e
+        int 0x21
+        pop ax
+        stc
+        ret
+.ReadOK:
+        and ax, ax
+        jz .Done
+.NotEOF:
+        lodsb
+        cmp al, 0x0D
+        je .Execute
+        mov ax, si
+        sub ax, CL_Buffer
+        cmp ax, CMDLINE_MAX
+        jb .CharLoop
+        mov byte [si+0xFFFF], 0x0D
+.Execute:
+        pusha
+        push ds
+        push es
+        call CommandDispatch
+        pop es
+        pop ds
+        popa
+        jmp .LineLoop
+.Done:
+        mov byte [si], 0x0D
+        call CommandDispatch ; Execute what's in the buffer
+        mov ah, 0x3e
+        int 0x21
+        ret
 
 GenericError:
         mov dx, MsgErrGeneric
@@ -329,10 +385,11 @@ CommandDispatch:
 .NotHd:
         cmp word [bx], 'RE'
         jne .NotRen
-        ; TODO: 'REM' support goes here
         cmp word [bx+2], 'N'
+        je CmdRen
+        cmp word [bx+2], 'M'
         jne .NotInternal
-        jmp CmdRen
+        jmp CmdRem
 .NotRen:
 
 .NotInternal:
@@ -354,6 +411,20 @@ CommandDispatch:
         jmp .AppendNUL
 
 .AppendExt:
+        ; Try batchfile with the name
+        push di
+        mov ax, '.B'
+        stosw
+        mov ax, 'AT'
+        stosw
+        xor al, al
+        pop di
+
+        mov dx, InFileName
+        mov ax, 0x3d00
+        int 0x21
+        jnc RunCommandFile
+
         mov ax, '.C'
         stosw
         mov ax, 'OM'
@@ -387,6 +458,7 @@ CommandDispatch:
         dec si
         mov [si], bl
 
+        ; TODO: Check file extension....
         ; Run Program
 .TryRun:
         mov word [PB_ArgPtr], si
@@ -398,6 +470,7 @@ CommandDispatch:
         mov bx, ParameterBlock   ; ES:BX -> parameter block
         int 0x21
         jnc .Ret
+
 .BadCommand:
         mov si, InFileName
 .BCP:
@@ -606,7 +679,7 @@ CmdDir:
 .Find:
         mov si, 0x80 ; DTA defaults to PSP:80h, Offset of filename is 0x1E
         add si, FF_FNAME
-        mov cl, 11
+        mov cl, 12
 .Print:
         lodsb
         and al, al
@@ -702,6 +775,9 @@ CmdRen:
         jc CError
         ret
 
+CmdRem:
+        ret
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 MsgErrGeneric:    db 'Generic error message$'
@@ -718,9 +794,11 @@ MsgErrRename:     db 'Could not rename file$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'
+Autoexec:         db 'AUTOEXEC.BAT', 0
 
 InputFile:        resw 1
 OutputFile:       resw 1
+CommandFile:      resw 1
 
 ParameterBlock:   resw 1 ; Segment of environment to copy (0 = use caller's)
 PB_ArgPtr:        resw 2 ; Pointer to arguments

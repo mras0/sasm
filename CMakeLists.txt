@@ -44,22 +44,26 @@ set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
 
 add_custom_command(
     OUTPUT ${DISK_IMG}
-    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    COMMAND disktool disk.img create
-    COMMAND disktool disk.img boot boot.bin
-    COMMAND disktool disk.img put os.sys
-    COMMAND disktool disk.img put cmdp.com
-    COMMAND disktool disk.img put sasm.com
-    COMMAND disktool disk.img put cmdline.com
-    COMMAND disktool disk.img put "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" in.asm
-    COMMAND disktool disk.img list
+    COMMAND disktool "${DISK_IMG}" create
+    COMMAND disktool "${DISK_IMG}" boot   "${CMAKE_CURRENT_BINARY_DIR}/boot.bin"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/os.sys"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
+    COMMAND disktool "${DISK_IMG}" list
     DEPENDS
         disktool
-        ${CMAKE_CURRENT_BINARY_DIR}/boot.bin
-        ${CMAKE_CURRENT_BINARY_DIR}/os.sys
-        ${CMAKE_CURRENT_BINARY_DIR}/sasm.com
-        ${CMAKE_CURRENT_BINARY_DIR}/cmdp.com
-        ${CMAKE_CURRENT_BINARY_DIR}/cmdline.com
+        "${CMAKE_CURRENT_BINARY_DIR}/boot.bin"
+        "${CMAKE_CURRENT_BINARY_DIR}/os.sys"
+        "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
+        "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
+        "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
+        "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
     )
 
 add_custom_target(build_disk ALL DEPENDS "${DISK_IMG}")
