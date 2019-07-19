@@ -79,8 +79,23 @@ CC_G             equ 0xf
         org 0x100
 
 ProgramEntry:
+        mov di, BSS
+        mov cx, ProgramEnd
+        sub cx, di
+        xor al, al
+        rep stosb
+
+        call ParseCommandLine
+
         mov bx, MsgHello
         call PutString
+        mov bx, InFileName
+        call PutString
+        mov bx, MsgHello2
+        call PutString
+        mov bx, OutFileName
+        call PutString
+        call PutCrLf
 
         call Init
         call MainLoop
@@ -88,6 +103,70 @@ ProgramEntry:
 
         xor al, al
         jmp Exit
+
+ParseCommandLine:
+        mov cl, [0x80]
+        inc cl ; Let count include CR
+        mov si, 0x81
+        mov di, InFileName
+        call CopyFileName
+
+        mov di, OutFileName
+        call CopyFileName
+
+        cmp byte [InFileName], 0
+        jne .HasIn
+        mov word [InFileName], 'A.'
+        mov word [InFileName+2], 'AS'
+        mov word [InFileName+4], 'M'
+.HasIn:
+        cmp byte [OutFileName], 0
+        jne .Ret
+        mov di, OutFileName
+        mov si, InFileName
+.Copy:
+        lodsb
+        cmp al, '.'
+        jbe .AppendExt
+        stosb
+        jmp .Copy
+.AppendExt:
+        mov ax, '.C'
+        stosw
+        mov ax, 'OM'
+        stosw
+        xor al, al
+        stosb
+.Ret:
+        ret
+
+CopyFileName:
+        and cl, cl
+        jz .Done
+        cmp byte [si], 0x0D
+        je .Done
+        ; Skip spaces
+.SkipS:
+        cmp byte [si], ' '
+        jne .NotSpace
+        inc si
+        dec cl
+        jnz .SkipS
+        jmp .Done
+.NotSpace:
+        mov ch, 12
+.Copy:
+        cmp byte [si], ' '
+        jbe .Done
+        movsb
+        dec cl
+        jz .Done
+        dec ch
+        jnz .Copy
+.Done:
+        xor al, al
+        stosb
+        ret
 
 Init:
         ; First free paragraph is at the end of the program
@@ -141,7 +220,6 @@ Fini:
         call WriteOutput
 
         ret
-
 
 NotImplemented:
         mov bx, MsgErrNotImpl
@@ -489,8 +567,10 @@ OutputImm8:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ParserInit:
+        mov word [CurrentLine], 1
+
         ; Open file for reading
-        mov dx, FileName
+        mov dx, InFileName
         mov ax, 0x3d00
         int 0x21
         jnc .OK
@@ -1912,10 +1992,8 @@ InstJCC:
 ;; Constants
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-FileName:         db 'in.asm', 0
-OutFileName:      db 'a.com', 0
-
-MsgHello:         db 'SASM 1.0 Running', 13, 10, 0
+MsgHello:         db 'SASM 1.0 Processing ', 0
+MsgHello2:        db ' to ', 0
 MsgCurToken:      db 'Current token: "', 0
 MsgErrInLine:     db 'Error in line ', 0
 MsgErrNotImpl:    db 'Not implemented', 0
@@ -2144,47 +2222,50 @@ DispatchListEnd:
 ;; Data
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-; TODO: To save a few bytes the following should just be 'resb'/'resw'
+BSS:
 
-FirstFreeSeg:     dw 0
+FirstFreeSeg:     resw 1
 
 ;;; Parser
-InputFile:        dw 0 ; Input file handle
-CurrentLine:      dw 1 ; Current line being processed
-NumNewLines:      dw 0 ; Number of newlines passed by ReadNext
-CurrentChar:      db 0 ; Current input character (0 on EOF)
-TokenLen:         db 0
-Token:            db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-TokenEnd:         db 0 ; NUL-terminator
+InputFile:        resw 1 ; Input file handle
+CurrentLine:      resw 1 ; Current line being processed
+NumNewLines:      resw 1 ; Number of newlines passed by ReadNext
+CurrentChar:      resb 1 ; Current input character (0 on EOF)
+TokenLen:         resb 1
+Token:            resb TOKEN_MAX
+TokenEnd:         resb 1 ; NUL-terminator
 
 ; The last parsed operand is in OperandType/OperandValue
 ; Instructions with 2 operands have the left most operand saved in
 ; OperandLType/OperandLValue. CurrentFixup/CurrentLFixup holds
 ; any fixups needed for the operands (or INVALID_ADDR)
 ; See the EQUs at the top of the file for the meaning
-OperandType:      db 0
-OperandValue:     dw 0
-CurrentFixup:     dw 0
-OperandLType:     db 0
-OperandLValue:    dw 0
-CurrentLFixup:    dw 0
+OperandType:      resb 1
+OperandValue:     resw 1
+CurrentFixup:     resw 1
+OperandLType:     resb 1
+OperandLValue:    resw 1
+CurrentLFixup:    resw 1
 
-ExplicitSize:     db 0 ; Explicit size of memory operand (0=none, 1=byte, 2=word)
+ExplicitSize:     resb 1 ; Explicit size of memory operand (0=none, 1=byte, 2=word)
 
-LabelSeg:         dw 0
-NumLabels:        dw 0
+LabelSeg:         resw 1
+NumLabels:        resw 1
 
-FixupSeg:         dw 0
-NextFreeFixup:    dw 0 ; Points to next free fixup node (or INVALID_ADDR)
+FixupSeg:         resw 1
+NextFreeFixup:    resw 1 ; Points to next free fixup node (or INVALID_ADDR)
 
-EquSeg:           dw 0
-NumEqus:          dw 0
+EquSeg:           resw 1
+NumEqus:          resw 1
 
 ;;; Output
-OutputSeg:        dw 0
-CurrentAddress:   dw 0 ; Current memory address of code (e.g. 0x100 first in a COM file)
-NumOutBytes:      dw 0 ; Number of bytes output
-PendingZeros:     dw 0 ; Number of zeros to output before next actual byte
+OutputSeg:        resw 1
+CurrentAddress:   resw 1 ; Current memory address of code (e.g. 0x100 first in a COM file)
+NumOutBytes:      resw 1 ; Number of bytes output
+PendingZeros:     resw 1 ; Number of zeros to output before next actual byte
+
+InFileName:       resb 13
+OutFileName:      resb 13
 
 ;;; Keep last
 ProgramEnd:

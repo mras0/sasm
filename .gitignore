@@ -2,4 +2,4 @@
 *.exe
 *build/
 old*/
-tests/in.asm
+tests/a.asm
