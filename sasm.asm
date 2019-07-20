@@ -11,6 +11,7 @@
 
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 5          ; Maximum length of directive/instruction
+BUFFER_SIZE      equ 512        ; Size of input buffer
 OUTPUT_MAX       equ 0x2000     ; Maximum output size
 LABEL_MAX        equ 200        ; Maximum number of labels
 FIXUP_MAX        equ 400        ; Maximum number of fixups
@@ -578,6 +579,7 @@ ParserInit:
         jmp Error
 .OK:
         mov [InputFile], ax
+        call FillInBuffer
         call MoveNext
         ret
 
@@ -588,22 +590,39 @@ ParserFini:
         int 0x21
         ret
 
-ReadNext:
+FillInBuffer:
         mov ah, 0x3f
         mov bx, [InputFile]
-        mov cx, 1
-        mov dx, CurrentChar
+        mov cx, BUFFER_SIZE
+        mov dx, InputBuffer
         int 0x21
-        jc .NotOK  ; error code in AX
-        cmp ax, 1
-        jne .NotOK ; EOF
-        cmp byte [CurrentChar], 10
+        jc .ReadError  ; error code in AX
+        mov [InputBufferBytes], ax
+        mov word [InputBufferPos], 0
+        ret
+
+.ReadError:
+        mov bx, MsgErrRead
+        jmp Error
+
+ReadNext:
+        mov bx, [InputBufferPos]
+        cmp bx, [InputBufferBytes]
+        jb .HasData
+        call FillInBuffer
+        xor bx, bx
+        and ax, ax
+        jz .EOF
+.HasData:
+        mov al, [InputBuffer+bx]
+        inc bx
+        mov [InputBufferPos], bx
+.EOF:
+        mov [CurrentChar], al
+        cmp al, 10
         jne .Ret
         inc word [NumNewLines]
 .Ret:
-        ret
-.NotOK:
-        mov byte [CurrentChar], 0
         ret
 
 ; Try to get character in AL and ReadNext. Returns carry clear on success.
@@ -2001,6 +2020,7 @@ MsgErrNotDone:    db 'File not completely parsed', 0
 MsgErrUnknInst:   db 'Unknown directive or instruction', 0
 MsgErrOpenIn:     db 'Error opening input file', 0
 MsgErrOutput:     db 'Error during output', 0
+MsgErrRead:       db 'Error reading from input file', 0
 MsgErrMem:        db 'Alloc failed', 0
 MsgErrInvalidNum: db 'Error invalid number', 0
 MsgErrInvalidOpe: db 'Invalid operand', 0
@@ -2234,6 +2254,9 @@ CurrentChar:      resb 1 ; Current input character (0 on EOF)
 TokenLen:         resb 1
 Token:            resb TOKEN_MAX
 TokenEnd:         resb 1 ; NUL-terminator
+InputBufferPos:   resw 1
+InputBufferBytes: resw 1
+InputBuffer:      resb BUFFER_SIZE
 
 ; The last parsed operand is in OperandType/OperandValue
 ; Instructions with 2 operands have the left most operand saved in
