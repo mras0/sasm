@@ -353,7 +353,7 @@ MallocBytes:
 Malloc:
         mov bx, [FreeSeg]
         add ax, bx
-        cmp bx, 0xA000
+        cmp ax, 0xA000
         jae MallocOOM
         mov [FreeSeg], ax
         mov ax, bx
@@ -416,6 +416,8 @@ StartProgram:
         mov [DTA+2], ax
         mov word [DTA], 0x80
 
+        ; Push current program segment
+        push ax
         ; Push last stack pointer
         mov bx, [LastProcStack]
         push bx
@@ -451,6 +453,12 @@ StartProgram:
         mov [cs:LastProcStack+2], bx
         pop bx
         mov [cs:LastProcStack], bx
+
+        ; Restore free segment pointer
+        ; This only works because TSR arent't supported
+        pop bx
+        mov [cs:FreeSeg], bx
+
         ret
 
 
@@ -1399,7 +1407,7 @@ Int21Dispatch:
         cmp ah, 0x56
         je Int21_56
 
-Int21NotImpl:
+Int21_NotImpl:
         push ax
         xor bx, bx
         mov ds, bx
@@ -1409,7 +1417,7 @@ Int21NotImpl:
         mov al, ah
         call PutHexByte
         call PutCrLf
-.Halt:   hlt
+.Halt:  hlt
         jmp .Halt
 
 ; IRET with carry flag
@@ -1744,7 +1752,7 @@ Int21_4A:
 ; AL    Type of load (0 = load and execute)
 ; DS:DX Program name
 ; ES:BX Parameter block (mostly ignored for now)
-;       Far pointe at [es:bx+2] points to command line arguments
+;       Far pointer at [es:bx+2] points to command line arguments
 Int21_4B:
         cmp al, 0
         jne .NotImpl
@@ -1767,7 +1775,9 @@ Int21_4B:
         call ExpandFName
         mov ax, cs
         mov ds, ax
+
         call LoadProgram
+
         pop ds ; Command line seg
         pop si ; Command line offset
         and ax, ax
