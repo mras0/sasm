@@ -29,6 +29,7 @@ LINEH_SIZE   equ 10
 ; COLOR_BROWN   equ 0x6 ; 0xE yellow
 ; COLOR_GRAY    equ 0x7 ; 0xF white
 
+COLOR_WARN  equ 0x0e
 COLOR_ERROR equ 0x4f
 
 
@@ -226,13 +227,15 @@ Start:
         mov [DispLine], ax
         mov [DispLine+2], dx
 
+        xor al, al
+        mov [CursorRelY], al
+
+        push 0xb800
+        pop es
 
         ;
-        ; Draw screen
+        ; Set initial status
         ;
-        mov ax, 0xb800
-        mov es, ax
-        call DrawLines
 
         mov ah, COLOR_ERROR
         mov di, SLINE_OFFSET
@@ -254,20 +257,57 @@ Start:
         mov al, 'C'
         stosw
 
-        ; Wait for keypress
-        xor ax, ax
-        int 0x16
+        call DrawLines
+        call PlaceCursor
+.MainLoop:
+        ;
+        ; Get key
+        ;
+        call ReadKey
+        cmp al, 0x1B ; ESC?
+        je .Done
 
+        call CommandFromKey
+        and bx, bx
+        jz .Unknown
+        push es
+        call bx
+        pop es
+        cmp byte [NeedUpdate], 0
+        je .MainLoop
+        mov byte [NeedUpdate], 0
+        call DrawLines
+        jmp .MainLoop
+
+.Unknown:
+        push ax
+        call ClearStatusLine
+        mov ah, COLOR_ERROR
+        mov di, SLINE_OFFSET
+        pop dx
+        call SPutHexWord
+        mov si, MsgErrUnknownKey
+        call SCopyStr
+        jmp .MainLoop
+
+.Done:
         ; Exit
         call RestoreVideoMode
         xor al, al
         jmp Exit
 
-RestoreVideoMode:
-        xor ah, ah
-        mov al, [PrevVideoMode]
-        int 0x10
+CommandFromKey:
+        mov bx, MoveDown
+        cmp al, 'j'
+        je .Done
+        mov bx, MoveUp
+        cmp al, 'k'
+        je .Done
+        ; Not found
+        xor bx, bx
+.Done:
         ret
+
 
 ; Exit with error code in AL and message in DX
 Error:
@@ -282,6 +322,18 @@ Error:
 Exit:
         mov ah, 0x4c
         int 0x21
+
+RestoreVideoMode:
+        xor ah, ah
+        mov al, [PrevVideoMode]
+        int 0x10
+        ret
+
+; Read (possibly extended key) to AX
+ReadKey:
+        xor ax, ax
+        int 0x16
+        ret
 
 ; Put character in AL
 PutChar:
@@ -328,7 +380,7 @@ PutHexDigit:
 
 ; Convert word in AX to decimal representation (ASCIIZ) store in DI
 ; On return DI points to the first character to print
-ConvertWordDec:
+CvtWordDec:
         push ax
         push bx
         push dx
@@ -352,7 +404,31 @@ CvtPadDecWord:
         mov word [di], '  '
         mov word [di+2], '  '
         mov word [di+4], '  '
-        jmp ConvertWordDec
+        jmp CvtWordDec
+
+; Produce four hex digits to buffer in DI
+CvtWordHex:
+        push ax
+        mov al, ah
+        call CvtByteHex
+        pop ax
+CvtByteHex:
+        push ax
+        shr al, 4
+        call CvtNibHex
+        pop ax
+CvtNibHex:
+        push ax
+        and al, 0x0f
+        add al, '0'
+        cmp al, '9'
+        jbe .Store
+        add al, 7
+.Store:
+        mov [di], al
+        inc di
+        pop ax
+        ret
 
 ; Convert dword in DX:AX to decimal representation (ASCIIZ) store in DI
 ; On return DI points to the first character to print
@@ -466,10 +542,105 @@ PrintHeap:
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Commands
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+LoadDispLine:
+        mov bx, [DispLine+2]
+        mov es, bx
+        mov bx, [DispLine]
+        ret
+
+; Load next line from ES:BX to DX:AX
+; Return zero flag set if non-null
+LoadLineNext:
+        mov ax, [es:bx+LINEH_NEXT]
+        mov dx, [es:bx+LINEH_NEXT+2]
+        and ax, ax
+        jnz .Ret
+        and dx, dx
+.Ret:
+        ret
+
+; Load next line from ES:BX to DX:AX
+; Return zero flag set if non-null
+LoadLinePrev:
+        mov ax, [es:bx+LINEH_PREV]
+        mov dx, [es:bx+LINEH_PREV+2]
+        and ax, ax
+        jnz .Ret
+        and dx, dx
+.Ret:
+        ret
+
+MoveUp:
+        mov al, [CursorRelY]
+        and al, al
+        jz ScrollUp
+        dec al
+        mov [CursorRelY], al
+        jmp PlaceCursor
+ScrollUp:
+        mov byte [NeedUpdate], 1
+        call LoadDispLine
+        call LoadLinePrev
+        jz .Done ; At start of file (TODO: Give warning)
+        mov [DispLine], ax
+        mov [DispLine+2], dx
+        dec word [DispLineIdx]
+        mov byte [NeedUpdate], 1
+.Done:
+        ret
+
+MoveDown:
+        mov al, [CursorRelY]
+        inc al
+        push ax
+        ; Check if moving down would put us beyond EOF
+        xor ch, ch
+        mov cl, al
+        call LoadDispLine
+.L:
+        call LoadLineNext
+        jnz .OK
+        add sp, 2 ; Discard AX
+        ret
+.OK:
+        mov es, dx
+        mov bx, ax
+        dec cl
+        jnz .L
+        pop ax
+        ; At final line?
+        cmp al, NDISP_LINES
+        jae ScrollDown
+        mov [CursorRelY], al
+        jmp PlaceCursor
+ScrollDown:
+        call LoadDispLine
+        call LoadLineNext
+        jz .Done ; At EOF
+        mov [DispLine], ax
+        mov [DispLine+2], dx
+        inc word [DispLineIdx]
+        mov byte [NeedUpdate], 1
+.Done:
+        ret
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Drawing functions
 ;;
 ;; Assumes ES=0xb800
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+PlaceCursor:
+        mov dl, 6
+        mov dh, [CursorRelY]
+        mov ah, 0x02
+        xor bh, bh
+        int 0x10
+        ret
 
 DrawLines:
         xor di, di
@@ -588,13 +759,26 @@ SCopyStr:
 .Done:
         ret
 
+; Put hex word in DX
+SPutHexWord:
+        push ax
+        push di
+        mov di, Buffer
+        mov si, di
+        mov ax, dx
+        call CvtWordHex
+        mov byte [di], 0
+        pop di
+        pop ax
+        jmp SCopyStr
+
 ; Put decimal word in DX, trashes Buffer
 SPutDecWord:
         push ax
         push di
         mov di, Buffer
         mov ax, dx
-        call ConvertWordDec
+        call CvtWordDec
         mov si, di
         pop di
         pop ax
@@ -613,22 +797,31 @@ SPutDecDword:
         pop ax
         jmp SCopyStr
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Constants/Data
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 MsgErrOpen:       db 'Could not open file', 13, 10, '$'
 MsgErrRead:       db 'Error reading from file', 13, 10, '$'
+MsgErrUnknownKey: db ' unknown key/command', 0
 
-FileName:         db 't01.asm',0
-;FileName:         db 'sasm.asm', 0
+;FileName:         db 't09.asm',0
+FileName:         db 'sasm.asm', 0
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
 HeapFree:         resw 2
 FirstLine:        resw 2
 LastLine:         resw 2
-NumLines:         resw 1
-TotalBytes:       resw 2
 File:             resw 1
 Buffer:           resb BUFFER_SIZE
 
+NeedUpdate:       resb 1
 DispLineIdx:      resw 1 ; 1-based index of the first displayed line
 DispLine:         resw 2 ; Far pointer to first displayed line (header)
+
+CursorRelY:       resb 1 ; Cursor Y relative to First display line
+
+; Not always up to date
+NumLines:         resw 1
+TotalBytes:       resw 2
