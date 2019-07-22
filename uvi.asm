@@ -1,6 +1,11 @@
         org 0x100
 
-BUFFER_SIZE equ 512
+BUFFER_SIZE     equ 512
+NDISP_LINES     equ 24   ; Number of displayed lines (of text from the file)
+DISP_LINE_WORDS equ 80   ; Width of screen (each is one character + one attribute byte)
+DISP_LINE_BYTES equ 160  ; DISP_LINE_WORDS * 2
+SLINE_OFFSET    equ 3840 ; DISP_LINE_BYTES * NDISP_LINES
+MAX_LINE_WIDTH  equ 74   ; DISP_LINE_WORDS - (5 digits + space)
 
 ; Heap node
 HEAPN_PREV   equ 0  ; DWORD Previous node (far pointer)
@@ -14,10 +19,30 @@ LINEH_NEXT   equ 4  ; DWORD Next line (far pointer)
 LINEH_LENGTH equ 8  ; WORD  Length
 LINEH_SIZE   equ 10
 
+                         ; +8 yiels...
+; COLOR_BLACK   equ 0x0 ; 0x8 dark gray
+; COLOR_BLUE    equ 0x1 ; 0x9 bright blue
+; COLOR_GREEN   equ 0x2 ; 0xA bright green
+; COLOR_CYAN    equ 0x3 ; 0xB bright cyan
+; COLOR_RED     equ 0x4 ; 0xC bright red
+; COLOR_MAGENTA equ 0x5 ; 0xD bright magenta
+; COLOR_BROWN   equ 0x6 ; 0xE yellow
+; COLOR_GRAY    equ 0x7 ; 0xF white
+
+COLOR_ERROR equ 0x4f
+
+
 ; TODO: Handle (give error) when file doesn't fit in memory
 
 Start:
-        ; Init Heap
+        ; Get previous video mode
+        mov ah, 0x0f
+        int 0x10
+        mov [PrevVideoMode], al
+
+        mov ax, 0x03 ; Set mode 3 to ensure we're in a known state
+        int 0x10
+
         mov ax, cs
         add ax, 0x1000
         mov [HeapStartSeg], ax
@@ -29,6 +54,11 @@ Start:
         xor al, al
         mov cx, LINEH_SIZE
         rep stosb
+
+        xor ax, ax
+        mov [NumLines], ax
+        mov [TotalBytes], ax
+        mov [TotalBytes+2], ax
 
         ; ES:BP -> CurrentLine
         ; ES:DI -> HeapPtr
@@ -52,6 +82,8 @@ Start:
         jc Error
         and ax, ax
         jz .ReadDone
+        add [TotalBytes], ax
+        adc word [TotalBytes+2], 0
         mov cx, ax
         mov si, Buffer
 .Char:
@@ -60,6 +92,7 @@ Start:
         cmp byte [es:di+0xFFFF], 10 ; LF?
         jne .NextChar
 
+        inc word [NumLines]
         ; Remove CR+LF
         mov ax, 1
         cmp word [es:bp+LINEH_LENGTH], ax
@@ -184,16 +217,64 @@ Start:
         jmp .InitHeap
 .HeapDone:
 
-        call PrintLineBuf
-        call PrintHeap
+        ;
+        ; Prepare display variables
+        ;
+        mov word [DispLineIdx], 1
+        mov ax, [FirstLine]
+        mov dx, [FirstLine+2]
+        mov [DispLine], ax
+        mov [DispLine+2], dx
+
+
+        ;
+        ; Draw screen
+        ;
+        mov ax, 0xb800
+        mov es, ax
+        call DrawLines
+
+        mov ah, COLOR_ERROR
+        mov di, SLINE_OFFSET
+        mov si, FileName
+        call SCopyStr
+        mov al, ' '
+        stosw
+        mov dx, [NumLines]
+        call SPutDecWord
+        mov al, 'L'
+        stosw
+        mov al, ','
+        stosw
+        mov al, ' '
+        stosw
+        mov dx, [TotalBytes]
+        mov cx, [TotalBytes+2]
+        call SPutDecDword
+        mov al, 'C'
+        stosw
+
+        ; Wait for keypress
+        xor ax, ax
+        int 0x16
 
         ; Exit
+        call RestoreVideoMode
         xor al, al
         jmp Exit
+
+RestoreVideoMode:
+        xor ah, ah
+        mov al, [PrevVideoMode]
+        int 0x10
+        ret
 
 ; Exit with error code in AL and message in DX
 Error:
         push ax
+        push dx
+        call RestoreVideoMode
+        pop dx
         mov ah, 9
         int 0x21
         pop ax
@@ -245,6 +326,64 @@ PutHexDigit:
         add al, 7
         jmp PutChar
 
+; Convert word in AX to decimal representation (ASCIIZ) store in DI
+; On return DI points to the first character to print
+ConvertWordDec:
+        push ax
+        push bx
+        push dx
+        mov bx, 10
+        add di, 5
+        mov byte [di], 0
+.Cvt:
+        xor dx, dx
+        div bx
+        add dl, '0'
+        dec di
+        mov [di], dl
+        and ax, ax
+        jnz .Cvt
+        pop dx
+        pop bx
+        pop ax
+        ret
+
+CvtPadDecWord:
+        mov word [di], '  '
+        mov word [di+2], '  '
+        mov word [di+4], '  '
+        jmp ConvertWordDec
+
+; Convert dword in DX:AX to decimal representation (ASCIIZ) store in DI
+; On return DI points to the first character to print
+ConvertDwordDec:
+        push ax
+        push bx
+        push cx
+        push dx
+        add di, 9
+        mov byte [di], 0
+        mov bx, 10
+.Cvt:
+        push ax
+        mov ax, dx
+        xor dx, dx
+        div bx
+        mov cx, ax
+        pop ax
+        div bx
+        xchg cx, dx
+        add cl, '0'
+        dec di
+        mov [di], cl
+        mov cx, ax
+        add cx, dx
+        jnz .Cvt
+        pop dx
+        pop cx
+        pop bx
+        pop ax
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Debug helpers
@@ -326,6 +465,153 @@ PrintHeap:
         popa
         ret
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Drawing functions
+;;
+;; Assumes ES=0xb800
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+DrawLines:
+        xor di, di
+        mov ax, [DispLineIdx]
+        mov bp, [DispLine]
+        mov dx, [DispLine+2]
+        mov cx, NDISP_LINES
+
+        ; ES:DI Points to start of current line in video memory
+        ; DX:BP Points to the current line header
+        ; AX    Current line number
+        ; CX    Number of lines to display
+
+.Main:
+        push es
+        pusha
+
+        ;
+        ; Line number
+        ;
+        pusha
+        mov di, Buffer
+        call CvtPadDecWord
+        popa
+        mov si, Buffer
+        mov ah, 0x17
+.Pr:
+        lodsb
+        and al, al
+        jz .PrDone
+        stosw
+        jmp .Pr
+.PrDone:
+        mov al, ' '
+        stosw
+
+        ;
+        ; Line
+        ;
+
+        push ds
+        mov ds, dx
+        mov si, bp
+        mov bx, [si+LINEH_LENGTH]
+        and bx, bx
+        jz .LineDone
+        add si, LINEH_SIZE
+        mov ah, 0x27
+        mov cx, MAX_LINE_WIDTH
+        cmp cx, bx
+        jbe .PrLine
+        mov cx, bx
+.PrLine:
+        lodsb
+        stosw
+        dec cx
+        jnz .PrLine
+.LineDone:
+        pop ds
+        mov cx, MAX_LINE_WIDTH
+        sub cx, bx
+        jbe .NoRest
+        mov ax, 0x3720 ; ' '
+        rep stosw
+.NoRest:
+        popa
+        ; Move to next line
+        mov es, dx
+        mov dx, [es:bp+LINEH_NEXT+2]
+        mov bp, [es:bp+LINEH_NEXT]
+        pop es
+
+        inc ax                  ; ++LineNumber
+        add di, DISP_LINE_BYTES ; Move to next line in video memory
+        dec cx                  ; --LinesLeft
+        jz .Done
+        ; Reached EOF?
+        mov bx, dx
+        add bx, bp
+        jnz .Main
+        mov bx, cx
+.EmptyLines:
+        push di
+        mov ax, 0x177e ; '~'
+        stosw
+        mov al, ' '
+        mov cx, 5
+        rep stosw
+        mov ax, 0x3720 ; ' '
+        mov cx, MAX_LINE_WIDTH
+        rep stosw
+        pop di
+        add di, DISP_LINE_BYTES ; Move to next line
+        dec bx
+        jnz .EmptyLines
+.Done:
+        ret
+
+ClearStatusLine:
+        mov di, SLINE_OFFSET
+        mov cx, DISP_LINE_WORDS
+        mov ax, 0x0720
+        rep stosw
+        ret
+
+;
+; Status line formatting helpers
+;
+
+SCopyStr:
+        lodsb
+        and al, al
+        jz .Done
+        stosw
+        jmp SCopyStr
+.Done:
+        ret
+
+; Put decimal word in DX, trashes Buffer
+SPutDecWord:
+        push ax
+        push di
+        mov di, Buffer
+        mov ax, dx
+        call ConvertWordDec
+        mov si, di
+        pop di
+        pop ax
+        jmp SCopyStr
+
+; Put decimal dword in CX:DX, trashes Buffer
+SPutDecDword:
+        push ax
+        push di
+        mov di, Buffer
+        mov ax, dx
+        mov dx, cx
+        call ConvertDwordDec
+        mov si, di
+        pop di
+        pop ax
+        jmp SCopyStr
 
 
 MsgErrOpen:       db 'Could not open file', 13, 10, '$'
@@ -334,9 +620,15 @@ MsgErrRead:       db 'Error reading from file', 13, 10, '$'
 FileName:         db 't01.asm',0
 ;FileName:         db 'sasm.asm', 0
 
+PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
 HeapFree:         resw 2
 FirstLine:        resw 2
 LastLine:         resw 2
+NumLines:         resw 1
+TotalBytes:       resw 2
 File:             resw 1
 Buffer:           resb BUFFER_SIZE
+
+DispLineIdx:      resw 1 ; 1-based index of the first displayed line
+DispLine:         resw 2 ; Far pointer to first displayed line (header)
