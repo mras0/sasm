@@ -5,6 +5,7 @@ NDISP_LINES     equ 24   ; Number of displayed lines (of text from the file)
 DISP_LINE_WORDS equ 80   ; Width of screen (each is one character + one attribute byte)
 DISP_LINE_BYTES equ 160  ; DISP_LINE_WORDS * 2
 SLINE_OFFSET    equ 3840 ; DISP_LINE_BYTES * NDISP_LINES
+SLINE_CNT_OFF   equ 3988 ; SLINE_OFFSET + DISP_LINE_BYTES - 6*2
 MAX_LINE_WIDTH  equ 74   ; DISP_LINE_WORDS - (5 digits + space)
 
 ; Heap node
@@ -29,8 +30,9 @@ LINEH_SIZE   equ 10
 ; COLOR_BROWN   equ 0x6 ; 0xE yellow
 ; COLOR_GRAY    equ 0x7 ; 0xF white
 
-COLOR_WARN  equ 0x0e
-COLOR_ERROR equ 0x4f
+COLOR_NORMAL equ 0x07
+COLOR_WARN   equ 0x0e
+COLOR_ERROR  equ 0x4f
 
 
 ; TODO: Handle (give error) when file doesn't fit in memory
@@ -257,26 +259,74 @@ Start:
         mov al, 'C'
         stosw
 
-        call DrawLines
+        mov byte [NeedUpdate], 1
         call PlaceCursor
 .MainLoop:
-        ;
-        ; Get key
-        ;
+        xor ax, ax
+        mov [Count], ax
+        cmp [NeedUpdate], al
+        je .ReadKey
+        mov [NeedUpdate], al
+        call DrawLines
+.ReadKey:
         call ReadKey
         cmp al, 0x1B ; ESC?
         je .Done
 
+        ; Read Count
+        cmp al, '0'
+        jb .Command
+        cmp al, '9'
+        ja .Command
+        sub al, '0'
+        xor ah, ah
+        mov cx, ax
+        xor dx, dx
+        mov ax, [Count]
+        mov bx, 10
+        mul bx
+        and dx, dx
+        jnz .ReadKey ; Overflow (TODO: Notify user)
+        add ax, cx
+        jc .ReadKey  ; Overflow
+        mov [Count], ax
+        push ax
+        mov ah, COLOR_NORMAL
+        mov di, SLINE_CNT_OFF
+        pop dx
+        call SPutDecWord
+        jmp .ReadKey
+
+.Command:
+        push ax
+        call ClearSLineCnt
+        pop ax
+
         call CommandFromKey
         and bx, bx
         jz .Unknown
+
+        ; Run the command once and let it handle Count
         push es
+        push bx
         call bx
+        pop bx
+        ; If it didn't, the command will be repeated Count-1 times
+        mov cx, [Count]
+        and cx, cx
+        jz .CommandDone
+        dec cx
+        jz .CommandDone
+.Repeat:
+        push cx
+        push bx
+        call bx
+        pop bx
+        pop cx
+        dec cx
+        jnz .Repeat
+.CommandDone:
         pop es
-        cmp byte [NeedUpdate], 0
-        je .MainLoop
-        mov byte [NeedUpdate], 0
-        call DrawLines
         jmp .MainLoop
 
 .Unknown:
@@ -302,6 +352,9 @@ CommandFromKey:
         je .Done
         mov bx, MoveUp
         cmp al, 'k'
+        je .Done
+        mov bx, GotoLine
+        cmp al, 'G'
         je .Done
         ; Not found
         xor bx, bx
@@ -545,6 +598,12 @@ PrintHeap:
 ;; Commands
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+LoadFirstLine:
+        mov bx, [FirstLine+2]
+        mov es, bx
+        mov bx, [FirstLine]
+        ret
+
 LoadDispLine:
         mov bx, [DispLine+2]
         mov es, bx
@@ -571,6 +630,11 @@ LoadLinePrev:
         jnz .Ret
         and dx, dx
 .Ret:
+        ret
+
+LLFromDXAX:
+        mov es, dx
+        mov bx, ax
         ret
 
 MoveUp:
@@ -606,8 +670,7 @@ MoveDown:
         add sp, 2 ; Discard AX
         ret
 .OK:
-        mov es, dx
-        mov bx, ax
+        call LLFromDXAX
         dec cl
         jnz .L
         pop ax
@@ -627,6 +690,41 @@ ScrollDown:
 .Done:
         ret
 
+GotoLine:
+        xor cx, cx
+        xchg cx, [Count]
+        and cx, cx
+        jz .NotImplemented
+        push cx
+        call LoadFirstLine
+        dec cx
+        jz .Done
+.GL:
+        call LoadLineNext
+        jz .Err ; Premature EOF (TODO: Notify user)
+        call LLFromDXAX
+        dec cx
+        jnz .GL
+.Done:
+        mov [DispLine], bx
+        mov bx, es
+        mov [DispLine+2], bx
+        pop ax
+        mov [DispLineIdx], ax
+        mov byte [CursorRelY], 0
+        mov byte [NeedUpdate], 1
+        ret
+.Err:
+        add sp, 2
+        ret
+
+.NotImplemented:
+        mov si, .Msg
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        jmp SCopyStr
+
+.Msg: db 'GotoLine without count not implemented', 0
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Drawing functions
@@ -746,6 +844,13 @@ ClearStatusLine:
         rep stosw
         ret
 
+ClearSLineCnt:
+        mov di, SLINE_CNT_OFF
+        mov cx, 6
+        mov ax, 0x0720
+        rep stosw
+        ret
+
 ;
 ; Status line formatting helpers
 ;
@@ -821,6 +926,8 @@ DispLineIdx:      resw 1 ; 1-based index of the first displayed line
 DispLine:         resw 2 ; Far pointer to first displayed line (header)
 
 CursorRelY:       resb 1 ; Cursor Y relative to First display line
+
+Count:            resw 1
 
 ; Not always up to date
 NumLines:         resw 1
