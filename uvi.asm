@@ -70,7 +70,7 @@ Start:
         mov ax, 0x3d00
         mov dx, FileName
         int 0x21
-        mov dx, MsgErrOpen
+        mov dx, MsgErrOpenInit
         jc Error
         mov [File], ax
 
@@ -81,7 +81,7 @@ Start:
         mov cx, BUFFER_SIZE
         mov dx, Buffer
         int 0x21
-        mov dx, MsgErrRead
+        mov dx, MsgErrReadInit
         jc Error
         and ax, ax
         jz .ReadDone
@@ -238,26 +238,11 @@ Start:
         ;
         ; Set initial status
         ;
-
-        mov ah, COLOR_ERROR
+        mov ah, COLOR_NORMAL
         mov di, SLINE_OFFSET
         mov si, FileName
         call SCopyStr
-        mov al, ' '
-        stosw
-        mov dx, [NumLines]
-        call SPutDecWord
-        mov al, 'L'
-        stosw
-        mov al, ','
-        stosw
-        mov al, ' '
-        stosw
-        mov dx, [TotalBytes]
-        mov cx, [TotalBytes+2]
-        call SPutDecDword
-        mov al, 'C'
-        stosw
+        call SFormatFileInfo
 
         mov byte [NeedUpdate], 1
         call PlaceCursor
@@ -271,7 +256,7 @@ Start:
 .ReadKey:
         call ReadKey
         cmp al, 0x1B ; ESC?
-        je .Done
+        je .MainLoop
 
         ; Read Count
         cmp al, '0'
@@ -299,7 +284,7 @@ Start:
 
 .Command:
         push ax
-        call ClearSLineCnt
+        call ClearStatusLine
         pop ax
 
         call CommandFromKey
@@ -340,13 +325,10 @@ Start:
         call SCopyStr
         jmp .MainLoop
 
-.Done:
-        ; Exit
-        call RestoreVideoMode
-        xor al, al
-        jmp Exit
-
 CommandFromKey:
+        mov bx, ExCommand
+        cmp al, ':'
+        je .Done
         mov bx, MoveDown
         cmp al, 'j'
         je .Done
@@ -361,6 +343,10 @@ CommandFromKey:
 .Done:
         ret
 
+Quit:
+        call RestoreVideoMode
+        xor al, al
+        jmp Exit
 
 ; Exit with error code in AL and message in DX
 Error:
@@ -726,6 +712,179 @@ GotoLine:
 
 .Msg: db 'GotoLine without count not implemented', 0
 
+
+ExCommand:
+        mov word [Count], 0 ; TODO: If Count > 0 start with ':.,.+Count-1'
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_NORMAL
+        mov al, ':'
+        stosw
+        mov bx, Buffer
+        mov byte [bx], ':'
+        inc bx
+        mov dh, NDISP_LINES
+        mov dl, 1
+.ReadLoop:
+        call SetCursor
+        call ReadKey
+        cmp al, 0x1B
+        je .Abort
+        cmp al, 0x0D
+        je .Done
+        cmp al, 0x08
+        je .Backspace
+        cmp al, ' '
+        jb .ReadLoop
+        cmp al, '~'
+        ja .ReadLoop
+        cmp dl, 79
+        je .ReadLoop ; Don't go past edge of screen yet (TODO)
+        mov ah, COLOR_NORMAL
+        stosw
+        mov [bx], al
+        inc bx
+        inc dl
+        jmp .ReadLoop
+.Done:
+        mov byte [bx], 0
+        call ClearStatusLine
+        call PerformExCmd
+.Abort:
+        call PlaceCursor
+        ret
+.Backspace:
+        dec bx
+        mov byte [bx], 0
+        sub di, 2
+        mov word [es:di], 0x0720
+        dec dl
+        jz .Abort ; Backspaced over ':'
+        jmp .ReadLoop
+
+; Perform EX command in Buffer
+PerformExCmd:
+        mov ax, [Buffer]
+        cmp ax, ':q'
+        je Quit
+        cmp ax, ':w'
+        je ExWrite
+
+InvalidExCmd:
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        mov si, MsgErrNotImpl
+        call SCopyStr
+        mov al, ' '
+        stosw
+        mov si, Buffer
+        call SCopyStr
+        ret
+
+ExWrite:
+        mov si, Buffer
+        add si, 2
+        lodsb
+        cmp al, 0
+        je .NormalWrite
+        cmp al, ' '
+        je .SkipSpaces
+        cmp al, 'q' ; OK
+        jne InvalidExCmd
+.SkipSpaces:
+        mov al, [si]
+        and al, al
+        je .NormalWrite
+        cmp al, ' '
+        jne .WriteWithFname
+        inc si
+        jmp .SkipSpaces
+.NormalWrite:
+        mov si, FileName
+.WriteWithFname:
+        ; Write to file in SI
+        mov dx, si
+        mov cx, 0x20
+        mov ah, 0x3c
+        int 0x21
+        jnc .OpenOK
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        mov si, MsgErrCreate
+        call SCopyStr
+        mov si, dx
+        jmp SCopyStr
+.OpenOK:
+        push si
+        mov bp, ax ; Save file handle in BP
+        xor ax, ax
+        mov [NumLines], ax
+        mov [TotalBytes], ax
+        mov [TotalBytes+2], ax
+        push es
+        call LoadFirstLine
+.WriteLoop:
+        push bx
+        mov cx, [es:bx+LINEH_LENGTH]
+        add [TotalBytes], cx
+        adc word [TotalBytes+2], 0
+        push ds
+        mov ax, es
+        mov ds, ax
+        mov dx, bx
+        add dx, LINEH_SIZE
+        mov ah, 0x40
+        mov bx, bp
+        int 0x21
+        pop ds
+        jc .WriteError
+        ; TODO: Could probably halve number of write calls
+        ;       by borrowing two bytes beyond the line for CR+LF
+        mov ah, 0x40
+        mov dx, .CRLF
+        mov cx, 2
+        add [TotalBytes], cx
+        adc word [TotalBytes+2], 0
+        int 0x21
+        jc .WriteError
+        inc word [NumLines]
+        pop bx
+.WriteOK:
+        call LoadLineNext
+        jz .WriteDone
+        call LLFromDXAX
+        jmp .WriteLoop
+.WriteDone:
+        call .CloseFile
+        pop es
+        pop si
+        cmp byte [Buffer+2], 'q'
+        je Quit
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_NORMAL
+        call SCopyStr
+        call SFormatFileInfo
+        mov si, .Written
+        jmp SCopyStr
+.CloseFile:
+        mov bx, bp
+        mov ah, 0x3e
+        int 0x21
+        ret
+.WriteError:
+        pop bx
+        pop es
+        pop si
+        push ax
+        call .CloseFile
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        mov si, MsgErrWrite
+        call SCopyStr
+        pop dx
+        jmp SPutHexWord
+.CRLF: db 13, 10
+.Written: db ' written', 0
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Drawing functions
 ;;
@@ -735,9 +894,17 @@ GotoLine:
 PlaceCursor:
         mov dl, 6
         mov dh, [CursorRelY]
+        ; Fall through
+
+; Set cursor at DL, DH (0 indexed)
+SetCursor:
+        push ax
+        push bx
         mov ah, 0x02
         xor bh, bh
         int 0x10
+        pop bx
+        pop ax
         ret
 
 DrawLines:
@@ -902,13 +1069,35 @@ SPutDecDword:
         pop ax
         jmp SCopyStr
 
+SFormatFileInfo:
+        mov al, ' '
+        stosw
+        mov dx, [NumLines]
+        call SPutDecWord
+        mov al, 'L'
+        stosw
+        mov al, ','
+        stosw
+        mov al, ' '
+        stosw
+        mov dx, [TotalBytes]
+        mov cx, [TotalBytes+2]
+        call SPutDecDword
+        mov al, 'C'
+        stosw
+        ret
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants/Data
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-MsgErrOpen:       db 'Could not open file', 13, 10, '$'
-MsgErrRead:       db 'Error reading from file', 13, 10, '$'
+MsgErrOpenInit:   db 'Could not open file', 13, 10, '$'
+MsgErrReadInit:   db 'Error reading from file', 13, 10, '$'
 MsgErrUnknownKey: db ' unknown key/command', 0
+MsgErrNotImpl:    db 'Unknown/unimplemented command', 0
+MsgErrCreate:     db 'Error creating ', 0
+MsgErrWrite:      db 'Error writing to file: ', 0
 
 ;FileName:         db 't09.asm',0
 FileName:         db 'sasm.asm', 0
