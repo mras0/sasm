@@ -37,6 +37,10 @@ COLOR_ERROR  equ 0x4f
 K_BACKSPACE equ 0x08
 K_RETURN    equ 0x0D
 K_ESCAPE    equ 0x1B
+K_UP        equ 0x4800
+K_LEFT      equ 0x4B00
+K_RIGHT     equ 0x4D00
+K_DOWN      equ 0x5000
 
 ; TODO: Handle (give error) when file doesn't fit in memory
 
@@ -228,7 +232,9 @@ Start:
         mov [DispLine], ax
         mov [DispLine+2], dx
 
-        xor al, al
+        xor ax, ax
+        mov [CursorX], ax
+        mov [CurHScroll], ax
         mov [CursorRelY], al
 
         xor ax, ax
@@ -341,11 +347,25 @@ CommandFromKey:
         mov bx, DeleteCmd
         cmp al, 'd'
         je .Done
+        mov bx, MoveLeft
+        cmp al, 'h'
+        je .Done
+        cmp ax, K_LEFT
+        je .Done
         mov bx, MoveDown
         cmp al, 'j'
         je .Done
+        cmp ax, K_DOWN
+        je .Done
         mov bx, MoveUp
         cmp al, 'k'
+        je .Done
+        cmp ax, K_UP
+        je .Done
+        mov bx, MoveRight
+        cmp al, 'l'
+        je .Done
+        cmp ax, K_RIGHT
         je .Done
         mov bx, PasteAfter
         cmp al, 'p'
@@ -915,6 +935,44 @@ NewLine:
         mov [es:bx+LINEH_LENGTH], ax
         ret
 
+MoveLeft:
+        mov ax, [CursorX]
+        cmp ax, 0
+        jne .OK
+        ret
+.OK:
+        dec ax
+        ; If we move left on a short line move left even
+        ; if the "virtual cursor" is beyond the end
+        call LoadCursorLine
+        mov bx, [es:bx+LINEH_LENGTH]
+        and bx, bx
+        jz .RepLen
+        dec bx
+        cmp ax, bx
+        jb .Done
+.RepLen:
+        dec bx
+        mov ax, bx
+.Done:
+        mov [CursorX], ax
+        jmp PlaceCursor
+
+MoveRight:
+        call LoadCursorLine
+        mov bx, [es:bx+LINEH_LENGTH]
+        and bx, bx
+        jz .NotOK
+        dec bx
+        mov ax, [CursorX]
+        cmp ax, bx
+        jb .OK
+.NotOK:
+        ret
+.OK:
+        inc word [CursorX]
+        jmp PlaceCursor
+
 MoveUp:
         mov al, [CursorRelY]
         and al, al
@@ -931,6 +989,7 @@ ScrollUp:
         mov [DispLine+2], dx
         dec word [DispLineIdx]
         mov byte [NeedUpdate], 1
+        call PlaceCursor
 .Done:
         ret
 
@@ -965,6 +1024,7 @@ ScrollDown:
         mov [DispLine+2], dx
         inc word [DispLineIdx]
         mov byte [NeedUpdate], 1
+        call PlaceCursor
 .Done:
         ret
 
@@ -1038,7 +1098,9 @@ NewDoc:
         mov [FirstLine], bx
         mov [FirstLine+2], ax
         mov word [DispLineIdx], 1
-        mov byte [CursorRelY], 0
+        xor ax, ax
+        mov [CursorX], ax
+        mov [CursorRelY], al
         mov byte [NeedUpdate], 1
         jmp PlaceCursor
 
@@ -1500,7 +1562,39 @@ ExWrite:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 PlaceCursor:
-        mov dl, 6
+        mov dx, [CursorX]
+        ; Check if cursor is beyond
+        push es
+        push bx
+        call LoadCursorLine
+        mov bx, [es:bx+LINEH_LENGTH]
+        and bx, bx
+        jz .Empty
+        dec bx
+.Empty:
+        cmp dx, bx
+        jbe .NotLarger
+        mov dx, bx
+.NotLarger:
+        mov bx, dx
+        inc bx
+        sub bx, MAX_LINE_WIDTH
+        jae .HasScrollAmm
+        xor bx, bx
+.HasScrollAmm:
+        cmp [CurHScroll], bx
+        je .ScrollChecked
+        mov [CurHScroll], bx
+        mov byte [NeedUpdate], 1
+.ScrollChecked:
+        pop bx
+        pop es
+        cmp dx, MAX_LINE_WIDTH
+        jb .NotBeyondW
+        mov dl, MAX_LINE_WIDTH
+        dec dl
+.NotBeyondW:
+        add dl, 6
         mov dh, [CursorRelY]
         ; Fall through
 
@@ -1560,6 +1654,15 @@ DrawLines:
         mov bx, [si+LINEH_LENGTH]
         and bx, bx
         jz .LineDone
+
+        ; Handle horizontal scrolling
+        mov cx, [cs:CurHScroll]
+        sub bx, cx
+        ja .HScroll
+        xor bx, bx
+        jmp .LineDone
+.HScroll:
+        add si, cx
         add si, LINEH_SIZE
         mov ah, 0x27
         mov cx, MAX_LINE_WIDTH
@@ -1708,7 +1811,8 @@ MsgErrNotImpl:    db 'Unknown/unimplemented command', 0
 MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
 
-FileName:         db 'test.txt',0
+;FileName:         db 'test.txt',0
+FileName:         db 'sasm.asm',0
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
@@ -1721,7 +1825,9 @@ NeedUpdate:       resb 1
 DispLineIdx:      resw 1 ; 1-based index of the first displayed line
 DispLine:         resw 2 ; Far pointer to first displayed line (header)
 
-CursorRelY:       resb 1 ; Cursor Y relative to First display line
+CursorX:          resw 1 ; Current column. May be >= Line Length and >= MAX_LINE_WIDTH
+CursorRelY:       resb 1 ; Cursor Y relative to first displayed line (DispLine)
+CurHScroll:       resw 1 ; Current horizontal scroll amount
 
 Count:            resw 1
 TempReg:          resw 2 ; "-register, Contains a line list of the cut lines (or NULL)
