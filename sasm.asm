@@ -1441,19 +1441,34 @@ DirDX:
         call TryGet
         jc .NotLit
         ; Handle character literal
+        xor cx, cx
 .CharLit:
+        push cx
         mov al, QUOTE_CHAR
         call TryConsume
-        jnc .Next
+        pop cx
+        jnc .LitDone
+        inc cx
         mov al, [CurrentChar]
         cmp al, ' '
         jae .OK
         mov bx, MsgErrChLitErr
         jmp Error
 .OK:
-        call OutputByte ; Always output bytes for character liters
+        push cx
+        call OutputByte ; Always output bytes for character literals
         call ReadNext
+        pop cx
         jmp .CharLit
+.LitDone:
+        ; Output zero byte if necessary to ensure dw alignment
+        cmp si, 2
+        jne .Next
+        and cl, 1
+        jz .Next
+        xor al, al
+        call OutputByte
+        jmp .Next
 .NotLit:
         call GetToken
         call IsTokenNumber
@@ -1470,8 +1485,7 @@ DirDX:
         cmp si, 2
         jne NotImplemented
         call GetNamedLiteral
-        mov ax, [OperandValue]
-        call OutputWord
+        call OutputImm16
         ; Fall thorugh
 .Next:
         mov al, ','

@@ -648,17 +648,25 @@ void OutputDx(U1 size, U2 val)
     }
 }
 
+void OutputImm16(void);
+
 void DirectiveDx(U1 size)
 {
     assert(size == 1 || size == 2);
     do {
         if (TryGet('\'')) {
+            U2 n = 0;
             while (!TryConsume('\'')) {
                 const U1 c = GetChar();
                 if (c < 0x20) {
                     Error("Unterminated literal");
                 }
                 OutputDx(1, c); // Always output one byte when in character literal mode
+                ++n;
+            }
+            if (n % size) {
+                // Make sure the output is correctly aligned
+                OutputByte(0);
             }
         } else {
             GetToken();
@@ -667,7 +675,7 @@ void DirectiveDx(U1 size)
             } else {
                 if (size != 2) Error("Byte val reference not implemented");
                 GetNamedLiteral();
-                OutputDx(size, OperandValue);
+                OutputImm16();
             }
         }
     } while (TryConsume(','));

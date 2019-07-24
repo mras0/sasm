@@ -39,10 +39,12 @@ K_RETURN    equ 0x0D
 K_ESCAPE    equ 0x1B
 K_HOME      equ 0x4700
 K_UP        equ 0x4800
+K_PGUP      equ 0x4900
 K_LEFT      equ 0x4B00
 K_RIGHT     equ 0x4D00
 K_END       equ 0x4F00
 K_DOWN      equ 0x5000
+K_PGDOWN    equ 0x5100
 
 ; TODO: Handle (give error) when file doesn't fit in memory
 
@@ -349,58 +351,50 @@ Start:
         jmp .MainLoop
 
 CommandFromKey:
-        mov bx, ExCommand
-        cmp al, ':'
-        je .Done
-        mov bx, DeleteCmd
-        cmp al, 'd'
-        je .Done
-        mov bx, MoveLeft
-        cmp al, 'h'
-        je .Done
-        cmp ax, K_LEFT
-        je .Done
-        mov bx, MoveDown
-        cmp al, 'j'
-        je .Done
-        cmp ax, K_DOWN
-        je .Done
-        mov bx, MoveUp
-        cmp al, 'k'
-        je .Done
-        cmp ax, K_UP
-        je .Done
-        mov bx, MoveRight
-        cmp al, 'l'
-        je .Done
-        cmp ax, K_RIGHT
-        je .Done
-        mov bx, PasteAfter
-        cmp al, 'p'
-        je .Done
-        mov bx, Yank
-        cmp al, 'y'
-        je .Done
-        mov bx, GotoLine
-        cmp al, 'G'
-        je .Done
-        mov bx, PasteBefore
-        cmp al, 'P'
-        je .Done
-        mov bx, MoveCurHome
-        cmp al, '0'
-        je .Done
-        cmp ax, K_HOME
-        je .Done
-        mov bx, MoveCurEnd
-        cmp al, '$'
-        je .Done
-        cmp ax, K_END
-        je .Done
-        ; Not found
-        xor bx, bx
-.Done:
+        push ax
+        mov dx, ax
+        mov si, .CommandList
+.L:
+        lodsw
+        and ah, ah
+        jnz .CheckFull
+        and al, al
+        je .Found ; End of list
+        cmp al, dl
+        je .Found
+        jmp .Next
+.CheckFull:
+        cmp ax, dx
+        je .Found
+.Next:
+        add si, 2
+        jmp .L
+.Found:
+        mov bx, [si]
+        pop ax
         ret
+.CommandList:
+        dw ':'      , ExCommand
+        dw 'd'      , DeleteCmd
+        dw 'h'      , MoveLeft
+        dw K_LEFT   , MoveLeft
+        dw 'j'      , MoveDown
+        dw K_DOWN   , MoveDown
+        dw 'k'      , MoveUp
+        dw K_UP     , MoveUp
+        dw 'l'      , MoveRight
+        dw K_RIGHT  , MoveRight
+        dw 'p'      , PasteAfter
+        dw 'y'      , Yank
+        dw 'G'      , GotoLine
+        dw 'P'      , PasteBefore
+        dw '0'      , MoveCurHome
+        dw K_HOME   , MoveCurHome
+        dw '$'      , MoveCurEnd
+        dw K_END    , MoveCurEnd
+        dw 0        , 0
+
+
 
 Quit:
         call RestoreVideoMode
