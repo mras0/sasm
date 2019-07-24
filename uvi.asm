@@ -37,9 +37,11 @@ COLOR_ERROR  equ 0x4f
 K_BACKSPACE equ 0x08
 K_RETURN    equ 0x0D
 K_ESCAPE    equ 0x1B
+K_HOME      equ 0x4700
 K_UP        equ 0x4800
 K_LEFT      equ 0x4B00
 K_RIGHT     equ 0x4D00
+K_END       equ 0x4F00
 K_DOWN      equ 0x5000
 
 ; TODO: Handle (give error) when file doesn't fit in memory
@@ -273,6 +275,12 @@ Start:
         cmp al, K_ESCAPE
         je .MainLoop
 
+        ; 0 when Count is 0 means go to home column
+        cmp word [Count], 0
+        jne .CheckCount
+        cmp al, '0'
+        jbe .Command
+.CheckCount:
         ; Read Count
         cmp al, '0'
         jb .Command
@@ -378,6 +386,16 @@ CommandFromKey:
         je .Done
         mov bx, PasteBefore
         cmp al, 'P'
+        je .Done
+        mov bx, MoveCurHome
+        cmp al, '0'
+        je .Done
+        cmp ax, K_HOME
+        je .Done
+        mov bx, MoveCurEnd
+        cmp al, '$'
+        je .Done
+        cmp ax, K_END
         je .Done
         ; Not found
         xor bx, bx
@@ -934,6 +952,20 @@ NewLine:
         pop ax
         mov [es:bx+LINEH_LENGTH], ax
         ret
+
+MoveCurHome:
+        mov word [CursorX], 0
+        jmp PlaceCursor
+
+MoveCurEnd:
+        call LoadCursorLine
+        mov bx, [es:bx+LINEH_LENGTH]
+        and bx, bx
+        je .Done
+        dec bx
+.Done:
+        mov [CursorX], bx
+        jmp PlaceCursor
 
 MoveLeft:
         mov ax, [CursorX]
