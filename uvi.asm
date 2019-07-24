@@ -156,10 +156,6 @@ Start:
         mov [es:bp+LINEH_NEXT], ax
         mov [es:bp+LINEH_NEXT+2], ax
 .FileRead:
-        mov [LastLine], bp
-        mov ax, es
-        mov [LastLine+2], ax
-
         ;
         ; Init Heap
         ;
@@ -359,6 +355,9 @@ CommandFromKey:
         je .Done
         mov bx, GotoLine
         cmp al, 'G'
+        je .Done
+        mov bx, PasteBefore
+        cmp al, 'P'
         je .Done
         ; Not found
         xor bx, bx
@@ -1038,8 +1037,6 @@ NewDoc:
         mov [DispLine+2], ax
         mov [FirstLine], bx
         mov [FirstLine+2], ax
-        mov [LastLine], bx
-        mov [LastLine+2], ax
         mov word [DispLineIdx], 1
         mov byte [CursorRelY], 0
         mov byte [NeedUpdate], 1
@@ -1130,7 +1127,6 @@ DeleteCmd:
         ;                                     <- DX:AX
         ; .
         ; .
-        ; N               LastLine
 
 
         mov cx, di
@@ -1143,17 +1139,8 @@ DeleteCmd:
         ; First line cut, but there are lines afterwards
         mov [FirstLine], ax
         mov [FirstLine+2], dx
-        jmp .FLLL
 .NotFirst:
-        mov cx, dx
-        or cx, ax
-        jnz .FLLL
-        ; Last line was cut, but since the document isn't empty
-        ; there's a line before the cut block
-        mov [LastLine], si
-        mov [LastLine+2], di
-.FLLL:
-        ; FirstLine/LastLine updated
+        ; FirstLine updated
         ; and we know the document isn't empty (handled above)
 
         mov cl, [CursorRelY]
@@ -1232,12 +1219,33 @@ Yank:
 
 .Msg: db 'Yank only implemented for yy', 0
 
-; Paste after cursor
-PasteAfter:
+; Load TempReg to ES:BX, returns zero flag set if empty
+LoadTempReg:
+        push ax
         mov bx, [TempReg]
         mov ax, [TempReg+2]
         mov es, ax
-        add ax, bx
+        or ax, bx
+        pop ax
+        ret
+
+; Step ES:BX to final node in list
+StepToLast:
+        push ax
+        push dx
+.Search:
+        call LoadLineNext
+        jz .SearchDone
+        call LLFromDXAX
+        jmp .Search
+.SearchDone:
+        pop dx
+        pop ax
+        ret
+
+; Paste after cursor
+PasteAfter:
+        call LoadTempReg
         jnz .NotEmpty
         ret
 .NotEmpty:
@@ -1261,13 +1269,7 @@ PasteAfter:
         ; Search of end of lines
         mov es, dx
         mov bx, ax
-.Search:
-        ; Save last node
-        call LoadLineNext
-        jz .SearchDone
-        call LLFromDXAX
-        jmp .Search
-.SearchDone:
+        call StepToLast
         mov di, es
         mov si, bx
         ; Link end of new lines to old next pointer
@@ -1276,6 +1278,48 @@ PasteAfter:
         call Link2
         mov byte [NeedUpdate], 1
         jmp MoveDown
+
+PasteBefore:
+        call LoadTempReg
+        jnz .NotEmpty
+        ret
+.NotEmpty:
+        call CopyLineList
+        mov dx, es
+        mov ax, bx
+        call LoadCursorLine
+        mov di, [es:bx+LINEH_PREV+2]
+        mov si, [es:bx+LINEH_PREV]
+
+        ; Handle FirstLine/DispLine invariants
+        mov cx, si
+        or cx, di
+        jnz .NotFirst
+        mov [FirstLine], ax
+        mov [FirstLine+2], dx
+.NotFirst:
+        cmp byte [CursorRelY], 0
+        jnz .NotAtTop
+        mov [DispLine], ax
+        mov [DispLine+2], dx
+.NotAtTop:
+        ; DX:AX New lines
+        ; ES:BX Line to insert before
+        ; DI:SI Line to insert after
+
+        call Link2
+        push es
+        push bx
+        mov es, dx
+        mov bx, ax
+        call StepToLast
+        mov di, es
+        mov si, bx
+        pop ax
+        pop dx
+        call Link2
+        mov byte [NeedUpdate], 1
+        ret
 
 ExCommand:
         mov word [Count], 0 ; TODO: If Count > 0 start with ':.,.+Count-1'
@@ -1664,14 +1708,12 @@ MsgErrNotImpl:    db 'Unknown/unimplemented command', 0
 MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
 
-FileName:         db 't01.asm',0
-;FileName:         db 'sasm.asm', 0
+FileName:         db 'test.txt',0
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
 HeapFree:         resw 2
 FirstLine:        resw 2
-LastLine:         resw 2
 File:             resw 1
 Buffer:           resb BUFFER_SIZE
 
