@@ -239,6 +239,12 @@ Start:
         mov [TempReg], ax
         mov [TempReg+2], ax
 
+        ; TEMP TEMP XXX TODO REMOVE
+        mov bx, [FirstLine+2]
+        mov es, bx
+        mov bx, [FirstLine]
+        call CopyLineList
+
         push 0xb800
         pop es
 
@@ -344,6 +350,9 @@ CommandFromKey:
         je .Done
         mov bx, MoveUp
         cmp al, 'k'
+        je .Done
+        mov bx, PasteAfter
+        cmp al, 'p'
         je .Done
         mov bx, GotoLine
         cmp al, 'G'
@@ -765,6 +774,59 @@ FreeLineList:
         popa
         ret
 
+; Copy line list in ES:BX, returns new list in ES:BX
+CopyLineList:
+        mov ax, es
+        or ax, bx
+        jnz .NotEmpty
+        ret
+.NotEmpty:
+        ; Allocate first node
+        call .CopyLine
+        ; Push pointer to first line
+        push dx
+        push ax
+.CopyLoop:
+        ; Save previous line in DI:SI
+        mov di, dx
+        mov si, ax
+        call LoadLineNext
+        jz .CopyDone
+        call LLFromDXAX
+        call .CopyLine
+        call Link2
+        jmp .CopyLoop
+.CopyDone:
+        pop bx
+        pop es
+        ret
+        ; Copy line in ES:BX to DX:AX
+.CopyLine:
+        mov ax, [es:bx+LINEH_LENGTH]
+        mov cx, ax
+        push es
+        push bx
+        call Malloc
+        mov dx, es
+        mov ax, bx
+        pop bx
+        pop es
+        pusha
+        push ds
+        push es
+        mov di, ax
+        add di, LINEH_SIZE
+        mov si, bx
+        add si, LINEH_SIZE
+        mov ax, es
+        mov es, dx
+        mov ds, ax
+        rep movsb
+        pop es
+        pop ds
+        popa
+        ret
+
 ; Allocate HEAPN_SIZE + AX bytes
 ; Return new memory in ES:BX
 Malloc:
@@ -817,6 +879,7 @@ Malloc:
 
         pop ax
         mov cx, [es:bx+HEAPN_LENGTH]
+        mov [es:bx+HEAPN_LENGTH], ax ; Store length before we lose it
         sub cx, ax
         sub cx, HEAPN_SIZE
         jb .BlockUsed
@@ -828,8 +891,6 @@ Malloc:
         mov [es:di+HEAPN_LENGTH], cx
 
         call AddFreeNode
-
-        ; TODO: Resize node and create another one if still room
 .BlockUsed:
         pop di
         pop si
@@ -965,7 +1026,6 @@ SetTempReg:
         pop cx
         pop ax
         ret
-
 
 NewDoc:
         xor ax, ax
@@ -1118,6 +1178,51 @@ DeleteCmd:
         jmp PlaceCursor
 
 .Msg: db 'DeleteCmd only implemented for dd', 0
+
+; Paste after cursor
+PasteAfter:
+        mov bx, [TempReg]
+        mov ax, [TempReg+2]
+        mov es, ax
+        add ax, bx
+        jnz .NotEmpty
+        ret
+.NotEmpty:
+        call CopyLineList
+        ; DX:AX Points to the line list to insert
+        mov dx, es
+        mov ax, bx
+        call LoadCursorLine
+        ; ES:BX Points to the cursor line
+        mov si, [es:bx+LINEH_NEXT]
+        mov di, [es:bx+LINEH_NEXT+2]
+        ; DI:SI points to the old next pointer
+        push si
+        push di
+
+        ; Link in new lines
+        mov di, es
+        mov si, bx
+        call Link2
+
+        ; Search of end of lines
+        mov es, dx
+        mov bx, ax
+.Search:
+        ; Save last node
+        call LoadLineNext
+        jz .SearchDone
+        call LLFromDXAX
+        jmp .Search
+.SearchDone:
+        mov di, es
+        mov si, bx
+        ; Link end of new lines to old next pointer
+        pop dx
+        pop ax
+        call Link2
+        mov byte [NeedUpdate], 1
+        jmp MoveDown
 
 ExCommand:
         mov word [Count], 0 ; TODO: If Count > 0 start with ':.,.+Count-1'
