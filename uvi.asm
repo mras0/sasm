@@ -14,7 +14,7 @@ HEAPN_NEXT   equ 4  ; DWORD Next node (far pointer)
 HEAPN_LENGTH equ 8  ; WORD  Length (bytes)
 HEAPN_SIZE   equ 10
 
-; Line header
+; Line header (NOTE: Initial layout MUST match heap node)
 LINEH_PREV   equ 0  ; DWORD Previous line (far pointer)
 LINEH_NEXT   equ 4  ; DWORD Next line (far pointer)
 LINEH_LENGTH equ 8  ; WORD  Length
@@ -34,6 +34,9 @@ COLOR_NORMAL equ 0x07
 COLOR_WARN   equ 0x0e
 COLOR_ERROR  equ 0x4f
 
+K_BACKSPACE equ 0x08
+K_RETURN    equ 0x0D
+K_ESCAPE    equ 0x1B
 
 ; TODO: Handle (give error) when file doesn't fit in memory
 
@@ -232,6 +235,10 @@ Start:
         xor al, al
         mov [CursorRelY], al
 
+        xor ax, ax
+        mov [TempReg], ax
+        mov [TempReg+2], ax
+
         push 0xb800
         pop es
 
@@ -255,7 +262,7 @@ Start:
         call DrawLines
 .ReadKey:
         call ReadKey
-        cmp al, 0x1B ; ESC?
+        cmp al, K_ESCAPE
         je .MainLoop
 
         ; Read Count
@@ -329,6 +336,9 @@ CommandFromKey:
         mov bx, ExCommand
         cmp al, ':'
         je .Done
+        mov bx, DeleteCmd
+        cmp al, 'd'
+        je .Done
         mov bx, MoveDown
         cmp al, 'j'
         je .Done
@@ -348,6 +358,10 @@ Quit:
         xor al, al
         jmp Exit
 
+OutOfMemory:
+        mov al, 0xff
+        mov dx, MsgErrOOM
+        ; Fall through
 ; Exit with error code in AL and message in DX
 Error:
         push ax
@@ -566,12 +580,30 @@ PrintHeap:
         pusha
         mov ax, [es:di+HEAPN_LENGTH]
         call PutHexWord
-        call PutCrLf
+        mov al, ' '
+        call PutChar
+        call PutChar
+        popa
+
+        pusha
+        mov dx, [es:di+HEAPN_PREV+2]
+        mov ax, [es:di+HEAPN_PREV]
+        call PutHexDword
+        mov al, ' '
+        call PutChar
         popa
 
         mov ax, [es:di+HEAPN_NEXT+2]
         mov di, [es:di+HEAPN_NEXT]
         mov es, ax
+
+        pusha
+        mov dx, es
+        mov ax, di
+        call PutHexDword
+        call PutCrLF
+        popa
+
 .Check:
         mov ax, es
         add ax, di
@@ -621,6 +653,203 @@ LoadLinePrev:
 LLFromDXAX:
         mov es, dx
         mov bx, ax
+        ret
+
+LoadCursorLine:
+        call LoadDispLine
+        push cx
+        mov cl, [CursorRelY]
+        and cl, cl
+        jz .D
+        push ax
+        push dx
+.L:
+        call LoadLineNext
+        jz .Err
+        call LLFromDXAX
+        dec cl
+        jnz .L
+        pop dx
+        pop ax
+.D:
+        pop cx
+        ret
+.Err:
+        mov al, 0xff
+        mov dx, .InternalError
+        jmp Error
+
+.InternalError: db 'Internal error: Line list invalid', 13, 10, '$'
+
+
+; Link previous in DI:SI to next in DX:AX
+Link2:
+        push es
+        push bx
+        mov bx, di
+        or bx, si
+        jz .NoPrev
+        mov es, di
+        mov [es:si+LINEH_NEXT], ax
+        mov [es:si+LINEH_NEXT+2], dx
+.NoPrev:
+        mov bx, ax
+        or bx, dx
+        jz .NoNext
+        mov es, dx
+        mov bx, ax
+        mov [es:bx+LINEH_PREV], si
+        mov [es:bx+LINEH_PREV+2], di
+.NoNext:
+        pop bx
+        pop es
+        ret
+
+; Add free node in ES:DI
+AddFreeNode:
+        ; TODO: Add sorted and coalesce adjcent blocks
+        push es
+        push ax
+        push dx
+        push di
+        ; Minimize DI
+        mov dx, di
+        shr dx, 4
+        mov ax, es
+        add dx, ax
+        mov es, dx
+        and di, 0x0f
+        xor ax, ax
+        mov [es:di+LINEH_NEXT], ax
+        mov [es:di+LINEH_NEXT+2], ax
+        mov [es:di+LINEH_PREV], ax
+        mov [es:di+LINEH_PREV+2], ax
+        mov ax, di
+        mov dx, es
+        xchg ax, [HeapFree]
+        xchg dx, [HeapFree+2]
+        mov [es:di+HEAPN_NEXT], ax
+        mov [es:di+HEAPN_NEXT+2], dx
+        push ds
+        push bp
+        mov bp, dx
+        mov ds, bp
+        mov bp, ax
+        mov [ds:bp+HEAPN_PREV], di
+        mov ax, es
+        mov [ds:bp+HEAPN_PREV+2], ax
+        pop bp
+        pop ds
+        pop di
+        pop dx
+        pop ax
+        pop es
+        ret
+
+; Free line list in ES:BX
+FreeLineList:
+        pusha
+        push es
+.FreeLoop:
+        mov ax, es
+        or ax, bx
+        jz .Done
+        call LoadLineNext
+        mov di, bx
+        call AddFreeNode
+        call LLFromDXAX
+        jmp .FreeLoop
+
+.Done:
+        pop es
+        popa
+        ret
+
+; Allocate HEAPN_SIZE + AX bytes
+; Return new memory in ES:BX
+Malloc:
+        push ax
+        push cx
+        push dx
+        push si
+        push di
+
+        push ax
+
+        xor si, si
+        xor di, di
+
+        mov bx, [HeapFree+2]
+        mov es, bx
+        mov bx, [HeapFree]
+.FindBlock:
+        mov cx, es
+        or cx, bx
+        jz OutOfMemory
+        ; Move prev to DI:SI
+        cmp ax, [es:bx+HEAPN_LENGTH]
+        jbe .Found
+        mov di, es
+        mov si, bx
+        mov cx, [es:bx+HEAPN_NEXT+2]
+        mov bx, [es:bx+HEAPN_NEXT]
+        mov es, cx
+        jmp .FindBlock
+.Found:
+        call LoadLineNext
+        ; ES:BX Current node
+        ; DI:SI Previous
+        ; DX:AX Next
+        call Link2 ; Unlink current node
+        ; Was this the first node?
+        mov cx, si
+        or cx, di
+        jnz .NotFirst
+        ; Yes, update
+        mov [HeapFree], ax
+        mov [HeapFree+2], dx
+.NotFirst:
+        xor cx, cx
+        mov [es:bx+HEAPN_PREV], cx
+        mov [es:bx+HEAPN_PREV+2], cx
+        mov [es:bx+HEAPN_NEXT], cx
+        mov [es:bx+HEAPN_NEXT+2], cx
+
+        pop ax
+        mov cx, [es:bx+HEAPN_LENGTH]
+        sub cx, ax
+        sub cx, HEAPN_SIZE
+        jb .BlockUsed
+
+        ; Create new heap node at ES:BX+HEAPN_SIZE+AX
+        mov di, bx
+        add di, HEAPN_SIZE
+        add di, ax
+        mov [es:di+HEAPN_LENGTH], cx
+
+        call AddFreeNode
+
+        ; TODO: Resize node and create another one if still room
+.BlockUsed:
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop ax
+        ret
+
+
+; Allocate new line of length AX to ES:BX
+NewLine:
+        push ax
+        call Malloc
+        xor ax, ax
+        mov [es:bx+LINEH_PREV], ax
+        mov [es:bx+LINEH_PREV+2], ax
+        mov [es:bx+LINEH_NEXT], ax
+        mov [es:bx+LINEH_NEXT+2], ax
+        pop ax
+        mov [es:bx+LINEH_LENGTH], ax
         ret
 
 MoveUp:
@@ -699,7 +928,7 @@ GotoLine:
         mov [DispLineIdx], ax
         mov byte [CursorRelY], 0
         mov byte [NeedUpdate], 1
-        ret
+        jmp PlaceCursor
 .Err:
         add sp, 2
         ret
@@ -712,6 +941,183 @@ GotoLine:
 
 .Msg: db 'GotoLine without count not implemented', 0
 
+; Set TempReg to ES:BX freeing any contents
+SetTempReg:
+        push ax
+        push cx
+        push dx
+        mov ax, bx
+        mov dx, es
+        xchg ax, [TempReg]
+        xchg dx, [TempReg+2]
+        mov cx, ax
+        or cx, dx
+        jz .Done
+        push es
+        push bx
+        mov es, dx
+        mov bx, ax
+        call FreeLineList
+        pop bx
+        pop es
+.Done:
+        pop dx
+        pop cx
+        pop ax
+        ret
+
+
+NewDoc:
+        xor ax, ax
+        call NewLine
+        mov ax, es
+        mov [DispLine], bx
+        mov [DispLine+2], ax
+        mov [FirstLine], bx
+        mov [FirstLine+2], ax
+        mov [LastLine], bx
+        mov [LastLine+2], ax
+        mov word [DispLineIdx], 1
+        mov byte [CursorRelY], 0
+        mov byte [NeedUpdate], 1
+        jmp PlaceCursor
+
+DeleteCmd:
+        call ReadKey
+        cmp al, K_ESCAPE
+        jne .NotEsc
+        ret
+.NotEsc:
+        cmp al, 'd'
+        je .DeleteLines
+        mov si, .Msg
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        jmp SCopyStr
+.DeleteLines:
+        call LoadCursorLine
+
+        ; Push first line to delete
+        push es
+        push bx
+        xor cx, cx
+        xchg cx, [Count]
+        and cx, cx
+        jz .FoundDLines
+        dec cx
+        jz .FoundDLines
+.L:
+        call LoadLineNext
+        jz .FoundDLines
+        call LLFromDXAX
+        dec cx
+        jnz .L
+.FoundDLines:
+        call LoadLineNext
+        pop bx
+        pop es
+        mov si, [es:bx+LINEH_PREV]
+        mov di, [es:bx+LINEH_PREV+2]
+
+        ; ES:BX First line to delete
+        ; DX:AX Line after
+        ; DI:SI Line before
+
+        ; Set prev of cut chain to NULL
+        xor cx, cx
+        mov [es:bx+LINEH_PREV], cx
+        mov [es:bx+LINEH_PREV+2], cx
+
+        ; And next of last in chain
+        push es
+        push bx
+        mov es, dx
+        mov bx, ax
+        mov cx, [es:bx+LINEH_PREV+2]
+        mov bx, [es:bx+LINEH_PREV]
+        mov es, cx
+        xor cx, cx
+        mov [es:bx+LINEH_NEXT], cx
+        mov [es:bx+LINEH_NEXT+2], cx
+        pop bx
+        pop es
+
+        ; Unlink chain from main list
+        call Link2
+
+        ; Move line list to temp register
+        call SetTempReg
+
+        ; Line chain in ES:BX has been cut, now update state
+
+        ; Line number     Variable              Pointer
+        ; ----------------------------------------------
+        ; 1               FirstLine
+        ; .
+        ; .
+        ; DispLineIndex   DispLine
+        ;                                     <- DI:SI
+        ; DLI+CursorRelY  CursorLine          <- ES:BX
+        ; .
+        ; .
+        ; Cursor+Count    Last deleted line
+        ;                                     <- DX:AX
+        ; .
+        ; .
+        ; N               LastLine
+
+
+        mov cx, di
+        or cx, si
+        jnz .NotFirst
+        ; First line was cut
+        mov cx, dx
+        or cx, ax
+        jz NewDoc ; All lines cut
+        ; First line cut, but there are lines afterwards
+        mov [FirstLine], ax
+        mov [FirstLine+2], dx
+        jmp .FLLL
+.NotFirst:
+        mov cx, dx
+        or cx, ax
+        jnz .FLLL
+        ; Last line was cut, but since the document isn't empty
+        ; there's a line before the cut block
+        mov [LastLine], si
+        mov [LastLine+2], di
+.FLLL:
+        ; FirstLine/LastLine updated
+        ; and we know the document isn't empty (handled above)
+
+        mov cl, [CursorRelY]
+        and cl, cl
+        jnz .CheckCursor
+        ; Lines were deleted from the top of the screen, we just
+        ; need to move DispLine (since the document isn't empty,
+        ; DX:AX is never NULL)
+        mov [DispLine], ax
+        mov [DispLine+2], dx
+        jmp .Done
+.CheckCursor:
+        ; Lines were cut from somewhere other than the top
+        ; Check if CursorRelY needs to be moved
+        call LoadDispLine
+        xor ch, ch
+.StepDisp:
+        call LoadLineNext
+        jz .StepDone
+        call LLFromDXAX
+        inc ch
+        dec cl
+        jnz .StepDisp
+.StepDone:
+        mov [CursorRelY], ch
+.Done:
+        mov byte [NeedUpdate], 1
+        jmp PlaceCursor
+
+.Msg: db 'DeleteCmd only implemented for dd', 0
 
 ExCommand:
         mov word [Count], 0 ; TODO: If Count > 0 start with ':.,.+Count-1'
@@ -727,11 +1133,11 @@ ExCommand:
 .ReadLoop:
         call SetCursor
         call ReadKey
-        cmp al, 0x1B
+        cmp al, K_ESCAPE
         je .Abort
-        cmp al, 0x0D
+        cmp al, K_RETURN
         je .Done
-        cmp al, 0x08
+        cmp al, K_BACKSPACE
         je .Backspace
         cmp al, ' '
         jb .ReadLoop
@@ -1094,13 +1500,14 @@ SFormatFileInfo:
 
 MsgErrOpenInit:   db 'Could not open file', 13, 10, '$'
 MsgErrReadInit:   db 'Error reading from file', 13, 10, '$'
+MsgErrOOM:        db 'Out of memory', 13, 10, '$'
 MsgErrUnknownKey: db ' unknown key/command', 0
 MsgErrNotImpl:    db 'Unknown/unimplemented command', 0
 MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
 
-;FileName:         db 't09.asm',0
-FileName:         db 'sasm.asm', 0
+FileName:         db 't01.asm',0
+;FileName:         db 'sasm.asm', 0
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
@@ -1117,6 +1524,7 @@ DispLine:         resw 2 ; Far pointer to first displayed line (header)
 CursorRelY:       resb 1 ; Cursor Y relative to First display line
 
 Count:            resw 1
+TempReg:          resw 2 ; "-register, Contains a line list of the cut lines (or NULL)
 
 ; Not always up to date
 NumLines:         resw 1
