@@ -354,6 +354,9 @@ CommandFromKey:
         mov bx, PasteAfter
         cmp al, 'p'
         je .Done
+        mov bx, Yank
+        cmp al, 'y'
+        je .Done
         mov bx, GotoLine
         cmp al, 'G'
         je .Done
@@ -417,7 +420,7 @@ PutCrLf:
 PutHexDword:
         push ax
         mov ax, dx
-        call putHexWord
+        call PutHexWord
         mov al, ':'
         call PutChar
         pop ax
@@ -610,7 +613,7 @@ PrintHeap:
         mov dx, es
         mov ax, di
         call PutHexDword
-        call PutCrLF
+        call PutCrLf
         popa
 
 .Check:
@@ -1042,6 +1045,28 @@ NewDoc:
         mov byte [NeedUpdate], 1
         jmp PlaceCursor
 
+; Returns result of stepping list [Count] times in DX:AX
+StepList:
+        push es
+        push bx
+        xor cx, cx
+        xchg cx, [Count]
+        and cx, cx
+        jz .FoundLines
+        dec cx
+        jz .FoundLines
+.L:
+        call LoadLineNext
+        jz .FoundLines
+        call LLFromDXAX
+        dec cx
+        jnz .L
+.FoundLines:
+        call LoadLineNext
+        pop bx
+        pop es
+        ret
+
 DeleteCmd:
         call ReadKey
         cmp al, K_ESCAPE
@@ -1056,26 +1081,7 @@ DeleteCmd:
         jmp SCopyStr
 .DeleteLines:
         call LoadCursorLine
-
-        ; Push first line to delete
-        push es
-        push bx
-        xor cx, cx
-        xchg cx, [Count]
-        and cx, cx
-        jz .FoundDLines
-        dec cx
-        jz .FoundDLines
-.L:
-        call LoadLineNext
-        jz .FoundDLines
-        call LLFromDXAX
-        dec cx
-        jnz .L
-.FoundDLines:
-        call LoadLineNext
-        pop bx
-        pop es
+        call StepList
         mov si, [es:bx+LINEH_PREV]
         mov di, [es:bx+LINEH_PREV+2]
 
@@ -1178,6 +1184,53 @@ DeleteCmd:
         jmp PlaceCursor
 
 .Msg: db 'DeleteCmd only implemented for dd', 0
+
+Yank:
+        call ReadKey
+        cmp al, K_ESCAPE
+        jne .NotEsc
+        ret
+.NotEsc:
+        cmp al, 'y'
+        je .YankLines
+        mov si, .Msg
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        jmp SCopyStr
+.YankLines:
+        call LoadCursorLine
+        call StepList
+        ; Grab pointer to final line
+        push ds
+        mov ds, dx
+        mov si, ax
+        mov di, [si+LINEH_PREV+2]
+        mov si, [si+LINEH_PREV]
+        mov ds, di
+        xor cx, cx
+        ; Set last next pointer in the range to NULL
+        mov [si+LINEH_NEXT], cx
+        mov [si+LINEH_NEXT+2], cx
+        pop ds
+
+        ; Copy list from ES:BX till DI:SI (inclusive)
+        ; DX:AX points to line after the last one to copy
+
+        pusha
+        call CopyLineList
+        call SetTempReg
+        popa
+
+        ; Restore modified next pointer
+        push ds
+        mov ds, di
+        mov [si+LINEH_NEXT], ax
+        mov [si+LINEH_NEXT+2], dx
+        pop ds
+
+        ret
+
+.Msg: db 'Yank only implemented for yy', 0
 
 ; Paste after cursor
 PasteAfter:
