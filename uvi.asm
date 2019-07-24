@@ -392,9 +392,11 @@ CommandFromKey:
         dw K_HOME   , MoveCurHome
         dw '$'      , MoveCurEnd
         dw K_END    , MoveCurEnd
+        dw K_PGUP   , PageUp
+        dw 2        , PageUp      ; CTRL-B
+        dw K_PGDOWN , PageDown
+        dw 6        , PageDown    ; CTRL-F
         dw 0        , 0
-
-
 
 Quit:
         call RestoreVideoMode
@@ -1053,6 +1055,26 @@ ScrollDown:
         call PlaceCursor
 .Done:
         ret
+
+DoForEachDL:
+        mov cx, NDISP_LINES
+.L:
+        push bx
+        push cx
+        call bx
+        pop cx
+        pop bx
+        dec cx
+        jnz .L
+        ret
+
+PageUp:
+        mov bx, MoveUp ; TODO: ScrollUp?
+        jmp DoForEachDL
+
+PageDown:
+        mov bx, MoveDown ; TODO: ScrollDown?
+        jmp DoForEachDL
 
 GotoLine:
         xor cx, cx
