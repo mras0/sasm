@@ -87,6 +87,7 @@ K_RIGHT     equ 0x4D00
 K_END       equ 0x4F00
 K_DOWN      equ 0x5000
 K_PGDOWN    equ 0x5100
+K_DELETE    equ 0x5300
 
 ; TODO: Handle (give error) when file doesn't fit in memory
 
@@ -408,6 +409,7 @@ CommandFromKey:
         ret
 .CommandList:
         dw ':'      , ExCommand
+        dw 'a'      , Append
         dw 'd'      , DeleteCmd
         dw 'h'      , MoveLeft
         dw K_LEFT   , MoveLeft
@@ -420,7 +422,9 @@ CommandFromKey:
         dw K_RIGHT  , MoveRight
         dw 'p'      , PasteAfter
         dw 'y'      , Yank
+        dw 'A'      , AppendAfter
         dw 'G'      , GotoLine
+        dw 'I'      , InsertBefore
         dw 'P'      , PasteBefore
         dw '0'      , MoveCurHome
         dw K_HOME   , MoveCurHome
@@ -1732,14 +1736,13 @@ ExitEdit:
         call ReplaceLine
         ret
 
-
 InsertMode:
         xor ax, ax
         xchg ax, [Count]
         and ax, ax
         jz .NoCount
         mov si, .MsgErrNoCount
-        jmp .ErrRet
+        jmp .ErrRetIn
 .NoCount:
         ; Idea: Copy current line to buffer and link in (free old line of course)
         ; Then edit current line and copy in afterwards
@@ -1751,7 +1754,10 @@ InsertMode:
         jb .LenOK
         pop es
         mov si, MsgErrLineLong
-        jmp .ErrRet
+.ErrRetIn:
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        jmp SCopyStr
 .LenOK:
         ; Ensure 0 <= CursorX <= LineLength (one beyond allowed for append)
         mov ax, [CursorX]
@@ -1762,9 +1768,24 @@ InsertMode:
         mov byte [IsInsertMode], 1
         call EnterEdit
         call SetInsertCursor
+        call PlaceCursor ; Set cursor again, it might be one beyond the
+                         ; line length (in append mode) which wasn't
+                         ; legal before.
         pop es
 
 .InsertLoop:
+        ;;;;;;;;;;;;;; TEMP
+        ;;;call ClearStatusLine
+        ;;;mov ah, COLOR_ERROR
+        ;;;mov di, SLINE_OFFSET
+        ;;;mov dx, [EditBufHdr+LINEH_LENGTH]
+        ;;;call SPutHexWord
+        ;;;mov al, ' '
+        ;;;stosw
+        ;;;mov dx, [CursorX]
+        ;;;call SPutHexWord
+        ;;;;;;;;;;;;;;;;;;;;;
+
         call CheckRedraw
         call ReadKey
         push ax
@@ -1772,7 +1793,23 @@ InsertMode:
         pop ax
         cmp al, K_ESCAPE
         je .InsertDone
-
+        cmp al, K_BACKSPACE
+        je .Backspace
+        cmp ax, K_DELETE
+        je .Delete
+        cmp ax, K_LEFT
+        je .CursorLeft
+        cmp ax, K_RIGHT
+        je .CursorRight
+        cmp ax, K_HOME
+        je .CursorHome
+        cmp ax, K_END
+        je .CursorEnd
+        cmp al, ' '
+        jb .Unknown
+        ; Normal character
+        jmp .InsertChar
+.Unknown:
         ; Unknown key in insert mode
         push ax
         call ClearStatusLine
@@ -1787,14 +1824,128 @@ InsertMode:
         call ExitEdit
         call SetNormalCursor
         mov byte [IsInsertMode], 0
-        ret
-
+        jmp PlaceCursor ; Limit cursor in case it was beyond end of line
 .ErrRet:
         mov di, SLINE_OFFSET
         mov ah, COLOR_ERROR
-        jmp SCopyStr
+        call SCopyStr
+        jmp .InsertLoop
+.InsertChar:
+        mov bx, [EditBufHdr+LINEH_LENGTH]
+        inc bx
+        cmp bx, BUFFER_SIZE
+        jb .ILenOK
+        mov si, MsgErrLineLong
+        jmp .ErrRet
+.ILenOK:
+        mov [EditBufHdr+LINEH_LENGTH], bx
 
-.MsgerrNoCount: db 'Count not implemented for insert', 0
+        ; Insert character before CursorX
+        ; Move CursorX..Length one char up
+        mov dx, [CursorX]
+        mov si, EditBuffer
+        add si, bx
+        mov cx, bx
+        sub cx, dx
+        jbe .ShiftUpDone
+.ShiftUp:
+        mov ah, [si+0xFFFF]
+        mov [si], ah
+        dec si
+        dec cx
+        jnz .ShiftUp
+.ShiftUpDone:
+        mov [si], al
+        inc word [CursorX]
+        jmp .UpdateRet
+.Backspace:
+        mov bx, [CursorX]
+        and bx, bx
+        jz .InsertLoop
+        dec bx
+        mov cx, [EditBufHdr+LINEH_LENGTH]
+        dec cx
+        mov ax, cx
+        sub cx, bx
+        jb .InsertLoop
+        mov [EditBufHdr+LINEH_LENGTH], ax
+        mov [CursorX], bx
+        je .UpdateRet ; Nothing to copy (flags set above)
+        mov si, EditBuffer
+        add si, bx
+.ShiftDown:
+        mov al, [si+1]
+        mov [si], al
+        inc si
+        dec cx
+        jnz .ShiftDown
+.UpdateRet:
+        mov byte [NeedUpdate], 1
+.PlaceCursorRet:
+        call PlaceCursor
+        jmp .InsertLoop
+.Delete:
+        mov cx, [EditBufHdr+LINEH_LENGTH]
+        and cx, cx
+        jz .InsertLoop
+        mov bx, [CursorX]
+        cmp bx, cx
+        jae .InsertLoop
+        mov ax, cx
+        dec ax
+        mov [EditBufHdr+LINEH_LENGTH], ax
+        sub cx, bx
+        mov si, EditBuffer
+        add si, bx
+        jmp .ShiftDown
+.CursorLeft:
+        mov ax, [CursorX]
+        sub ax, 1
+        jc .InsertLoop
+.NewCursor:
+        mov [CursorX], ax
+        jmp .PlaceCursorRet
+.CursorRight:
+        mov ax, [CursorX]
+        inc ax
+        cmp ax, [EditBufHdr+LINEH_LENGTH]
+        ja .InsertLoop
+        jmp .NewCursor
+.CursorHome:
+        xor ax, ax
+        jmp .NewCursor
+.CursorEnd:
+        mov ax, [EditBufHdr+LINEH_LENGTH]
+        jmp .NewCursor
+.MsgErrNoCount: db 'Count not implemented for insert', 0
+
+InsertBefore:
+        push es
+        call LoadCursorLine
+        mov cx, [es:bx+LINEH_LENGTH]
+        add bx, LINEH_SIZE
+        xor si, si
+.SearchNonBlank:
+        cmp si, cx
+        je .SearchDone
+        cmp byte [es:bx+si], ' '
+        ja .SearchDone
+        inc si
+        jmp .SearchNonBlank
+.SearchDone:
+        pop es
+        mov [CursorX], si
+        jmp InsertMode
+
+Append:
+        inc word [CursorX]
+        jmp InsertMode
+
+AppendAfter:
+        push es
+        call MoveCurEnd
+        pop es
+        jmp Append
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Drawing functions
@@ -1811,6 +1962,8 @@ PlaceCursor:
         mov bx, [es:bx+LINEH_LENGTH]
         and bx, bx
         jz .Empty
+        cmp byte [IsInsertMode], 0
+        jnz .Empty ; Allow cursor at line length in insert mode
         dec bx
 .Empty:
         cmp dx, bx
@@ -2073,9 +2226,7 @@ MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
 MsgErrLineLong:   db 'Error line too long to be edited (sorry)', 0
 
-FileName:         db 't01.asm',0
-;FileName:         db 'test.txt',0
-;FileName:         db 'sasm.asm',0
+FileName:         db 'sasm.asm',0
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1

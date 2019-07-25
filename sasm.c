@@ -837,7 +837,7 @@ void InstMOV(U1 arg)
             OutputByte((U1)(0xB0 + OperandLValue));
             OutputImm(OperandLValue >= R_AX);
         } else {
-            assert(OperandValue < OP_REG);
+            assert(OperandType < OP_REG);
             // MOV reg, mem
             if (OperandLValue >= R_ES) {
                 Error("TODO: 0x8E in MOV Sreg, mem16");
