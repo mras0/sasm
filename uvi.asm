@@ -1915,8 +1915,8 @@ InsertMode:
         ; Insert new line before cursor with contents from 0..CursorX
         ; and remove that part from the edit buffer
         push es
+
         mov ax, [CursorX]
-.SLEmptyLine:
         call Malloc
 
         ; Copy line data
@@ -1941,6 +1941,46 @@ InsertMode:
         jnz .SLShift
 .SLSDone:
 
+        ;
+        ; Handle auto-indent (could perhaps be combined with above loop)
+        ;
+        mov si, LINEH_SIZE
+        mov cx, [es:bx+LINEH_LENGTH]
+        and cx, cx
+        jz .SLAILDone
+.SLAILoop:
+        cmp byte [es:bx+si], ' '
+        ja .SLAILDone
+        inc si
+        dec cx
+        jnz .SLAILoop
+.SLAILDone:
+        sub si, LINEH_SIZE
+        mov [CursorX], si
+        jz .SLAIDone
+
+        push bx
+        xor bx, bx
+        sub bx, si
+        mov cx, [EditBufHdr+LINEH_LENGTH]
+        add [EditBufHdr+LINEH_LENGTH], si
+        mov di, EditBuffer
+        add di, cx
+        add di, si
+.AIShiftUp:
+        dec di
+        mov al, [di+bx]
+        mov [di], al
+        dec cx
+        jnz .AIShiftUp
+        pop bx
+        mov al, ' '
+.AISpaces:
+        dec di
+        mov [di], al
+        dec si
+        jnz .AISpaces
+.SLAIDone:
         ; Insert line before edit line
         mov si, [EditBufHdr+LINEH_PREV]
         mov di, [EditBufHdr+LINEH_PREV+2]
@@ -1965,7 +2005,6 @@ InsertMode:
         mov [DispLine], si
         mov [DispLine+2], di
 .SLNotDisp:
-        mov word [CursorX], 0
         call MoveDown
         pop es
         jmp .UpdateRet
