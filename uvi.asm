@@ -425,6 +425,7 @@ CommandFromKey:
         dw 'A'      , AppendAfter
         dw 'G'      , GotoLine
         dw 'I'      , InsertBefore
+        dw 'J'      , JoinLines
         dw 'P'      , PasteBefore
         dw '0'      , MoveCurHome
         dw K_HOME   , MoveCurHome
@@ -1123,40 +1124,33 @@ PageDown:
         jmp DoForEachDL
 
 GotoLine:
+        ; If count=0 move to end of file
         xor cx, cx
         xchg cx, [Count]
         and cx, cx
-        jz .NotImplemented
-        push cx
         call LoadFirstLine
+        mov di, 1
         dec cx
         jz .Done
 .GL:
         call LoadLineNext
-        jz .Err ; Premature EOF (TODO: Notify user)
+        jz .Done
         call LLFromDXAX
+        inc di
         dec cx
         jnz .GL
 .Done:
         mov [DispLine], bx
         mov bx, es
         mov [DispLine+2], bx
-        pop ax
-        mov [DispLineIdx], ax
+        mov [DispLineIdx], di
         mov byte [CursorRelY], 0
         mov byte [NeedUpdate], 1
+        call MoveFirstNBlank
         jmp PlaceCursor
 .Err:
         add sp, 2
         ret
-
-.NotImplemented:
-        mov si, .Msg
-        mov di, SLINE_OFFSET
-        mov ah, COLOR_ERROR
-        jmp SCopyStr
-
-.Msg: db 'GotoLine without count not implemented', 0
 
 ; Set TempReg to ES:BX freeing any contents
 SetTempReg:
@@ -1650,8 +1644,6 @@ ExWrite:
 .Written: db ' written', 0
 
 
-; Link2: Link previous in DI:SI to next in DX:AX
-
 ; Replace line in ES:BX with new line in DX:AX
 ReplaceLine:
         pusha
@@ -1919,7 +1911,7 @@ InsertMode:
         jmp .NewCursor
 .MsgErrNoCount: db 'Count not implemented for insert', 0
 
-InsertBefore:
+MoveFirstNBlank:
         push es
         call LoadCursorLine
         mov cx, [es:bx+LINEH_LENGTH]
@@ -1935,6 +1927,11 @@ InsertBefore:
 .SearchDone:
         pop es
         mov [CursorX], si
+        ret
+
+
+InsertBefore:
+        call MoveFirstNBlank
         jmp InsertMode
 
 Append:
@@ -1946,6 +1943,144 @@ AppendAfter:
         call MoveCurEnd
         pop es
         jmp Append
+
+JoinLines:
+        push es
+        call LoadCursorLine
+        call LoadLineNext
+        jnz .NotAtEnd
+        pop es
+        mov si, .MsgErrJoinFail
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        jmp SCopyStr
+.NotAtEnd:
+        pop cx ; Discard old ES
+
+        mov cx, [es:bx+LINEH_LENGTH]
+        push es
+        push bx
+        call LLFromDXAX
+        mov di, [es:bx+LINEH_LENGTH]
+        xor si, si
+        add bx, LINEH_SIZE
+        ; Search for first non-blank character
+.SearchNBlank:
+        cmp si, di
+        jae .SearchDone
+        cmp byte [es:bx+si], ' '
+        ja .SearchDone
+        inc si
+        jmp .SearchNBlank
+.SearchDone:
+        sub di, si
+        add cx, di
+        inc cx ; Space between lines
+        push ax
+        mov ax, cx
+        call Malloc
+        mov bp, es
+        mov ds, bp
+        mov bp, bx
+        pop ax
+        pop bx
+        pop es
+
+        ; DS:BP New line
+        ; ES:BX Current line
+        ; DX:AX Next line
+        ; CX    Number of characters in new line
+        ; SI    Index of first non-blank char in next line
+        ; DI    Length of second line (minus si)
+
+        ; Build combined string
+        pusha
+        push ds
+        push es
+        push si
+        push di
+
+        mov di, es
+        mov si, ds
+        mov ds, di
+        mov es, si
+        mov cx, [bx+LINEH_LENGTH]
+        mov si, bx
+        add si, LINEH_SIZE
+        mov di, bp
+        add di, LINEH_SIZE
+        rep movsb
+        push ax
+        mov al, ' '
+        stosb
+        pop ax
+        mov ds, dx
+        pop cx
+        pop si
+        add si, LINEH_SIZE
+        add si, ax
+        rep movsb
+        pop es
+        pop ds
+        popa
+
+        ; Handle previous
+        pusha
+        xor di, di
+        xor si, si
+        xchg si, [es:bx+LINEH_PREV]
+        xchg di, [es:bx+LINEH_PREV+2]
+        mov ax, bp
+        mov dx, ds
+        call Link2
+        or di, si
+        jnz .NotFirst
+        mov [cs:FirstLine], bp
+        mov di, ds
+        mov [cs:FirstLine+2], di
+.NotFirst:
+        popa
+
+
+        ; Handle next
+        pusha
+        push es
+        mov bx, ax
+        mov es, dx
+        xor dx, dx
+        xor ax, ax
+        xchg ax, [es:bx+LINEH_NEXT]
+        xchg dx, [es:bx+LINEH_NEXT+2]
+        mov si, bp
+        mov di, ds
+        call Link2
+        pop es
+        popa
+
+        mov ax, bp
+        mov dx, ds
+
+        ; Restore DS
+        push cs
+        pop ds
+
+        push es
+        push bx
+        call FreeLineList
+        pop si
+        pop di
+
+        cmp si, [DispLine]
+        jne .NotDisp
+        cmp di, [DispLine+2]
+        jne .NotDisp
+
+        mov [DispLine], ax
+        mov [DispLine+2], dx
+.NotDisp:
+        mov byte [NeedUpdate], 1
+        jmp PlaceCursor
+.MsgErrJoinFail: db 'Cannot join at end of file', 0
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Drawing functions
@@ -2226,7 +2361,8 @@ MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
 MsgErrLineLong:   db 'Error line too long to be edited (sorry)', 0
 
-FileName:         db 'sasm.asm',0
+;FileName:         db 'sasm.asm',0
+FileName:         db 't01.asm',0
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
