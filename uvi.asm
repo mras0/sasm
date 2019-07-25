@@ -121,16 +121,6 @@ Start:
         xor al, al
         stosb
 
-;;;        ; TEMP TEMP TEMP
-;;;        cmp byte [FileName], 0
-;;;        jne .HasFilename
-;;;        mov di, FileName
-;;;        mov word [di], 'T0'
-;;;        mov word [di+2], '1.'
-;;;        mov word [di+4], 'AS'
-;;;        mov word [di+6], 'M'
-;;;.HasFilename:
-
         ; Get previous video mode
         mov ah, 0x0f
         int 0x10
@@ -241,7 +231,7 @@ Start:
         mov ax, [es:bp+LINEH_PREV]
         mov bx, [es:bp+LINEH_PREV+2]
         mov cx, bx
-        add cx, ax
+        or cx, ax
         jz .FileRead ; Empty file
         cmp word [es:bp+LINEH_LENGTH], 0
         jne .FileRead ; Last line wasn't CR+LF terminated... TODO preserve this?
@@ -295,7 +285,7 @@ Start:
         mov [es:bp+HEAPN_PREV], di
         mov [es:bp+HEAPN_PREV+2], dx
         mov ax, dx
-        add ax, di
+        or ax, di
         jz .NextHeapBlock ; first block?
         push es
         mov ax, es
@@ -695,7 +685,7 @@ PrintLineBuf:
         mov cx, [es:bx+LINEH_NEXT+2]
         mov bx, ax
         mov es, cx
-        add ax, cx ; NULL?
+        or ax, cx ; NULL?
         jnz .Print
         pop es
         popa
@@ -746,7 +736,7 @@ PrintHeap:
 
 .Check:
         mov ax, es
-        add ax, di
+        or ax, di
         jnz .PrintHeap
         pop es
         popa
@@ -1622,7 +1612,7 @@ PerformExCmd:
         jne InvalidExCmd
         cmp word [Buffer+2], 'el'
         jne InvalidExCmd
-        cmp byte [BuffeR+4], 'p'
+        cmp byte [Buffer+4], 'p'
         jne InvalidExCmd
         mov di, SLINE_OFFSET
         mov ah, COLOR_ERROR
@@ -1775,6 +1765,7 @@ ReplaceLine:
         mov cx, es
         cmp cx, [DispLine+2]
         jne .NotDisp
+
         mov [DispLine], si
         mov [DispLine+2], di
 .NotDisp:
@@ -1803,6 +1794,7 @@ EnterEdit:
         call ReplaceLine
 
         ; Free old line
+        mov di, bx
         call AddFreeNode
 
         ret
@@ -1872,18 +1864,6 @@ InsertMode:
         mov al, ah
         mov ah, 1
         mov [NextBackspace], ax
-
-        ;;;;;;;;;;;;;; TEMP
-        ;;;call ClearStatusLine
-        ;;;mov ah, COLOR_ERROR
-        ;;;mov di, SLINE_OFFSET
-        ;;;mov dx, [EditBufHdr+LINEH_LENGTH]
-        ;;;call SPutHexWord
-        ;;;mov al, ' '
-        ;;;stosw
-        ;;;mov dx, [CursorX]
-        ;;;call SPutHexWord
-        ;;;;;;;;;;;;;;;;;;;;;
 
         call CheckRedraw
         call ReadKey
@@ -2526,7 +2506,7 @@ DrawLines:
         jz .Done
         ; Reached EOF?
         mov bx, dx
-        add bx, bp
+        or bx, bp
         jnz .Main
         mov bx, cx
 .EmptyLines:
