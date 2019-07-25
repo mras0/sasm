@@ -13,6 +13,7 @@
 ;;  * dd/yy/pp only works on complete line (lists)
 ;;  * Only lines of length BUFFER_SIZE can be edited
 ;;  * Unoptimized
+;;  * Tabs in files aren't really supported
 ;;  * Ugly color scheme to aid debugging
 
 ;;
@@ -78,6 +79,7 @@ COLOR_WARN   equ 0x0e
 COLOR_ERROR  equ 0x4f
 
 K_BACKSPACE equ 0x08
+K_TAB       equ 0x09
 K_RETURN    equ 0x0D
 K_ESCAPE    equ 0x1B
 K_HOME      equ 0x4700
@@ -118,6 +120,16 @@ Start:
         ; NUL terminate string
         xor al, al
         stosb
+
+        ; TEMP TEMP TEMP
+        cmp byte [FileName], 0
+        jne .HasFilename
+        mov di, FileName
+        mov word [di], 'T0'
+        mov word [di+2], '1.'
+        mov word [di+4], 'AS'
+        mov word [di+6], 'M'
+.HasFilename:
 
         ; Get previous video mode
         mov ah, 0x0f
@@ -739,6 +751,50 @@ PrintHeap:
         pop es
         popa
         ret
+
+PrintRegsExit:
+        pusha
+        push ds
+        push es
+
+        push cs
+        pop ds
+
+        call RestoreVideoMode
+
+        ; [bp+0x12] ax
+        ; [bp+0x10] cx
+        ; [bp+0x0e] dx
+        ; [bp+0x0c] bx
+        ; [bp+0x0a] old sp
+        ; [bp+0x08] bp
+        ; [bp+0x06] si
+        ; [bp+0x04] di
+        ; [bp+0x02] ds
+        ; [bp+0x00] es
+        mov bp, sp
+        mov di, 0x12
+        mov si, .Names
+.L:
+        lodsw
+        call PutChar
+        mov al, ah
+        call PutChar
+        mov al, ' '
+        call PutChar
+        mov ax, [bp+di]
+        call PutHexWord
+        mov al, ' '
+        call PutChar
+        sub di, 2
+        jnc .L
+
+        mov ax, 0x4cff
+        int 0x21
+.Names:
+dw 'AX', 'CX', 'DX', 'BX'
+dw 'SP', 'BP', 'SI', 'DI'
+dw 'DS', 'ES'
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Commands
@@ -1833,6 +1889,8 @@ InsertMode:
         je .CursorHome
         cmp ax, K_END
         je .CursorEnd
+        cmp al, K_TAB
+        je .InsertTab
         cmp al, ' '
         jb .Unknown
         ; Normal character
@@ -2041,6 +2099,45 @@ InsertMode:
 .SLNotDisp:
         call MoveDown
         pop es
+        jmp .UpdateRet
+.InsertTab:
+        mov ax, [CursorX]
+        and ax, 7
+        mov cx, 8
+        sub cx, ax
+
+        mov dx, [EditBufHdr+LINEH_LENGTH]
+        mov bx, dx
+        add bx, cx
+        cmp bx, BUFFER_SIZE
+        jae .InsertLoop
+        mov [EditBufHdr+LINEH_LENGTH], bx
+
+        mov si, [CursorX]
+        add [CursorX], cx
+
+        ; CX: Number of spaces
+        ; DX: Old length
+        ; BX: New length
+        ; SI: Cursor pos
+
+        mov di, EditBuffer
+        add di, bx
+        sub dx, si
+        jz .ITShiftDone
+        mov bx, cx
+        neg bx
+.ITShiftLoop:
+        dec di
+        mov al, [di+bx]
+        mov [di], al
+        dec dx
+        jnz .ITShiftLoop
+.ITShiftDone:
+        dec di
+        mov byte [di], ' '
+        dec cx
+        jnz .ITShiftDone
         jmp .UpdateRet
 
 
