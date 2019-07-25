@@ -1,3 +1,45 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; UVI - Useless VI clone for DOS-like OSes ;;
+;;                                          ;;
+;; Copyright 2019 Michael Rasmussen         ;;
+;; See LICENSE.md for details               ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;
+;; Major limitations:
+;;  * Probably so buggy you shouldn't trust it with your files
+;;  * There's only a handful of supported commands
+;;  * dd/yy/pp only works on complete line (lists)
+;;  * Only lines of length BUFFER_SIZE can be edited
+;;  * Unoptimized
+
+;;
+;; The file is stored in a doubly linked list of lines (without CR+LF)
+;; starting for 'FirstLine'. A pointer to the first displayed line (top
+;; of the screen) is stored in 'DispLine' and its 1-based index is stored
+;; in DispLineIdx.
+;;
+;; Cursor position is relative to the top-left of the current screen.
+;; Note that 'CursorX' may be beyond the current line length. The current
+;; amount of horizontal scroll is stored in 'CurHScroll'.
+;;
+;; 'NeedUpdate' is set to indicate that the screen should be redrawn.
+;; Commands that move the cursor need to call PlaceCursor, which also
+;; handles horizontal scrolling.
+;;
+;; The heap is managed like line buffers (and their structures MUST match),
+;; meaning each block is limited to 0x10000-HEAPN_SIZE bytes of extra storage
+;; (for characters) since the line length is limited to 65535 bytes.
+;;
+;; The calling convention is a bit ad hoc, but generally the current node
+;; or object will be stored in ES:BX and other pointer pairs are in DX:AX
+;; and/or DI:SI.
+;;
+;; Assemble using: nasm -f bin -o uvi.com uvi.asm
+;; or sasm uvi.asm
+;;
+
         org 0x100
 
 BUFFER_SIZE     equ 512
@@ -240,16 +282,10 @@ Start:
         mov [CursorX], ax
         mov [CurHScroll], ax
         mov [CursorRelY], al
-
-        xor ax, ax
         mov [TempReg], ax
         mov [TempReg+2], ax
+        mov [IsInsertMode], al
 
-        ; TEMP TEMP XXX TODO REMOVE
-        mov bx, [FirstLine+2]
-        mov es, bx
-        mov bx, [FirstLine]
-        call CopyLineList
 
         push 0xb800
         pop es
@@ -264,14 +300,11 @@ Start:
         call SFormatFileInfo
 
         mov byte [NeedUpdate], 1
+        call SetNormalCursor
         call PlaceCursor
 .MainLoop:
-        xor ax, ax
-        mov [Count], ax
-        cmp [NeedUpdate], al
-        je .ReadKey
-        mov [NeedUpdate], al
-        call DrawLines
+        mov word [Count], 0
+        call CheckRedraw
 .ReadKey:
         call ReadKey
         cmp al, K_ESCAPE
@@ -378,6 +411,7 @@ CommandFromKey:
         dw 'd'      , DeleteCmd
         dw 'h'      , MoveLeft
         dw K_LEFT   , MoveLeft
+        dw 'i'      , InsertMode
         dw 'j'      , MoveDown
         dw K_DOWN   , MoveDown
         dw 'k'      , MoveUp
@@ -426,6 +460,14 @@ RestoreVideoMode:
         mov al, [PrevVideoMode]
         int 0x10
         ret
+
+CheckRedraw:
+        cmp byte [NeedUpdate], 0
+        jnz .Draw
+        ret
+.Draw:
+        mov byte [NeedUpdate], 0
+        jmp DrawLines
 
 ; Read (possibly extended key) to AX
 ReadKey:
@@ -1603,6 +1645,157 @@ ExWrite:
 .CRLF: db 13, 10
 .Written: db ' written', 0
 
+
+; Link2: Link previous in DI:SI to next in DX:AX
+
+; Replace line in ES:BX with new line in DX:AX
+ReplaceLine:
+        pusha
+        ; Load prev node
+        mov si, [es:bx+LINEH_PREV]
+        mov di, [es:bx+LINEH_PREV+2]
+
+        ; First line?
+        mov cx, si
+        or cx, di
+        jnz .NotFirst
+        mov [FirstLine], ax
+        mov [FirstLine+2], dx
+.NotFirst:
+
+        ; Link prev to new node
+        call Link2
+
+        ; And next
+        mov si, ax
+        mov di, dx
+        mov ax, [es:bx+LINEH_NEXT]
+        mov dx, [es:bx+LINEH_NEXT+2]
+        call Link2
+
+        ; Replacing DispLine?
+        cmp bx, [DispLine]
+        jne .NotDisp
+        mov cx, es
+        cmp cx, [DispLine+2]
+        jne .NotDisp
+        mov [DispLine], si
+        mov [DispLine+2], di
+.NotDisp:
+        popa
+        ret
+
+; Replace line in ES:BX with EditBuf
+EnterEdit:
+        push ds
+        push es
+        mov cx, [es:bx+LINEH_LENGTH]
+        mov [EditBufHdr+LINEH_LENGTH], cx
+        mov si, es
+        mov ds, si
+        mov si, bx
+        add si, LINEH_SIZE
+        mov di, cs
+        mov es, di
+        mov di, EditBuffer
+        rep movsb
+        pop es
+        pop ds
+
+        mov ax, EditBufHdr
+        mov dx, ds
+        call ReplaceLine
+
+        ; Free old line
+        call AddFreeNode
+
+        ret
+
+; Add new line in place of EditBuf (with its contents)
+ExitEdit:
+        ; Alloc new line
+        mov ax, [EditBufHdr+LINEH_LENGTH]
+        push ax
+        call Malloc
+        pop cx
+        ; Copy contents
+        mov di, bx
+        add di, LINEH_SIZE
+        mov si, EditBuffer
+        rep movsb
+        ; Insert the line inplace of EditBuffer
+        mov ax, bx
+        mov dx, es
+        mov bx, ds
+        mov es, bx
+        mov bx, EditBufHdr
+        call ReplaceLine
+        ret
+
+
+InsertMode:
+        xor ax, ax
+        xchg ax, [Count]
+        and ax, ax
+        jz .NoCount
+        mov si, .MsgErrNoCount
+        jmp .ErrRet
+.NoCount:
+        ; Idea: Copy current line to buffer and link in (free old line of course)
+        ; Then edit current line and copy in afterwards
+
+        push es
+        call LoadCursorLine
+        mov cx, [es:bx+LINEH_LENGTH]
+        cmp cx, BUFFER_SIZE
+        jb .LenOK
+        pop es
+        mov si, MsgErrLineLong
+        jmp .ErrRet
+.LenOK:
+        ; Ensure 0 <= CursorX <= LineLength (one beyond allowed for append)
+        mov ax, [CursorX]
+        cmp ax, cx
+        jbe .CursorOK
+        mov [CursorX], cx
+.CursorOK:
+        mov byte [IsInsertMode], 1
+        call EnterEdit
+        call SetInsertCursor
+        pop es
+
+.InsertLoop:
+        call CheckRedraw
+        call ReadKey
+        push ax
+        call ClearStatusLine
+        pop ax
+        cmp al, K_ESCAPE
+        je .InsertDone
+
+        ; Unknown key in insert mode
+        push ax
+        call ClearStatusLine
+        mov ah, COLOR_ERROR
+        mov di, SLINE_OFFSET
+        pop dx
+        call SPutHexWord
+        mov si, MsgErrUnknownKey
+        call SCopyStr
+        jmp .InsertLoop
+.InsertDone:
+        call ExitEdit
+        call SetNormalCursor
+        mov byte [IsInsertMode], 0
+        ret
+
+.ErrRet:
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        jmp SCopyStr
+
+.MsgerrNoCount: db 'Count not implemented for insert', 0
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Drawing functions
 ;;
@@ -1654,6 +1847,26 @@ SetCursor:
         xor bh, bh
         int 0x10
         pop bx
+        pop ax
+        ret
+
+SetInsertCursor:
+        push ax
+        push cx
+        mov ah, 0x01
+        mov cx, 0x0507
+        int 0x10
+        pop cx
+        pop ax
+        ret
+
+SetNormalCursor:
+        push ax
+        push cx
+        mov ah, 0x01
+        mov cx, 0x0007
+        int 0x10
+        pop cx
         pop ax
         ret
 
@@ -1858,9 +2071,11 @@ MsgErrUnknownKey: db ' unknown key/command', 0
 MsgErrNotImpl:    db 'Unknown/unimplemented command', 0
 MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
+MsgErrLineLong:   db 'Error line too long to be edited (sorry)', 0
 
+FileName:         db 't01.asm',0
 ;FileName:         db 'test.txt',0
-FileName:         db 'sasm.asm',0
+;FileName:         db 'sasm.asm',0
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
@@ -1869,6 +2084,10 @@ FirstLine:        resw 2
 File:             resw 1
 Buffer:           resb BUFFER_SIZE
 
+EditBufHdr:       resb LINEH_SIZE
+EditBuffer:       resb BUFFER_SIZE ; Must follow EditBufHdr
+
+IsInsertMode:     resb 1
 NeedUpdate:       resb 1
 DispLineIdx:      resw 1 ; 1-based index of the first displayed line
 DispLine:         resw 2 ; Far pointer to first displayed line (header)
