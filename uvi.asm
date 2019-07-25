@@ -75,14 +75,13 @@ LINEH_SIZE   equ 10
 ; COLOR_GRAY    equ 0x7 ; 0xF white
 
 COLOR_NORMAL equ 0x07
-COLOR_WARN   equ 0x0e
 COLOR_ERROR  equ 0x4f
 
 ;; To avoid debugging change these:
-COLOR_LINENO     equ COLOR_NORMAL
+COLOR_LINENO     equ 0x0e
 COLOR_LINETEXT   equ COLOR_NORMAL
 LINE_FILL        equ 0x0720 ; COLOR_LINETEXT<<8|' '
-EMPTYNO_FILL     equ 0x077E ; COLOR_LINENO<<8|'~'
+EMPTYNO_FILL     equ 0x017E ; COLOR_BLUE<<8|'~'
 
 K_BACKSPACE equ 0x08
 K_TAB       equ 0x09
@@ -176,6 +175,7 @@ Start:
         jc Error
         and ax, ax
         jz .ReadDone
+
         add [TotalBytes], ax
         adc word [TotalBytes+2], 0
         mov cx, ax
@@ -2665,6 +2665,8 @@ MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
 MsgErrLineLong:   db 'Error line too long to be edited (sorry)', 0
 
+BssBegin:
+
 FileName:         resb 13
 
 PrevVideoMode:    resb 1
@@ -2672,10 +2674,6 @@ HeapStartSeg:     resw 1
 HeapFree:         resw 2
 FirstLine:        resw 2
 File:             resw 1
-Buffer:           resb BUFFER_SIZE
-
-EditBufHdr:       resb LINEH_SIZE
-EditBuffer:       resb BUFFER_SIZE ; Must follow EditBufHdr
 
 IsInsertMode:     resb 1
 NeedUpdate:       resb 1
@@ -2693,3 +2691,10 @@ TempReg:          resw 2 ; "-register, Contains a line list of the cut lines (or
 NumLines:         resw 1
 TotalBytes:       resw 2
 NextBackspace:    resb 2 ; Low/High: Current/Next backspace size (0 special)
+
+Buffer:           resb BUFFER_SIZE
+
+EditBufHdr:       resb LINEH_SIZE
+EditBuffer:       resb BUFFER_SIZE ; Must follow EditBufHdr
+
+BssEnd:

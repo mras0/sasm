@@ -50,11 +50,13 @@ add_custom_command(
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/os.sys"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/uvi.com"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/strap.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/uvi.asm"
     COMMAND disktool "${DISK_IMG}" list
     DEPENDS
         disktool
@@ -62,11 +64,13 @@ add_custom_command(
         "${CMAKE_CURRENT_BINARY_DIR}/os.sys"
         "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
         "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
+        "${CMAKE_CURRENT_BINARY_DIR}/uvi.com"
         "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
         "${CMAKE_CURRENT_SOURCE_DIR}/strap.bat"
         "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/uvi.asm"
     )
 
 add_custom_target(build_disk ALL DEPENDS "${DISK_IMG}")
