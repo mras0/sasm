@@ -13,6 +13,7 @@
 ;;  * dd/yy/pp only works on complete line (lists)
 ;;  * Only lines of length BUFFER_SIZE can be edited
 ;;  * Unoptimized
+;;  * Ugly color scheme to aid debugging
 
 ;;
 ;; The file is stored in a doubly linked list of lines (without CR+LF)
@@ -92,6 +93,32 @@ K_DELETE    equ 0x5300
 ; TODO: Handle (give error) when file doesn't fit in memory
 
 Start:
+        ; Grab filename from command line
+        mov di, FileName
+        mov si, 0x80
+        lodsb
+        mov cl, al
+.CSkipSpace:
+        and cl, cl
+        jz .CFileNameDone
+        lodsb
+        cmp al, ' '
+        ja .CCopyFilename
+        dec cl
+        jmp .CSkipSpace
+.CCopyFilename:
+        dec si ; unget character
+        xor ch, ch
+        cmp cl, 12
+        jbe .CFLenOK
+        mov cl, 12
+.CFLenOK:
+        rep movsb
+.CFileNameDone:
+        ; NUL terminate string
+        xor al, al
+        stosb
+
         ; Get previous video mode
         mov ah, 0x0f
         int 0x10
@@ -120,14 +147,18 @@ Start:
         ; ES:BP -> CurrentLine
         ; ES:DI -> HeapPtr
 
+        cmp byte [FileName], 0
+        je .FileRead ; No file
+
         ; Open file
         mov ax, 0x3d00
         mov dx, FileName
         int 0x21
-        mov dx, MsgErrOpenInit
-        jc Error
+        jnc .OpenOK
+        mov word [File], 0xFFFF ; Signal new file
+        jmp .FileRead
+.OpenOK:
         mov [File], ax
-
 .Read:
         ; Read to buffer
         mov ah, 0x3f
@@ -192,6 +223,8 @@ Start:
         mov bx, [File]
         mov ah, 0x3e
         int 0x21
+        xor bx, bx
+        mov word [File], 0 ; Signal file read OK
 
         mov ax, [es:bp+LINEH_PREV]
         mov bx, [es:bp+LINEH_PREV+2]
@@ -297,9 +330,12 @@ Start:
         mov ah, COLOR_NORMAL
         mov di, SLINE_OFFSET
         mov si, FileName
+        cmp byte [si], 0
+        je .NoFileInfo
         call SCopyStr
+        xor cl, cl
         call SFormatFileInfo
-
+.NoFileInfo:
         mov byte [NeedUpdate], 1
         call SetNormalCursor
         call PlaceCursor
@@ -1620,9 +1656,8 @@ ExWrite:
         mov di, SLINE_OFFSET
         mov ah, COLOR_NORMAL
         call SCopyStr
-        call SFormatFileInfo
-        mov si, .Written
-        jmp SCopyStr
+        mov cl, 1
+        jmp SFormatFileInfo
 .CloseFile:
         mov bx, bp
         mov ah, 0x3e
@@ -1641,7 +1676,6 @@ ExWrite:
         pop dx
         jmp SPutHexWord
 .CRLF: db 13, 10
-.Written: db ' written', 0
 
 
 ; Replace line in ES:BX with new line in DX:AX
@@ -2430,7 +2464,16 @@ SPutDecDword:
         pop ax
         jmp SCopyStr
 
+; CL=0 File just loaded, CL=1 File just written
 SFormatFileInfo:
+        and cl, cl
+        jnz .Stats
+        cmp word [File], 0
+        je .Stats
+        mov si, .NewFile
+        jmp SCopyStr
+.Stats:
+        push cx
         mov al, ' '
         stosw
         mov dx, [NumLines]
@@ -2446,14 +2489,19 @@ SFormatFileInfo:
         call SPutDecDword
         mov al, 'C'
         stosw
+        pop cx
+        mov si, .Written
+        and cl, cl
+        jnz SCopyStr
         ret
+.Written: db ' written', 0
+.NewFile: db ' [New file]', 0
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants/Data
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-MsgErrOpenInit:   db 'Could not open file', 13, 10, '$'
 MsgErrReadInit:   db 'Error reading from file', 13, 10, '$'
 MsgErrOOM:        db 'Out of memory', 13, 10, '$'
 MsgErrUnknownKey: db ' unknown key/command', 0
@@ -2462,8 +2510,7 @@ MsgErrCreate:     db 'Error creating ', 0
 MsgErrWrite:      db 'Error writing to file: ', 0
 MsgErrLineLong:   db 'Error line too long to be edited (sorry)', 0
 
-;FileName:         db 'sasm.asm',0
-FileName:         db 't01.asm',0
+FileName:         resb 13
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
