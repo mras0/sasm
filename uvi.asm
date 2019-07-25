@@ -11,16 +11,16 @@
 ;;  * Probably so buggy you shouldn't trust it with your files
 ;;  * There's only a handful of supported commands
 ;;  * dd/yy/pp only works on complete line (lists)
-;;  * Only lines of length BUFFER_SIZE can be edited
+;;  * Only lines of length < BUFFER_SIZE can be edited
 ;;  * Unoptimized
-;;  * Tabs in files aren't really supported
-;;  * Ugly color scheme to aid debugging
+;;  * Tabs in files aren't really supported (use spaces)
+;;  * Files that don't fit in memory aren't handled
 
 ;;
 ;; The file is stored in a doubly linked list of lines (without CR+LF)
-;; starting for 'FirstLine'. A pointer to the first displayed line (top
+;; starting with 'FirstLine'. A pointer to the first displayed line (top
 ;; of the screen) is stored in 'DispLine' and its 1-based index is stored
-;; in DispLineIdx.
+;; in 'DispLineIdx'.
 ;;
 ;; Cursor position is relative to the top-left of the current screen.
 ;; Note that 'CursorX' may be beyond the current line length. The current
@@ -64,7 +64,7 @@ LINEH_NEXT   equ 4  ; DWORD Next line (far pointer)
 LINEH_LENGTH equ 8  ; WORD  Length
 LINEH_SIZE   equ 10
 
-                         ; +8 yiels...
+                         ; +8 yields...
 ; COLOR_BLACK   equ 0x0 ; 0x8 dark gray
 ; COLOR_BLUE    equ 0x1 ; 0x9 bright blue
 ; COLOR_GREEN   equ 0x2 ; 0xA bright green
@@ -77,6 +77,12 @@ LINEH_SIZE   equ 10
 COLOR_NORMAL equ 0x07
 COLOR_WARN   equ 0x0e
 COLOR_ERROR  equ 0x4f
+
+;; To avoid debugging change these:
+COLOR_LINENO     equ COLOR_NORMAL
+COLOR_LINETEXT   equ COLOR_NORMAL
+LINE_FILL        equ 0x0720 ; COLOR_LINETEXT<<8|' '
+EMPTYNO_FILL     equ 0x077E ; COLOR_LINENO<<8|'~'
 
 K_BACKSPACE equ 0x08
 K_TAB       equ 0x09
@@ -91,8 +97,6 @@ K_END       equ 0x4F00
 K_DOWN      equ 0x5000
 K_PGDOWN    equ 0x5100
 K_DELETE    equ 0x5300
-
-; TODO: Handle (give error) when file doesn't fit in memory
 
 Start:
         ; Grab filename from command line
@@ -449,6 +453,7 @@ CommandFromKey:
         dw ':'      , ExCommand
         dw 'a'      , Append
         dw 'd'      , DeleteCmd
+        dw 'g'      , GoCommand
         dw 'h'      , MoveLeft
         dw K_LEFT   , MoveLeft
         dw 'i'      , InsertMode
@@ -1234,7 +1239,30 @@ GotoLine:
         add sp, 2
         ret
 
-; Set TempReg to ES:BX freeing any contents
+GoCommand:
+        call ReadKey
+        cmp al, 'g'
+        je .GG
+        mov si, .Msg
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        jmp SCopyStr
+.GG:
+        cmp word [Count], 0
+        jne GotoLine ; behave like G
+        ; If Count=0 go to first line
+        mov ax, [FirstLine]
+        mov dx, [FirstLine+2]
+        mov [DispLine], ax
+        mov [DispLine+2], dx
+        mov word [DispLineIdx], 1
+        mov byte [CursorRelY], 0
+        mov byte [NeedUpdate], 1
+        call MoveFirstNBlank
+        jmp PlaceCursor
+.Msg: db 'GoCommand only implemented for gg', 0
+
+; Set TempReg to ES:BX freeing any previous contents
 SetTempReg:
         push ax
         push cx
@@ -1850,7 +1878,7 @@ InsertMode:
         mov [CursorX], cx
 .CursorOK:
         mov byte [IsInsertMode], 1
-        mov word [NextBackspace], 0
+        mov word [NextBackspace], 0x0101
         call EnterEdit
         call SetInsertCursor
         call PlaceCursor ; Set cursor again, it might be one beyond the
@@ -2444,7 +2472,7 @@ DrawLines:
         call CvtPadDecWord
         popa
         mov si, Buffer
-        mov ah, 0x17
+        mov ah, COLOR_LINENO
 .Pr:
         lodsb
         and al, al
@@ -2475,7 +2503,7 @@ DrawLines:
 .HScroll:
         add si, cx
         add si, LINEH_SIZE
-        mov ah, 0x27
+        mov ah, COLOR_LINETEXT
         mov cx, MAX_LINE_WIDTH
         cmp cx, bx
         jbe .PrLine
@@ -2490,7 +2518,7 @@ DrawLines:
         mov cx, MAX_LINE_WIDTH
         sub cx, bx
         jbe .NoRest
-        mov ax, 0x3720 ; ' '
+        mov ax, LINE_FILL
         rep stosw
 .NoRest:
         popa
@@ -2511,12 +2539,12 @@ DrawLines:
         mov bx, cx
 .EmptyLines:
         push di
-        mov ax, 0x177e ; '~'
+        mov ax, EMPTYNO_FILL
         stosw
         mov al, ' '
         mov cx, 5
         rep stosw
-        mov ax, 0x3720 ; ' '
+        mov ax, LINE_FILL
         mov cx, MAX_LINE_WIDTH
         rep stosw
         pop di
