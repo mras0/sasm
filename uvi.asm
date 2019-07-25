@@ -2059,12 +2059,15 @@ InsertMode:
         mov di, EditBuffer
         add di, cx
         add di, si
+        and cx, cx
+        jz .AIShiftDone
 .AIShiftUp:
         dec di
         mov al, [di+bx]
         mov [di], al
         dec cx
         jnz .AIShiftUp
+.AIShiftDone:
         pop bx
         mov al, ' '
 .AISpaces:
