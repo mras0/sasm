@@ -121,15 +121,15 @@ Start:
         xor al, al
         stosb
 
-        ; TEMP TEMP TEMP
-        cmp byte [FileName], 0
-        jne .HasFilename
-        mov di, FileName
-        mov word [di], 'T0'
-        mov word [di+2], '1.'
-        mov word [di+4], 'AS'
-        mov word [di+6], 'M'
-.HasFilename:
+;;;        ; TEMP TEMP TEMP
+;;;        cmp byte [FileName], 0
+;;;        jne .HasFilename
+;;;        mov di, FileName
+;;;        mov word [di], 'T0'
+;;;        mov word [di+2], '1.'
+;;;        mov word [di+4], 'AS'
+;;;        mov word [di+6], 'M'
+;;;.HasFilename:
 
         ; Get previous video mode
         mov ah, 0x0f
@@ -1618,7 +1618,17 @@ PerformExCmd:
         je Quit
         cmp ax, ':w'
         je ExWrite
-
+        cmp ax, ':h'
+        jne InvalidExCmd
+        cmp word [Buffer+2], 'el'
+        jne InvalidExCmd
+        cmp byte [BuffeR+4], 'p'
+        jne InvalidExCmd
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        mov si, .HelpMsg
+        jmp SCopyStr
+.HelpMsg: db 'There is no help. You should use a real editor instead :)',0
 InvalidExCmd:
         mov di, SLINE_OFFSET
         mov ah, COLOR_ERROR
@@ -1848,6 +1858,7 @@ InsertMode:
         mov [CursorX], cx
 .CursorOK:
         mov byte [IsInsertMode], 1
+        mov word [NextBackspace], 0
         call EnterEdit
         call SetInsertCursor
         call PlaceCursor ; Set cursor again, it might be one beyond the
@@ -1856,6 +1867,12 @@ InsertMode:
         pop es
 
 .InsertLoop:
+        ; Update backspace queue
+        mov ax, [NextBackspace]
+        mov al, ah
+        mov ah, 1
+        mov [NextBackspace], ax
+
         ;;;;;;;;;;;;;; TEMP
         ;;;call ClearStatusLine
         ;;;mov ah, COLOR_ERROR
@@ -1945,6 +1962,32 @@ InsertMode:
         inc word [CursorX]
         jmp .UpdateRet
 .Backspace:
+        mov al, [NextBackspace]
+        cmp al, 1
+        je .NormalBS
+        push es
+        push ds
+        pop es
+        and al, al
+        jz .BSDelAI
+        ; Delete tab of size AL
+        xor cx, cx
+        mov cl, al
+        jmp .BSDel
+.BSDelAI:
+        ; Special case: last action inserted auto indent spaces
+        ; Remove them (Note: CursorX should always be > 0 here)
+        mov cx, [CursorX]
+.BSDel:
+        sub [CursorX], cx
+        sub [EditBufHdr+LINEH_LENGTH], cx
+        mov di, EditBuffer
+        mov si, di
+        add si, cx
+        rep movsb
+        pop es
+        jmp .UpdateRet
+.NormalBS:
         mov bx, [CursorX]
         and bx, bx
         jz .InsertLoop
@@ -2075,6 +2118,8 @@ InsertMode:
         mov [di], al
         dec si
         jnz .AISpaces
+        ; Set next backspace size to indicate auto-indent removal
+        mov byte [NextBackspace+1], 0
 .SLAIDone:
         ; Insert line before edit line
         mov si, [EditBufHdr+LINEH_PREV]
@@ -2115,6 +2160,8 @@ InsertMode:
         cmp bx, BUFFER_SIZE
         jae .InsertLoop
         mov [EditBufHdr+LINEH_LENGTH], bx
+
+        mov byte [NextBackspace+1], cl
 
         mov si, [CursorX]
         add [CursorX], cx
@@ -2637,3 +2684,4 @@ TempReg:          resw 2 ; "-register, Contains a line list of the cut lines (or
 ; Not always up to date
 NumLines:         resw 1
 TotalBytes:       resw 2
+NextBackspace:    resb 2 ; Low/High: Current/Next backspace size (0 special)
