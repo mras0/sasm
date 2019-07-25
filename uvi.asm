@@ -1785,6 +1785,8 @@ InsertMode:
         pop ax
         cmp al, K_ESCAPE
         je .InsertDone
+        cmp al, K_RETURN
+        je .SplitLine
         cmp al, K_BACKSPACE
         je .Backspace
         cmp ax, K_DELETE
@@ -1909,6 +1911,66 @@ InsertMode:
 .CursorEnd:
         mov ax, [EditBufHdr+LINEH_LENGTH]
         jmp .NewCursor
+.SplitLine:
+        ; Insert new line before cursor with contents from 0..CursorX
+        ; and remove that part from the edit buffer
+        push es
+        mov ax, [CursorX]
+.SLEmptyLine:
+        call Malloc
+
+        ; Copy line data
+        mov di, bx
+        add di, LINEH_SIZE
+        mov cx, ax
+        mov si, EditBuffer
+        rep movsb
+
+        ; Adjust edit buffer
+        mov cx, [EditBufHdr+LINEH_LENGTH]
+        sub cx, ax
+        mov [EditBufHdr+LINEH_LENGTH], cx
+        and cx, cx
+        jz .SLSDone
+        mov di, EditBuffer
+.SLShift:
+        lodsb
+        mov [di], al
+        inc di
+        dec cx
+        jnz .SLShift
+.SLSDone:
+
+        ; Insert line before edit line
+        mov si, [EditBufHdr+LINEH_PREV]
+        mov di, [EditBufHdr+LINEH_PREV+2]
+        mov ax, bx
+        mov dx, es
+        call Link2
+        or di, si
+        jnz .SLNotFirst
+        mov [FirstLine], ax
+        mov [FirstLine+2], dx
+.SLNotFirst:
+        ; And to current line
+        mov si, ax
+        mov di, dx
+        mov ax, EditBufHdr
+        mov dx, ds
+        call Link2
+        cmp ax, [DispLine]
+        jne .SLNotDisp
+        cmp dx, [DispLine+2]
+        jne .SLNotDisp
+        mov [DispLine], si
+        mov [DispLine+2], di
+.SLNotDisp:
+        mov word [CursorX], 0
+        call MoveDown
+        pop es
+        jmp .UpdateRet
+
+
 .MsgErrNoCount: db 'Count not implemented for insert', 0
 
 MoveFirstNBlank:
