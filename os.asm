@@ -1653,9 +1653,11 @@ Int21_3D:
 Int21_3E:
         pusha
         push ds
+        push es
         mov ax, cs
         mov ds, ax
         call CloseFileHandle
+        pop es
         pop ds
         popa
         clc ; Assumes we always succeed
