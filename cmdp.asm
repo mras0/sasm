@@ -391,6 +391,14 @@ CommandDispatch:
         jne .NotInternal
         jmp CmdRem
 .NotRen:
+        cmp word [bx], 'TY'
+        jne .NotType
+        cmp word [bx+2], 'PE'
+        jne .NotInternal
+        cmp byte [bx+4], 0
+        jne .NotInternal
+        jmp CmdType
+.NotType:
 
 .NotInternal:
         ; Copy extension (if present)
@@ -534,13 +542,22 @@ CCopyFName:
         mov al, ch
         ret
 
+; Print message and wait for keypress. Returns carry set on CTRL+C
 CWaitKey:
         mov dx, MsgPressAnyKey
         mov ah, 9
         int 0x21
         mov ah, 8
         int 0x21
+        push ax
         call PutCrLf
+        pop ax
+        cmp al, 3
+        jne .NE
+        stc
+        ret
+.NE:
+        clc
         ret
 
 COpenInError:
@@ -760,6 +777,7 @@ CmdHd:
 .hd:
         call HexDump
         call CWaitKey
+        jc .Done
         jmp .L
 .Done:
         call CloseInput
@@ -776,6 +794,54 @@ CmdRen:
         ret
 
 CmdRem:
+        ret
+
+CmdType:
+        mov di, cs
+        mov es, di
+        lodsb
+        mov di, InFileName
+        call CGetFilename
+
+        call OpenInput
+        jc COpenInError
+
+        xor di, di ; line counter
+        xor bx, bx ; char counter
+.L:
+        push bx
+        call ReadToBuffer
+        pop bx
+        and ax, ax
+        jz .Done
+        mov cx, ax
+        mov si, Buffer
+.P:
+        lodsb
+        call PutChar
+        cmp al, 10
+        jne .NotLF
+.NewLine:
+        xor bx, bx
+        inc di
+        cmp di, 24
+        jne .NextChar
+        xor di, di
+        push bx
+        call CWaitKey
+        pop bx
+        jc .Done
+        jmp .NextChar
+.NotLF:
+        inc bx
+        cmp bx, 80
+        je .NewLine
+.NextChar:
+        dec cx
+        jnz .P
+        jmp .L
+.Done:
+        call CloseInput
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
