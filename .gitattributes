@@ -1,0 +1,3 @@
+# Always want DOS newlines
+*.asm text eol=crlf
+*.bat text eol=crlf
