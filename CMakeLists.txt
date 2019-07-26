@@ -77,27 +77,35 @@ add_custom_command(
 
 add_custom_target(build_disk ALL DEPENDS "${DISK_IMG}")
 
-add_custom_target(
-    qemu_test
-    COMMAND qemu-system-i386 -drive format=raw,file=\"${DISK_IMG}\"
-    DEPENDS ${DISK_IMG}
-)
+find_program(QEMU qemu-system-i386)
+if (QEMU)
+    message("Found qemu: ${QEMU}")
+    add_custom_target(
+        qemu_test
+        COMMAND qemu-system-i386 -drive format=raw,file=\"${DISK_IMG}\",if=floppy #-s -S
+        DEPENDS ${DISK_IMG}
+    )
+endif()
 
-add_custom_target(
-    test_cmdp
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" sasm.asm
-    COMMAND dosbox cmdp.com
-    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com" "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
-)
+find_program(DOSBOX dosbox)
+if (DOSBOX)
+    message("Found dosbox: ${DOSBOX}")
+    add_custom_target(
+        test_cmdp
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" sasm.asm
+        COMMAND ${DOSBOX} cmdp.com
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com" "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
+    )
 
-add_custom_target(
-    test_uvi
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" sasm.asm
-    COMMAND dosbox uvi.com
-    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/uvi.com"
-)
+    add_custom_target(
+        test_uvi
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" sasm.asm
+        COMMAND ${DOSBOX} uvi.com
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/uvi.com"
+    )
+endif()
 
 if (MSVC)
     # TODO: Get this working when using MSYS Makefiles....

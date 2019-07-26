@@ -7,6 +7,9 @@
 
         org 0x7c1e
 
+SEC_PER_TRACK equ 0x7c18
+NUM_HEADS     equ 0x7c1a
+
         ; Ensure we're running from a known address
 Start:
         push 0
@@ -21,21 +24,98 @@ RealStart:
         mov ss, ax
         mov sp, 0x7c00
         sti
+
+        ; Read sectors
+        mov bx, 0x0050 ; Segment to put data
+        mov ax, 0x0021 ; Starting LBA
+        mov cx, 0x0010 ; Number of sectors, assume 8K is enough
+.Read:
+        push ax
+        push bx
+        push cx
         push dx
-        mov ah, 0x42
-        mov si, DiskPacket
+        mov es, bx
+        ; LBA->CHS
+        mov di, dx ; Preserve DL
+        xor dx, dx
+        mov bx, [SEC_PER_TRACK]
+        div bx
+        inc dl
+        mov cx, dx
+        xor dx, dx
+        mov bx, [NUM_HEADS]
+        div bx
+
+        ;pusha
+        ;call PutHexWord
+        ;mov ax, 0x0e20
+        ;int 0x10
+        ;mov ax, dx
+        ;call PutHexWord
+        ;mov ax, 0x0e20
+        ;int 0x10
+        ;mov al, cl
+        ;call PutHexByte
+        ;mov ax, 0x0e0d
+        ;int 0x10
+        ;mov ax, 0x0e0a
+        ;int 0x10
+        ;popa
+
+        ; CL = sector
+        ; DX = head
+        ; AX = cyl
+        mov bx, di
+        mov dh, dl ; DH=head
+        mov dl, bl ; DL=drive number
+        mov ch, al ; CH=cylinder
+        ; ES:BX data buffer
+        xor bx, bx
+        mov ax, 0x0201 ; AL=number of sectors
         int 0x13
         jc Error
         pop dx
+        pop cx
+        pop bx
+        pop ax
+        add bx, 0x20   ; SECTOR_SIZE/0x10
+        inc ax
+        dec cx
+        jnz .Read
 
         push 0x0500
+        ; DL=boot drive
         ret
 Error:
+        call PutHexWord
         mov si, MsgDiskErr
         call PutString
         xor ax, ax
         int 0x16
         int 0x19
+
+PutHexWord:
+        push ax
+        mov al, ah
+        call PutHexByte
+        pop ax
+PutHexByte:
+        push ax
+        shr al, 4
+        call PutHexDig
+        pop ax
+PutHexDig:
+        push ax
+        and al, 0x0f
+        add al, '0'
+        cmp al, '9'
+        jbe .P
+        add al, 7
+.P:
+        mov ah, 0x0e
+        int 0x10
+        pop ax
+        ret
 
 PutString:
         mov ah, 0x0e
@@ -48,14 +128,5 @@ PutString:
 .Done:
         ret
 
-DiskPacket:
-        dw 0x0010   ; Size of disk packet
-        dw 0x0010   ; Number of blocks (Assume 8K is enough for now)
-        dw 0        ; Offset
-        dw 0x0050   ; Segment
-        dw 0x21     ; Starting block number (First data cluster)
-        dw 0,0,0
-
-MsgDiskErr:
-        db 'Error reading from disk', 13, 10
-        db 'Press any key to reboot', 13, 10, 0
+MsgDiskErr:   db ' Error reading from disk', 13, 10
+              db 'Press any key to reboot', 13, 10, 0

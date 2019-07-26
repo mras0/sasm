@@ -383,6 +383,16 @@ CommandDispatch:
         jne .NotInternal
         jmp CmdHd
 .NotHd:
+        cmp word [bx], 'IN'
+        jne .NotInsboot
+        cmp word [bx+2], 'SB'
+        jne .NotInternal
+        cmp word [bx+4], 'OO'
+        jne .NotInternal
+        cmp word [bx+6], 'T'
+        jne .NotInternal
+        jmp CmdInsBoot
+.NotInsboot:
         cmp word [bx], 'RE'
         jne .NotRen
         cmp word [bx+2], 'N'
@@ -594,12 +604,15 @@ CCheckCR:
         jne CArgError
         ret
 
-CGetInOut:
+CGetIn:
         mov di, cs
         mov es, di
         lodsb
         mov di, InFileName
-        call CGetFilename
+        jmp CGetFilename
+
+CGetInOut:
+        call CGetIn
         mov di, OutFileName
         call CGetFilename
         jmp CCheckCR
@@ -626,11 +639,7 @@ CmdCopy:
         ret
 
 CmdDel:
-        mov di, cs
-        mov es, di
-        lodsb
-        mov di, InFileName
-        call CGetFilename
+        call CGetIn
         mov dx, InFileName
         mov ah, 0x41
         int 0x21
@@ -758,11 +767,7 @@ CmdExit:
         int 0x21
 
 CmdHd:
-        mov di, cs
-        mov es, di
-        lodsb
-        mov di, InFileName
-        call CGetFilename
+        call CGetIn
 
         call OpenInput
         jc COpenInError
@@ -783,6 +788,82 @@ CmdHd:
         call CloseInput
         ret
 
+BOOT_CODE_OFF equ 0x001E ; (BPB_OFFSET = 0x0B + sizeof(DOS 3.0 BPB))
+BOOT_MAX_SIZE equ 0x01E0 ; SECTOR_SIZE - (BOOT_CODE_OFF + 2) ; 2 for signature
+
+CmdInsBoot:
+        call CGetIn
+        call OpenInput
+        jc COpenInError
+
+        ; Ensure buffer is filled with NULs
+        push ds
+        pop es
+        mov di, Buffer
+        mov cx, BUFFER_SIZE
+        xor al, al
+        rep stosb
+
+        call ReadToBuffer
+        push ax
+        call CloseInput
+        pop ax
+        cmp ax, BOOT_MAX_SIZE
+        jb .SizeOK
+        mov dx, MsgErrBootLarge
+        jmp CError
+.SizeOK:
+        ; Move boot code to correct offset
+
+        mov bx, BOOT_CODE_OFF
+        mov di, Buffer
+        add di, bx
+        add di, ax
+        neg bx
+        mov cx, ax
+.Move:
+        dec di
+        mov al, [di+bx]
+        mov [di], al
+        dec cx
+        jnz .Move
+
+        ; Copy in jmp instruction, OEM name and BPB
+        mov di, Buffer
+        mov si, .BootHeader
+        mov cx, BOOT_CODE_OFF
+        rep movsb
+
+        ; Set boot signature
+        mov word [Buffer+510], 0xAA55
+
+        mov si, Buffer
+        mov cx, 256
+        call HexDump
+        call CWaitKey
+        mov cx, 256
+        mov si, Buffer
+        add si, cx
+        call HexDump
+
+        ret
+
+.BootHeader:
+        db 0xEB, 0x1C, 0x90 ; JMP SHORT BOOT_CODE_OFF; NOP
+        db 'SDOS 1.0'       ; OEM Name
+        ; 1440 FD BPB
+        dw 512              ; BytesPerSector
+        db 1                ; SectorsPerCluster
+        dw 1                ; ReservedSectors
+        db 2                ; NumFats
+        dw 224              ; MaxRootEntries
+        dw 2880             ; TotalSectors
+        db 0xF0             ; MediaDescriptor
+        dw 9                ; SectorsPerFat
+        dw 18               ; SectorsPerTrack
+        dw 2                ; NumHeads
+        dw 0                ; HiddenSectors
+
 CmdRen:
         call CGetInOut
         mov dx, InFileName
@@ -797,11 +878,7 @@ CmdRem:
         ret
 
 CmdType:
-        mov di, cs
-        mov es, di
-        lodsb
-        mov di, InFileName
-        call CGetFilename
+        call CGetIn
 
         call OpenInput
         jc COpenInError
@@ -857,6 +934,7 @@ MsgErrNotImpl:    db 'Not implemented$'
 MsgExiting:       db 'Command interpreter exiting$'
 MsgErrDelete:     db 'Could not delete file$'
 MsgErrRename:     db 'Could not rename file$'
+MsgErrBootLarge:  db 'Boot sector too large$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'

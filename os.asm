@@ -2,6 +2,11 @@
 
 SECTOR_SIZE      equ 512
 
+BPB_SECPERTRACK  equ 0x0D
+BPB_NUMHEADS     equ 0x0F
+BPB_SIZE         equ 0x13
+BPB_OFFSET       equ 0x7C0B
+
 DIR_ENTRY_FNAME  equ 0x00 ; BYTE[8] File name
 DIR_ENTRY_EXT    equ 0x08 ; BYTE[3] Extension
 DIR_ENTRY_ATTR   equ 0x0B ; BYTE    File attributes
@@ -70,6 +75,18 @@ Main:
         ; Save boot drive (passed by boot loader)
         mov [BootDrive], dl
 
+        ; Copy BPB from boot sector
+        push ds
+        pop es
+        push 0
+        pop ds
+        mov di, BPB
+        mov si, BPB_OFFSET
+        mov cx, BPB_SIZE
+        rep movsb
+        push cs
+        pop ds
+
         mov bx, MsgLoading
         call PutString
 
@@ -120,17 +137,6 @@ Main:
         add bx, FILE_INFO_SIZE
         dec cl
         jnz .InitFile
-
-        ; Init DiskPacket
-        mov ax, cs
-        mov ds, ax
-        mov es, ax
-        mov di, DiskPacket
-        mov ax, 0x10
-        stosw
-        xor al, al
-        mov cx, 0x0e
-        rep stosb
 
         ; Read FAT
         xor di, di
@@ -282,6 +288,26 @@ HexDump:
         pop si
         ret
 
+
+; Convert LBA in AX to CHS in CX/DX
+LBAtoCHS:
+        push ax
+        push bx
+        xor dx, dx
+        mov bx, [BPB+BPB_SECPERTRACK]
+        div bx
+        inc dl
+        mov cl, dl          ; CL=sector
+        xor dx, dx
+        mov bx, [BPB+BPB_NUMHEADS]
+        div bx
+        mov dh, dl          ; DH=head
+        mov dl, [BootDrive] ; DL=drive number
+        mov ch, al          ; CH=cylinder
+        pop bx
+        pop ax
+        ret
+
 ; Read cluster in AX to ES:DI
 ReadCluster:
         call ClusterValid
@@ -292,16 +318,26 @@ ReadCluster:
 
 ; Read CX sectors starting from AX into ES:DI
 ReadSectors:
-        mov [DP_Start], ax
-        mov [DP_Count], cx
-        mov ax, es
-        mov [DP_Ptr+2], ax
-        mov [DP_Ptr], di
-        mov dl, [BootDrive]
-        mov ah, 0x42
-        mov si, DiskPacket
+        push es
+        pusha
+.Read:
+        push cx
+        call LBAtoCHS
+        push ax
+        mov bx, di
+        mov ax, 0x0201
         int 0x13
         jc .DiskReadErr
+        pop ax
+        pop cx
+        mov bx, es
+        add bx, 0x20 ; SECTOR_SIZE/0x10
+        mov es, bx
+        inc ax
+        dec cx
+        jnz .Read
+        popa
+        pop es
         ret
 .DiskReadErr:
         mov al, ah
@@ -323,21 +359,35 @@ WriteCluster:
 ; Write CX sectors starting from AX from ES:DI
 WriteSectors:
         push ds
+        push es
+        pusha
         mov dx, cs
         mov ds, dx
-        mov [DP_Start], ax
-        mov [DP_Count], cx
-        mov ax, es
-        mov [DP_Ptr+2], ax
-        mov [DP_Ptr], di
-        mov dl, [BootDrive]
-        mov ah, 0x43
-        mov si, DiskPacket
+.Write:
+        push cx
+        call LBAtoCHS
+        push ax
+        mov bx, di
+        mov ax, 0x0301
         int 0x13
         jc .DiskWriteErr
+        pop ax
+        pop cx
+        mov bx, es
+        add bx, 0x20 ; SECTOR_SIZE/0x10
+        mov es, bx
+        inc ax
+        dec cx
+        jnz .Write
+        popa
+        pop es
         pop ds
         ret
 .DiskWriteErr:
+        mov al, ah
+        call PutHexByte
+        mov al, ' '
+        call PutChar
         mov bx, MsgErrWrite
         jmp Fatal
 
@@ -2003,13 +2053,8 @@ CmdpFName:       db 'CMDP.COM', 0
 
 FreeSeg:         dw 0x0800
 
-DiskPacket:      resw 1 ; Size of disk packet
-DP_Count:        resw 1 ; Number of blocks
-DP_Ptr:          resw 2 ; Segment:Offset
-DP_Start:        resw 1 ; Starting block number
-                 resw 3
-
 BootDrive:       resb 1
+BPB:             resb BPB_SIZE
 SectorBufSeg:    resw 1
 FATSeg:          resw 1
 FileInfoSeg:     resw 1
