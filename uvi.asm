@@ -1407,8 +1407,17 @@ DeleteCmd:
         and cl, cl
         jnz .CheckCursor
         ; Lines were deleted from the top of the screen, we just
-        ; need to move DispLine (since the document isn't empty,
-        ; DX:AX is never NULL)
+        ; need to move DispLine. DX:AX can be NULL if we were
+        ; standing on the final line just before the delete command.
+        mov cx, ax
+        or cx, dx
+        jnz .NotFinal
+        ; dd on final line
+        dec word [DispLineIdx]
+        mov [DispLine], si
+        mov [DispLine+2], di
+        jmp .Done
+.NotFinal:
         mov [DispLine], ax
         mov [DispLine+2], dx
         jmp .Done
