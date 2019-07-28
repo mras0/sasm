@@ -1,6 +1,7 @@
         org 0x100
 
 BUFFER_SIZE       EQU 512
+STACK_SIZE        EQU 256
 CMDLINE_MAX       EQU 0x7F ; Including terminating CR
 
 ; Offsets into FindFile structure
@@ -11,15 +12,18 @@ FF_FSIZE         equ 0x1A ; DWORD    File size
 FF_FNAME         equ 0x1E ; BYTE[13] File name and extension (ASCIIZ with dot)
 
 Main:
-        ; Free remaining memory if running under DOS
+        ; Free unused memory
+
+        cli
+        mov bx, ProgramEnd
+        add bx, 15
+        and bx, 0xFFF0
+        add bx, STACK_SIZE
+        mov sp, bx
+        sti
+        shr bx, 4
+        ; Free remaining memory
         mov ah, 0x4a
-        ; Handle Stack...
-        ;mov bx, Buffer
-        ;add bx, 15
-        ;and bx, 0xFFF0
-        ;add bx, BUFFER_SIZE
-        ;shr bx, 4
-        mov bx, 0x1000 ; 64K
         int 0x21
         jc GenericError
 
@@ -837,15 +841,25 @@ CmdInsBoot:
         ; Set boot signature
         mov word [Buffer+510], 0xAA55
 
-        mov si, Buffer
-        mov cx, 256
-        call HexDump
-        call CWaitKey
-        mov cx, 256
-        mov si, Buffer
-        add si, cx
-        call HexDump
+        ; Figure out current drive
+        mov ah, 0x19
+        int 0x21
+        ; Too dangerous to allow other drives than 0 for now...
+        cmp al, 0
+        mov dx, MsgErrBootDrive
+        jne CError
 
+
+        mov dl, al ; Won't work for hard drives (if C: = 0x02 as usual)
+        mov ax, 0x0301
+        mov cx, 1 ; Write to first sector (boot sector)
+        xor dh, dh
+        mov bx, ds
+        mov es, bx
+        mov bx, Buffer
+        int 0x13
+        mov dx, MsgErrDiskWrite
+        jc CError
         ret
 
 .BootHeader:
@@ -935,6 +949,8 @@ MsgExiting:       db 'Command interpreter exiting$'
 MsgErrDelete:     db 'Could not delete file$'
 MsgErrRename:     db 'Could not rename file$'
 MsgErrBootLarge:  db 'Boot sector too large$'
+MsgErrBootDrive:  db 'Sorry, will only write boot sector to drive 0 for now$'
+MsgErrDiskWrite:  db 'Error writing to disk$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'
@@ -960,3 +976,6 @@ CL_BufferInfo:    resb 2 ; For use with Int 21/AH=0Ah (must precede CL_Buffer)
 CL_Buffer:        resb CMDLINE_MAX
 
 Buffer:           resb BUFFER_SIZE
+
+; Keep at end
+ProgramEnd:

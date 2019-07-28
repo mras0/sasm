@@ -187,9 +187,11 @@ Fatal:
         pop bx
         call PutString
         call PutCrLf
-Halt:
-        hlt
-        jmp Halt
+        mov bx, MsgReboot
+        call PutString
+        xor ax, ax
+        int 0x16
+        int 0x19
 
 PutCrLf:
         mov al, 13
@@ -1428,6 +1430,8 @@ Int21Dispatch:
         je Int21_09
         cmp ah, 0x0A
         je Int21_0A
+        cmp ah, 0x19
+        je Int21_19
         cmp ah, 0x1A
         je Int21_1A
         cmp ah, 0x2F
@@ -1581,6 +1585,11 @@ Int21_0A:
         call PutChar
         mov al, 8
         jmp PutChar
+
+; Int 21/AH=19h Get current default drive
+Int21_19:
+        mov al, [cs:BootDrive]
+        iret
 
 ; Int 21/AH=1Ah Set disk transfer area address
 ; DS:DX points to DTA
@@ -2049,6 +2058,7 @@ MsgErrReadFile:  db 'Error reading from file', 0
 MsgErrFNotOpen:  db 'Invalid file handle', 0
 MsgErrRootFull:  db 'Root directory full', 0
 MsgErrCmdpRet:   db 'Command processor returned', 0
+MsgReboot:       db 'Press any key to reboot', 13, 10, 0
 CmdpFName:       db 'CMDP.COM', 0
 
 FreeSeg:         dw 0x0800
