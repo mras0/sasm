@@ -394,16 +394,14 @@ CommandDispatch:
         jne .NotInternal
         jmp CmdHd
 .NotHd:
-        cmp word [bx], 'IN'
-        jne .NotInsboot
-        cmp word [bx+2], 'SB'
+        cmp word [bx], 'PA'
+        jne .NotPause
+        cmp word [bx+2], 'US'
         jne .NotInternal
-        cmp word [bx+4], 'OO'
+        cmp word [bx+4], 'E'
         jne .NotInternal
-        cmp word [bx+6], 'T'
-        jne .NotInternal
-        jmp CmdInsBoot
-.NotInsboot:
+        jmp CWaitKey
+.NotPause:
         cmp word [bx], 'RE'
         jne .NotRen
         cmp word [bx+2], 'N'
@@ -799,92 +797,6 @@ CmdHd:
         call CloseInput
         ret
 
-BOOT_CODE_OFF equ 0x001E ; (BPB_OFFSET = 0x0B + sizeof(DOS 3.0 BPB))
-BOOT_MAX_SIZE equ 0x01E0 ; SECTOR_SIZE - (BOOT_CODE_OFF + 2) ; 2 for signature
-
-CmdInsBoot:
-        call CGetIn
-        call OpenInput
-        jc COpenInError
-
-        ; Ensure buffer is filled with NULs
-        push ds
-        pop es
-        mov di, Buffer
-        mov cx, BUFFER_SIZE
-        xor al, al
-        rep stosb
-
-        call ReadToBuffer
-        push ax
-        call CloseInput
-        pop ax
-        cmp ax, BOOT_MAX_SIZE
-        jb .SizeOK
-        mov dx, MsgErrBootLarge
-        jmp CError
-.SizeOK:
-        ; Move boot code to correct offset
-
-        mov bx, BOOT_CODE_OFF
-        mov di, Buffer
-        add di, bx
-        add di, ax
-        neg bx
-        mov cx, ax
-.Move:
-        dec di
-        mov al, [di+bx]
-        mov [di], al
-        dec cx
-        jnz .Move
-
-        ; Copy in jmp instruction, OEM name and BPB
-        mov di, Buffer
-        mov si, .BootHeader
-        mov cx, BOOT_CODE_OFF
-        rep movsb
-
-        ; Set boot signature
-        mov word [Buffer+510], 0xAA55
-
-        ; Figure out current drive
-        mov ah, 0x19
-        int 0x21
-        ; Too dangerous to allow other drives than 0 for now...
-        cmp al, 0
-        mov dx, MsgErrBootDrive
-        jne CError
-
-
-        mov dl, al ; Won't work for hard drives (if C: = 0x02 as usual)
-        mov ax, 0x0301
-        mov cx, 1 ; Write to first sector (boot sector)
-        xor dh, dh
-        mov bx, ds
-        mov es, bx
-        mov bx, Buffer
-        int 0x13
-        mov dx, MsgErrDiskWrite
-        jc CError
-        ret
-
-.BootHeader:
-        db 0xEB, 0x1C, 0x90 ; JMP SHORT BOOT_CODE_OFF; NOP
-        db 'SDOS 1.0'       ; OEM Name
-        ; 1440 FD BPB
-        dw 512              ; BytesPerSector
-        db 1                ; SectorsPerCluster
-        dw 1                ; ReservedSectors
-        db 2                ; NumFats
-        dw 224              ; MaxRootEntries
-        dw 2880             ; TotalSectors
-        db 0xF0             ; MediaDescriptor
-        dw 9                ; SectorsPerFat
-        dw 18               ; SectorsPerTrack
-        dw 2                ; NumHeads
-        dw 0                ; HiddenSectors
-
 CmdRen:
         call CGetInOut
         mov dx, InFileName
@@ -955,9 +867,6 @@ MsgErrNotImpl:    db 'Not implemented$'
 MsgExiting:       db 'Command interpreter exiting$'
 MsgErrDelete:     db 'Could not delete file$'
 MsgErrRename:     db 'Could not rename file$'
-MsgErrBootLarge:  db 'Boot sector too large$'
-MsgErrBootDrive:  db 'Sorry, will only write boot sector to drive 0 for now$'
-MsgErrDiskWrite:  db 'Error writing to disk$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'

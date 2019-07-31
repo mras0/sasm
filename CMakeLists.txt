@@ -37,7 +37,6 @@ SASM(boot.asm boot.bin)
 SASM(os.asm os.sys)
 SASM(cmdp.asm cmdp.com)
 SASM(uvi.asm uvi.com)
-SASM(tests/cmdline.asm cmdline.com)
 
 add_custom_target(sasm_com DEPENDS sasm.com)
 
@@ -50,13 +49,13 @@ add_custom_command(
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/os.sys"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
-    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/uvi.com"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/strap.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/boot.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/insboot.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/uvi.asm"
     COMMAND disktool "${DISK_IMG}" list
     DEPENDS
@@ -65,13 +64,13 @@ add_custom_command(
         "${CMAKE_CURRENT_BINARY_DIR}/os.sys"
         "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
         "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
-        "${CMAKE_CURRENT_BINARY_DIR}/uvi.com"
         "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
         "${CMAKE_CURRENT_SOURCE_DIR}/strap.bat"
         "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/boot.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/insboot.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/uvi.asm"
     )
 
@@ -80,9 +79,10 @@ add_custom_target(build_disk ALL DEPENDS "${DISK_IMG}")
 find_program(QEMU qemu-system-i386)
 if (QEMU)
     message("Found qemu: ${QEMU}")
+    set(QEMU_EXTRA_ARGS "" CACHE STRING "Extra arguments to give QEMU. E.g. \"-s -S\"")
     add_custom_target(
         qemu_test
-        COMMAND qemu-system-i386 -drive format=raw,file=\"${DISK_IMG}\",if=floppy #-s -S
+        COMMAND qemu-system-i386 -drive format=raw,file=\"${DISK_IMG}\",if=floppy ${QEMU_EXTRA_ARGS}
         DEPENDS ${DISK_IMG}
     )
 endif()
@@ -92,12 +92,10 @@ if (DOSBOX)
     message("Found dosbox: ${DOSBOX}")
     add_custom_target(
         test_cmdp
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" sasm.asm
         COMMAND ${DOSBOX} cmdp.com
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com" "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
     )
-
     add_custom_target(
         test_uvi
         COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm" sasm.asm
