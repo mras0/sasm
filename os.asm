@@ -87,9 +87,6 @@ Main:
         push cs
         pop ds
 
-        mov bx, MsgLoading
-        call PutString
-
         ; Set INT 20 vector
         mov word [0x80], Int20Dispatch
         mov word [0x82], 0x00
@@ -1366,8 +1363,6 @@ ReadFile:
         mov bx, MsgErrReadFile
         jmp Fatal
 
-.MsgUpdateBuffer: db 'TODO: Data left in file buffer...', 0
-
 ; Fill buffer of file in ES:BX (buffer assumed to be empty before)
 ; File pointer is updated
 FillFileBuffer:
@@ -1661,7 +1656,6 @@ Int21_3C:
         pop cx
         pop bx
         jmp IRETC
-.MsgF: db 'TODO: File exists in INT21/AH=3Ch', 0
 
 ; Int 21/AH=3Dh Open existing file
 ; AL    access and sharing mode
@@ -2045,7 +2039,6 @@ Int20Dispatch:
 ;; Constants and data
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-MsgLoading:      db 'Loading SDOS 1.0', 0
 MsgErrFatal:     db 'Fatal error: ', 0
 MsgErrNotSupp:   db 'Not implemented: INT 21h/AH=', 0
 MsgErrRead:      db 'Error reading from disk', 0
