@@ -24,8 +24,8 @@ FAT_RES_SECS     equ 1  ; Number of reserved sectors
 FAT_NUM_FATS     equ 2  ; Number of FATS
 FAT_SEC_CNT      equ 9  ; SectorsPerFat
 FAT_ROOT_SEC     equ 19 ; FAT_RES_SECS + FAT_NUM_FATS * FAT_SEC_CNT
-FAT_MAX_ROOTES   equ 14 ; ROOT_MAX_IDX / SECTOR_SIZE
-FAT_DATA_SEC     equ 33 ; FAT_ROOT_SEC + FAT_MAX_ROOTES
+FAT_MAX_ROOTS    equ 14 ; ROOT_MAX_IDX / SECTOR_SIZE
+FAT_DATA_SEC     equ 33 ; FAT_ROOT_SEC + FAT_MAX_ROOTS
 
 EOC_CLUSTER      equ 0xFFF ; End of cluster chain marker (other values might be present on disk)
 
@@ -146,7 +146,7 @@ Main:
         mov cx, FAT_SEC_CNT
         call ReadSectors
 
-        mov ax, FAT_MAX_ROOTES
+        mov ax, FAT_MAX_ROOTS
         mov bx, SECTOR_SIZE
         call MallocBytes
         mov [RootSeg], ax
@@ -156,7 +156,7 @@ Main:
         mov es, ax
         xor di, di
         mov ax, FAT_ROOT_SEC
-        mov cx, FAT_MAX_ROOTES
+        mov cx, FAT_MAX_ROOTS
         call ReadSectors
 
         call PutCrLf ; Terminate Loading... message
@@ -944,7 +944,7 @@ NewRootEntry:
         mov cx, 21 ; DIR_ENTRY_SIZE - 11
         rep stosb
         mov byte [es:bx+DIR_ENTRY_ATTR], 0x20 ; Set archive bit
-        mov word [es:bx+DIR_ENTRY_LCLUST], 0xFFF
+        mov word [es:bx+DIR_ENTRY_LCLUST], EOC_CLUSTER
         pop di
         pop si
         ret
@@ -1119,7 +1119,7 @@ WriteRootDir:
         mov es, ax
         xor di, di
         mov ax, FAT_ROOT_SEC
-        mov cx, FAT_MAX_ROOTES
+        mov cx, FAT_MAX_ROOTS
         jmp WriteSectors
 
 WriteFAT:

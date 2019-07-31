@@ -12,6 +12,13 @@ FF_FSIZE         equ 0x1A ; DWORD    File size
 FF_FNAME         equ 0x1E ; BYTE[13] File name and extension (ASCIIZ with dot)
 
 Main:
+        ; Clear BSS
+        mov di, BssStart
+        mov cx, ProgramEnd
+        sub cx, di
+        xor al, al
+        rep movsb
+
         ; Free unused memory
 
         cli
@@ -955,6 +962,8 @@ MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'
 Autoexec:         db 'AUTOEXEC.BAT', 0
+
+BssStart:
 
 InputFile:        resw 1
 OutputFile:       resw 1
