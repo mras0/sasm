@@ -85,13 +85,7 @@ RunCommandFile:
         jb .CharLoop
         mov byte [si+0xFFFF], 0x0D
 .Execute:
-        pusha
-        push ds
-        push es
         call CommandDispatch
-        pop es
-        pop ds
-        popa
         jmp .LineLoop
 .Done:
         mov byte [si], 0x0D
@@ -318,6 +312,15 @@ WriteFromBuffer:
         jmp Error
 
 CommandDispatch:
+        pusha
+        push ds
+        push es
+        call .RealCD
+        pop es
+        pop ds
+        popa
+        ret
+.RealCD:
         mov [CmdOldSp], sp ; Save SP at entry (to allow easy exit)
         mov si, CL_Buffer
 .SkipSpace:
