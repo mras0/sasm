@@ -67,6 +67,7 @@ struct DirEntry {
 #define CLUSTER_SIZE        (DiskBPB.BytesPerSector * DiskBPB.SectorsPerCluster)
 
 #define BOOT_CODE_OFFSET    (BPB_OFFSET + sizeof(struct BPB))
+#define MAX_BOOT_CODE_SIZE  (510 - BOOT_CODE_OFFSET)
 
 static FILE* DiskImg;
 static struct BPB DiskBPB;
@@ -298,6 +299,51 @@ void ShowFATInfo(void)
     printf("\n");
 }
 
+
+const U1 DefaultBootCode[] = {
+                        //        org 0x7c1e
+  0x6a,0x00,            //        push 0
+  0x1f,                 //        pop ds
+  0xbe,0x37,0x7c,       //        mov si,Msg
+  0xb4,0x0e,            //        mov ah,0x0e
+  0xac,                 //.L:     lodsb
+  0x20,0xc0,            //        and al,al
+  0x0f,0x84,0x04,0x00,  //        jz .D
+  0xcd,0x10,            //        int 0x10
+  0xeb,0xf5,            //        jmp .L
+  0x31,0xc0,            //.D:     xor ax,ax
+  0xcd,0x16,            //        int 0x16
+  0xcd,0x19,            //        int 0x19
+//Msg: db 'Non-bootable SDOS disk. Press any key to reboot.',0
+  0x4e,0x6f,0x6e,0x2d,0x62,0x6f,0x6f,0x74,0x61,0x62,0x6c,0x65,
+  0x20,0x53,0x44,0x4f,0x53,0x20,0x64,0x69,0x73,0x6b,0x2e,0x20,
+  0x50,0x72,0x65,0x73,0x73,0x20,0x61,0x6e,0x79,0x20,0x6b,0x65,
+  0x79,0x20,0x74,0x6f,0x20,0x72,0x65,0x62,0x6f,0x6f,0x74,0x2e,
+  0x00
+};
+const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '0' };
+
+void InstallBootLoader(const U1* Code, U2 CodeSize)
+{
+    if (CodeSize > MAX_BOOT_CODE_SIZE) {
+        Error("CodeSize %u exceeds max size %u\n", CodeSize, MAX_BOOT_CODE_SIZE);
+    }
+    U1 BootSect[512];
+    memset(BootSect, 0, sizeof(BootSect));
+
+    // Jump past BPB
+    BootSect[0] = 0xEB;
+    BootSect[1] = BPB_OFFSET + sizeof(struct BPB) - 2;
+    BootSect[2] = 0x90;
+    memcpy(BootSect + 3, OEMName, 8);
+    memcpy(BootSect + BPB_OFFSET, &DiskBPB, sizeof(DiskBPB));
+    memcpy(BootSect + BOOT_CODE_OFFSET, Code, CodeSize);
+    BootSect[510] = 0x55;
+    BootSect[511] = 0xAA;
+    WriteSector(0, BootSect);
+}
+
+
 void CreateDisk(void)
 {
     // Create 1440 FD
@@ -312,30 +358,23 @@ void CreateDisk(void)
     DiskBPB.SectorsPerTrack   = 18;
     DiskBPB.NumHeads          = 2;
 
-    static const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '0' };
-    U1 BootSect[512];
-    memset(BootSect, 0, sizeof(BootSect));
+
+    U1 Zeros[512];
+    memset(Zeros, 0, sizeof(Zeros));
 
     // Make sure disk is fully created
     for (U2 i = 0; i < DiskBPB.TotalSectors; ++i) {
-        WriteSector(i, BootSect);
+        WriteSector(i, Zeros);
     }
 
-    // Jump past BPB
-    BootSect[0] = 0xEB;
-    BootSect[1] = BPB_OFFSET + sizeof(struct BPB) - 2; 
-    BootSect[2] = 0x90;
-    memcpy(BootSect + 3, OEMName, 8);
-    memcpy(BootSect + BPB_OFFSET, &DiskBPB, sizeof(DiskBPB));
-    BootSect[510] = 0x55;
-    BootSect[511] = 0xAA;
+    // For the BPB to be recognized it seems like the disk has to
+    // be bootable? (At least with FreeDOS 1.2)
+    InstallBootLoader(DefaultBootCode, sizeof(DefaultBootCode));
 
     AllocFAT();
     memset(FAT, 0, DiskBPB.SectorsPerFat * DiskBPB.BytesPerSector);
     SetFATEntry(0, 0xFF0);
     SetFATEntry(1, 0xFFF);
-
-    WriteSector(0, BootSect);
 }
 
 void FlushFAT(void)
@@ -446,13 +485,7 @@ void UpdateBootLoader(const char* BootFileName)
 {
     U4 size;
     U1* data = ReadFile(BootFileName, &size);
-    if (size > 510 - BOOT_CODE_OFFSET) {
-        Error("Size of boot sector %u is too large", size);
-    }
-    fseek(DiskImg, BOOT_CODE_OFFSET, SEEK_SET);
-    if (!fwrite(data, size, 1, DiskImg) || ferror(DiskImg)) {
-        Error("Disk writing to disk image");
-    }
+    InstallBootLoader(data, size);
     free(data);
 }
 
