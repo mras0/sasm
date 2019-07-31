@@ -206,7 +206,7 @@ ReadSectors:
         mov si, MsgDiskErr
         jmp Error
 
-MsgLoading:    db 'Loading SDOS 1.0...', 0
+MsgLoading:    db 'Loading SDOS 1.0', 0
 MsgDiskErr:    db 'Error reading from disk', 0
 MsgBootDskErr: db 'Could not load OS.SYS', 0
 MsgReboot:     db 13, 10, 'Press any key to reboot', 13, 10, 0

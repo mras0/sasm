@@ -1,5 +1,7 @@
         org 0x0500
 
+; TODO: Should probably switch to O/S stack when processing syscalls
+
 SECTOR_SIZE      equ 512
 
 BPB_SECPERTRACK  equ 0x0D
@@ -75,6 +77,20 @@ Main:
         ; Save boot drive (passed by boot loader)
         mov [BootDrive], dl
 
+        ; Move stack to free up unused memory
+        cli
+        mov ax, ProgramEnd
+        add ax, 512 ; O/S stack size
+        mov sp, ax
+        sti
+        add ax, 15
+        shr ax, 4
+        mov [FreeSeg], ax
+
+        ; Add dot to loading message
+        mov al, '.'
+        call PutChar
+
         ; Copy BPB from boot sector
         push ds
         pop es
@@ -147,6 +163,10 @@ Main:
         mov bx, SECTOR_SIZE
         call MallocBytes
         mov [RootSeg], ax
+
+        ; Add dot to loading message
+        mov al, '.'
+        call PutChar
 
         ; Read root directory
         mov ax, [RootSeg]
@@ -2054,10 +2074,9 @@ MsgErrCmdpRet:   db 'Command processor returned', 0
 MsgReboot:       db 'Press any key to reboot', 13, 10, 0
 CmdpFName:       db 'CMDP.COM', 0
 
-FreeSeg:         dw 0x0800
-
 BootDrive:       resb 1
 BPB:             resb BPB_SIZE
+FreeSeg:         resw 1
 SectorBufSeg:    resw 1
 FATSeg:          resw 1
 FileInfoSeg:     resw 1
@@ -2068,3 +2087,5 @@ LastProcStack:   resw 2  ; Stack before StartProgram
 DTA:             resw 2  ; Disk Transfer Area (defaults to PSP:80h)
 
 CurFileName:     resb 11
+
+ProgramEnd:
