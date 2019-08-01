@@ -1,7 +1,7 @@
         org 0x100
 
 BUFFER_SIZE       EQU 512
-STACK_SIZE        EQU 256
+STACK_SIZE        EQU 512
 CMDLINE_MAX       EQU 0x7F ; Including terminating CR
 
 ; Offsets into FindFile structure
@@ -27,8 +27,11 @@ Main:
         and bx, 0xFFF0
         add bx, STACK_SIZE
         mov sp, bx
-        sti
         shr bx, 4
+        mov ax, ds
+        add bx, ax
+        mov [FirstFreeSeg], bx
+        sti
         ; Free remaining memory
         mov ah, 0x4a
         int 0x21
@@ -774,21 +777,201 @@ CmdEcho:
         call PutCrLf
         ret
 
+; Offset from Buffer (containing boot sector)
+NUM_SECTORS   equ 0x13
+SEC_PER_FAT   equ 0x16
+SEC_PER_TRACK equ 0x18
+NUM_HEADS     equ 0x1a
+
 CmdDiskCopy:
-        mov ax, ProgramEnd
-        add ax, 511
-        and ax, 0xfe00
-        shr ax, 4
-        mov cx, [2]
-        and cx, 0xffe0
-        sub cx, ax
+        ;
+        ; Figure out current drive
+        ;
+        mov ah, 0x19
+        int 0x21
+        ; Too dangerous to allow other drives than 0 for now...
+        cmp al, 0
+        mov dx, MsgErrDrive
+        jne CError
+
+        ;
+        ; Read boot sector to Buffer
+        ;
+
+        xor dh, dh
+        mov dl, al
+        push ds
+        pop es
+        mov bx, Buffer
+        mov cx, 1
+        mov ax, 0x0201
+        int 0x13
+        jnc .ReadBootOK
+        mov dx, MsgErrDiskRead
+        jmp CError
+.ReadBootOK:
+
+        mov di, [FirstFreeSeg]
+        add di, 0x001f
+        and di, 0xffe0
+        mov si, [2]
+        and si, 0xffe0
+        sub si, di
+        shr si, 5
+        ; DI: Start segment
+        ; SI: Number of sectors that can be stored
+        ; BX: Remaining sectors
+        ; CX/DX: Current CHS and drive
+        mov bx, [Buffer+NUM_SECTORS]
+.CopyLoop:
+        mov ax, bx
+        cmp ax, si
+        jbe .Read
+        mov ax, si
+.Read:
+        ; AX: Number of sectors to copy this time round
+        mov bp, .DoRead
+        call .Diskcmd
+        stc
+        call .DiskChange
+        mov bp, .DoWrite
+        call .Diskcmd
+        clc
+        call .DiskChange
+        call .AddSectors
+        sub bx, ax
+        jnz .CopyLoop
+
+        ret
+.DiskCmd:
+        ; Call BP for AX sectors
+        pusha
+.SectorLoop:
+        ; How many sectors can we read w/o crossing 64K boundary?
+        mov bx, 0x1000
+        mov si, di
+        and si, 0x0fff
+        sub bx, si
+        shr bx, 5
+        cmp bx, ax
+        jbe .CntOk
+        mov bx, ax
+.CntOK:
+        ; Limit to a track
+        cmp bx, [Buffer+SEC_PER_TRACK]
+        jbe .CntOK2
+        mov bx, [Buffer+SEC_PER_TRACK]
+.CntOK2:
+        pusha
+        call bp
+        popa
+        push ax
+        mov ax, bx
+        call .AddSectors
+        pop ax
+        sub ax, bx
+        jz .Done
+        shl bx, 5
+        add di, bx
+        jmp .SectorLoop
+.Done:
+        popa
+        ret
+.AddSectors:
+        ; Add AX sectors to CHS in CX/DX
+        ; CH=cyl, DH=head, CL=sec
+        push ax
+        push bx
+        push si
+        push di
+        mov si, dx
+        xor dx, dx
+        mov di, [Buffer+SEC_PER_TRACK]
+        dec al
+        add al, cl
+        adc ah, 0
+        div di
+        ; DL = sector count
+        ; AX = head count
+        mov cl, dl
+        inc cl
+        mov dx, si
+        add al, dh
+        adc ah, 0
+        add di, ax
+        xor dx, dx
+        mov di, [Buffer+NUM_HEADS]
+        div di
+        ; DL = head count
+        ; AX = cylinder count
+        add ch, al
+        mov ax, si
+        mov dh, dl
+        mov dl, al
+        pop di
+        pop si
+        pop bx
+        pop ax
+        ret
+.DoRead:
+        pusha
+        push dx
+        push cx
+        mov ax, bx
         call PutHexWord
-        mov al, ' '
-        call PutChar
-        mov ax, cx
+        mov dx, .MsgRead
+        mov ah, 0x09
+        int 0x21
+        mov ax, di
+        call PutHexWord
+        mov ah, 2
+        mov dl, ' '
+        int 0x21
+        pop ax
+        call PutHexWord
+        mov ah, 2
+        mov dl, ':'
+        int 0x21
+        pop ax
         call PutHexWord
         call PutCrLf
+        popa
+        mov si, MsgErrDiskRead
+        mov ah, 0x02
+.RWCommon:
+        mov al, bl
+        mov es, di
+        xor bx, bx
+        int 0x13
+        jnc .RWOK
+        mov dx, si
+        jmp CError
+.RWOK:
         ret
+.MsgRead: db ' sectors to read to $'
+.DoWrite:
+        pusha
+        mov dx, .MsgWrite
+        mov ah, 9
+        int 0x21
+        popa
+        mov si, MsgErrDiskWrite
+        mov ah, 0x03
+        jmp .RWCommon
+.MsgWrite: db 'Writing...',13,10,'$'
+.DiskChange:
+        pusha
+        mov dx, .MsgInsertSrc
+        jnc .PDC
+        mov dx, .MsgInsertDst
+.PDC:
+        mov ah, 9
+        int 0x21
+        call CWaitKey
+        popa
+        ret
+.MsgInsertSrc: db 'Insert source disk $'
+.MsgInsertDst: db 'Insert destination disk $'
 
 CmdExit:
         mov dx, MsgExiting
@@ -888,6 +1071,9 @@ MsgErrInvArgs:    db 'Invalid argument(s)$'
 MsgExiting:       db 'Command interpreter exiting$'
 MsgErrDelete:     db 'Could not delete file$'
 MsgErrRename:     db 'Could not rename file$'
+MsgErrDrive:      db 'Sorry DISKCOPY will only try to work with drive 0 for now$'
+MsgErrDiskRead:   db 'Error reading from disk$'
+MsgErrDiskWrite:  db 'Error writing to disk$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'
@@ -906,6 +1092,8 @@ PB_ArgPtr:        resw 2 ; Pointer to arguments
 InFileName:       resb 12
 InFileNameEnd:    resb 1
 OutFileName:      resb 13
+
+FirstFreeSeg:     resw 1
 
 CmdOldSp:         resw 1 ; SP on entry to CommandDispatch
 
