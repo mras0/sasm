@@ -75,7 +75,6 @@ RunCommandFile:
 .ReadOK:
         and ax, ax
         jz .Done
-.NotEOF:
         lodsb
         cmp al, 0x0D
         je .Execute
@@ -341,7 +340,6 @@ CommandDispatch:
         cmp al, '0' ; Characters less than 0x30 cannot be part of legal filename
         jb .CmdDone ; In particular this will stop on '.', '/' and CR
         call CToUpper
-.StoreCmd:
         stosb
         dec cl
         jnz .CopyCommand
@@ -372,8 +370,16 @@ CommandDispatch:
         cmp word [bx], 'DI'
         jne .NotDir
         cmp word [bx+2], 'R'
+        je CmdDir
+        cmp word [bx+2], 'SK'
         jne .NotInternal
-        jmp CmdDir
+        cmp word [bx+4], 'CO'
+        jne .NotInternal
+        cmp word [bx+6], 'PY'
+        jne .NotInternal
+        cmp byte [bx+8], 0
+        jne .NotInternal
+        jmp CmdDiskCopy
 .NotDir:
         cmp word [bx], 'EC'
         jne .NotEcho
@@ -490,7 +496,6 @@ CommandDispatch:
 
         ; TODO: Check file extension....
         ; Run Program
-.TryRun:
         mov word [PB_ArgPtr], si
         mov ax, ds
         mov es, ax
@@ -501,7 +506,6 @@ CommandDispatch:
         int 0x21
         jnc .Ret
 
-.BadCommand:
         mov si, InFileName
 .BCP:
         lodsb
@@ -770,6 +774,22 @@ CmdEcho:
         call PutCrLf
         ret
 
+CmdDiskCopy:
+        mov ax, ProgramEnd
+        add ax, 511
+        and ax, 0xfe00
+        shr ax, 4
+        mov cx, [2]
+        and cx, 0xffe0
+        sub cx, ax
+        call PutHexWord
+        mov al, ' '
+        call PutChar
+        mov ax, cx
+        call PutHexWord
+        call PutCrLf
+        ret
+
 CmdExit:
         mov dx, MsgExiting
         mov ah, 9
@@ -791,7 +811,6 @@ CmdHd:
         jz .Done
         mov cx, ax
         mov si, Buffer
-.hd:
         call HexDump
         call CWaitKey
         jc .Done
@@ -866,7 +885,6 @@ MsgErrRead:       db 'Error reading from file$'
 MsgErrWrite:      db 'Error writing to file$'
 MsgErrBadCommand: db 'Unknown command$'
 MsgErrInvArgs:    db 'Invalid argument(s)$'
-MsgErrNotImpl:    db 'Not implemented$'
 MsgExiting:       db 'Command interpreter exiting$'
 MsgErrDelete:     db 'Could not delete file$'
 MsgErrRename:     db 'Could not rename file$'
@@ -879,7 +897,6 @@ BssStart:
 
 InputFile:        resw 1
 OutputFile:       resw 1
-CommandFile:      resw 1
 
 ParameterBlock:   resw 1 ; Segment of environment to copy (0 = use caller's)
 PB_ArgPtr:        resw 2 ; Pointer to arguments

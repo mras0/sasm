@@ -98,6 +98,13 @@ K_PGDOWN    equ 0x5100
 K_DELETE    equ 0x5300
 
 Start:
+        ; Clear BSS
+        mov di, BssBegin
+        mov cx, BssEnd
+        sub cx, di
+        xor al, al
+        rep stosb
+
         ; Grab filename from command line
         mov di, FileName
         mov si, 0x80
@@ -523,49 +530,6 @@ ReadKey:
         int 0x16
         ret
 
-; Put character in AL
-PutChar:
-        pusha
-        mov dl, al
-        mov ah, 2
-        int 0x21
-        popa
-        ret
-
-PutCrLf:
-        mov al, 13
-        call PutChar
-        mov al, 10
-        call PutChar
-        ret
-
-; Print dword in DX:AX
-PutHexDword:
-        push ax
-        mov ax, dx
-        call PutHexWord
-        mov al, ':'
-        call PutChar
-        pop ax
-; Print word in AX
-PutHexWord:
-        push ax
-        mov al, ah
-        call PutHexByte
-        pop ax
-PutHexByte:
-        push ax
-        shr al, 4
-        call PutHexDigit
-        pop ax
-PutHexDigit:
-        and al, 0x0f
-        add al, '0'
-        cmp al, '9'
-        jbe PutChar
-        add al, 7
-        jmp PutChar
-
 ; Convert word in AX to decimal representation (ASCIIZ) store in DI
 ; On return DI points to the first character to print
 CvtWordDec:
@@ -652,144 +616,187 @@ ConvertDwordDec:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Debug helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-PrintLineBuf:
-        pusha
-        push es
-        mov bx, [FirstLine]
-        mov ax, [FirstLine+2]
-        mov es, ax
-.Print:
-        pusha
-        mov dx, es
-        mov ax, bx
-        call PutHexDword
-        mov al, ' '
-        call PutChar
-        popa
-        pusha
-        mov ax, [es:bx+LINEH_LENGTH]
-        call PutHexWord
-        mov al, ' '
-        call PutChar
-        popa
-
-        mov cx, [es:bx+LINEH_LENGTH]
-        and cx, cx
-        jz .EmptyLine
-        mov si, bx
-        add si, LINEH_SIZE
-.PrintChar:
-        mov al, [es:si]
-        call PutChar
-        inc si
-        dec cx
-        jnz .PrintChar
-.EmptyLine:
-        call PutCrLf
-        mov ax, [es:bx+LINEH_NEXT]
-        mov cx, [es:bx+LINEH_NEXT+2]
-        mov bx, ax
-        mov es, cx
-        or ax, cx ; NULL?
-        jnz .Print
-        pop es
-        popa
-        ret
-
-PrintHeap:
-        pusha
-        push es
-        mov di, [HeapFree+2]
-        mov es, di
-        mov di, [HeapFree]
-        jmp .Check
-.PrintHeap:
-        pusha
-        mov dx, es
-        mov ax, di
-        call PutHexDword
-        mov al, ' '
-        call PutChar
-        popa
-
-        pusha
-        mov ax, [es:di+HEAPN_LENGTH]
-        call PutHexWord
-        mov al, ' '
-        call PutChar
-        call PutChar
-        popa
-
-        pusha
-        mov dx, [es:di+HEAPN_PREV+2]
-        mov ax, [es:di+HEAPN_PREV]
-        call PutHexDword
-        mov al, ' '
-        call PutChar
-        popa
-
-        mov ax, [es:di+HEAPN_NEXT+2]
-        mov di, [es:di+HEAPN_NEXT]
-        mov es, ax
-
-        pusha
-        mov dx, es
-        mov ax, di
-        call PutHexDword
-        call PutCrLf
-        popa
-
-.Check:
-        mov ax, es
-        or ax, di
-        jnz .PrintHeap
-        pop es
-        popa
-        ret
-
-PrintRegsExit:
-        pusha
-        push ds
-        push es
-
-        push cs
-        pop ds
-
-        call RestoreVideoMode
-
-        ; [bp+0x12] ax
-        ; [bp+0x10] cx
-        ; [bp+0x0e] dx
-        ; [bp+0x0c] bx
-        ; [bp+0x0a] old sp
-        ; [bp+0x08] bp
-        ; [bp+0x06] si
-        ; [bp+0x04] di
-        ; [bp+0x02] ds
-        ; [bp+0x00] es
-        mov bp, sp
-        mov di, 0x12
-        mov si, .Names
-.L:
-        lodsw
-        call PutChar
-        mov al, ah
-        call PutChar
-        mov al, ' '
-        call PutChar
-        mov ax, [bp+di]
-        call PutHexWord
-        mov al, ' '
-        call PutChar
-        sub di, 2
-        jnc .L
-
-        mov ax, 0x4cff
-        int 0x21
-.Names:
-dw 'AX', 'CX', 'DX', 'BX'
-dw 'SP', 'BP', 'SI', 'DI'
-dw 'DS', 'ES'
+;; Put character in AL
+;PutChar:
+;        pusha
+;        mov dl, al
+;        mov ah, 2
+;        int 0x21
+;        popa
+;        ret
+;
+;PutCrLf:
+;        mov al, 13
+;        call PutChar
+;        mov al, 10
+;        call PutChar
+;        ret
+;
+;; Print dword in DX:AX
+;PutHexDword:
+;        push ax
+;        mov ax, dx
+;        call PutHexWord
+;        mov al, ':'
+;        call PutChar
+;        pop ax
+;; Print word in AX
+;PutHexWord:
+;        push ax
+;        mov al, ah
+;        call PutHexByte
+;        pop ax
+;PutHexByte:
+;        push ax
+;        shr al, 4
+;        call PutHexDigit
+;        pop ax
+;PutHexDigit:
+;        and al, 0x0f
+;        add al, '0'
+;        cmp al, '9'
+;        jbe PutChar
+;        add al, 7
+;        jmp PutChar
+;
+;PrintLineBuf:
+;        pusha
+;        push es
+;        mov bx, [FirstLine]
+;        mov ax, [FirstLine+2]
+;        mov es, ax
+;.Print:
+;        pusha
+;        mov dx, es
+;        mov ax, bx
+;        call PutHexDword
+;        mov al, ' '
+;        call PutChar
+;        popa
+;        pusha
+;        mov ax, [es:bx+LINEH_LENGTH]
+;        call PutHexWord
+;        mov al, ' '
+;        call PutChar
+;        popa
+;
+;        mov cx, [es:bx+LINEH_LENGTH]
+;        and cx, cx
+;        jz .EmptyLine
+;        mov si, bx
+;        add si, LINEH_SIZE
+;.PrintChar:
+;        mov al, [es:si]
+;        call PutChar
+;        inc si
+;        dec cx
+;        jnz .PrintChar
+;.EmptyLine:
+;        call PutCrLf
+;        mov ax, [es:bx+LINEH_NEXT]
+;        mov cx, [es:bx+LINEH_NEXT+2]
+;        mov bx, ax
+;        mov es, cx
+;        or ax, cx ; NULL?
+;        jnz .Print
+;        pop es
+;        popa
+;        ret
+;
+;PrintHeap:
+;        pusha
+;        push es
+;        mov di, [HeapFree+2]
+;        mov es, di
+;        mov di, [HeapFree]
+;        jmp .Check
+;.PrintHeap:
+;        pusha
+;        mov dx, es
+;        mov ax, di
+;        call PutHexDword
+;        mov al, ' '
+;        call PutChar
+;        popa
+;
+;        pusha
+;        mov ax, [es:di+HEAPN_LENGTH]
+;        call PutHexWord
+;        mov al, ' '
+;        call PutChar
+;        call PutChar
+;        popa
+;
+;        pusha
+;        mov dx, [es:di+HEAPN_PREV+2]
+;        mov ax, [es:di+HEAPN_PREV]
+;        call PutHexDword
+;        mov al, ' '
+;        call PutChar
+;        popa
+;
+;        mov ax, [es:di+HEAPN_NEXT+2]
+;        mov di, [es:di+HEAPN_NEXT]
+;        mov es, ax
+;
+;        pusha
+;        mov dx, es
+;        mov ax, di
+;        call PutHexDword
+;        call PutCrLf
+;        popa
+;
+;.Check:
+;        mov ax, es
+;        or ax, di
+;        jnz .PrintHeap
+;        pop es
+;        popa
+;        ret
+;
+;PrintRegsExit:
+;        pusha
+;        push ds
+;        push es
+;
+;        push cs
+;        pop ds
+;
+;        call RestoreVideoMode
+;
+;        ; [bp+0x12] ax
+;        ; [bp+0x10] cx
+;        ; [bp+0x0e] dx
+;        ; [bp+0x0c] bx
+;        ; [bp+0x0a] old sp
+;        ; [bp+0x08] bp
+;        ; [bp+0x06] si
+;        ; [bp+0x04] di
+;        ; [bp+0x02] ds
+;        ; [bp+0x00] es
+;        mov bp, sp
+;        mov di, 0x12
+;        mov si, .Names
+;.L:
+;        lodsw
+;        call PutChar
+;        mov al, ah
+;        call PutChar
+;        mov al, ' '
+;        call PutChar
+;        mov ax, [bp+di]
+;        call PutHexWord
+;        mov al, ' '
+;        call PutChar
+;        sub di, 2
+;        jnc .L
+;
+;        mov ax, 0x4cff
+;        int 0x21
+;.Names:
+;dw 'AX', 'CX', 'DX', 'BX'
+;dw 'SP', 'BP', 'SI', 'DI'
+;dw 'DS', 'ES'
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Commands
@@ -1235,9 +1242,6 @@ GotoLine:
         mov byte [NeedUpdate], 1
         call MoveFirstNBlank
         jmp PlaceCursor
-.Err:
-        add sp, 2
-        ret
 
 GoCommand:
         call ReadKey
@@ -1735,7 +1739,6 @@ ExWrite:
         jc .WriteError
         inc word [NumLines]
         pop bx
-.WriteOK:
         call LoadLineNext
         jz .WriteDone
         call LLFromDXAX
@@ -2566,13 +2569,6 @@ DrawLines:
 ClearStatusLine:
         mov di, SLINE_OFFSET
         mov cx, DISP_LINE_WORDS
-        mov ax, 0x0720
-        rep stosw
-        ret
-
-ClearSLineCnt:
-        mov di, SLINE_CNT_OFF
-        mov cx, 6
         mov ax, 0x0720
         rep stosw
         ret

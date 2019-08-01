@@ -237,11 +237,11 @@ PutString:
         jmp PutString
 
 ; Print word in AX
-PutHexWord:
-        push ax
-        mov al, ah
-        call PutHexByte
-        pop ax
+;PutHexWord:
+;        push ax
+;        mov al, ah
+;        call PutHexByte
+;        pop ax
 PutHexByte:
         push ax
         shr al, 4
@@ -254,59 +254,6 @@ PutHexDigit:
         jbe PutChar
         add al, 7
         jmp PutChar
-
-; Dump CX bytes from DS:SI
-HexDump:
-        push si
-.Main:
-        mov bx, cx
-        cmp bx, 16
-        jbe .P
-        mov bx, 16
-.P:
-        sub cx, bx
-        mov dx, bx
-        xor bx, bx
-.H:
-        mov al, [si+bx]
-        call PutHexByte
-        mov al, ' '
-        call PutChar
-        inc bl
-        cmp bl, dl
-        jne .H
-.S:
-        cmp bl, 16
-        je .Cs
-        mov al, ' '
-        call PutChar
-        call PutChar
-        call PutChar
-        inc bl
-        jmp .S
-.Cs:
-        xor bx, bx
-.C:
-        mov al, [si+bx]
-        cmp al, ' '
-        jb .Rep
-        cmp al, 0x7f
-        ja .Rep
-        jmp .Print
-.Rep:
-        mov al, '.'
-.Print:
-        call PutChar
-        inc bl
-        cmp bl, dl
-        jne .C
-        add si, dx
-        call PutCrLf
-        and cx, cx
-        jnz .Main
-        pop si
-        ret
-
 
 ; Convert LBA in AX to CHS in CX/DX
 LBAtoCHS:
@@ -969,59 +916,6 @@ NewRootEntry:
         mov bx, MsgErrRootFull
         jmp Fatal
 
-; Print directory entry in ES:BX
-PrintDirEntry:
-        push si
-        mov cl, 8
-        mov si, bx
-.Pr:
-        mov al, [es:si]
-        cmp al, ' '
-        je .PrintDot
-        call PutChar
-        inc si
-        dec cl
-        jnz .Pr
-.PrintDot:
-        mov ch, cl
-        mov al, '.'
-        call PutChar
-        mov si, bx
-        add si, 8
-        mov cl, 3
-.Pr2:
-        mov al, [es:si]
-        cmp al, ' '
-        je .PrintDone
-        call PutChar
-        inc si
-        dec cl
-        jnz .Pr2
-.PrintDone:
-        add cl, ch
-        inc cl
-        mov al, ' '
-.Pad:
-        call PutChar
-        dec cl
-        jnz .Pad
-.Info:
-        mov ax, [es:bx+DIR_ENTRY_FSIZE+2]
-        call PutHexWord
-        mov ax, [es:bx+DIR_ENTRY_FSIZE]
-        call PutHexWord
-        mov al, ' '
-        call PutChar
-        mov al, [es:bx+DIR_ENTRY_ATTR]
-        call PutHexByte
-        mov al, ' '
-        call PutChar
-        mov ax, [es:bx+DIR_ENTRY_LCLUST]
-        call PutHexWord
-        call PutCrLf
-        pop si
-        ret
-
 ; Returns size from file info at ES:BX in DX:AX
 ; Other registers preserved
 GetFileSize:
@@ -1035,27 +929,6 @@ GetFileSize:
         mov dx, [es:bx+DIR_ENTRY_FSIZE+2]
         pop bx
         pop es
-        ret
-
-
-; Print root directory
-PrintRootDir:
-        mov bx, [cs:RootSeg]
-        mov es, bx
-        xor bx, bx
-.L:
-        mov al, [es:bx]
-        cmp al, 0
-        jz .Skip
-        cmp al, ENTRY_DELETED
-        jz .Skip
-        push bx
-        call PrintDirEntry
-        pop bx
-.Skip:
-        add bx, DIR_ENTRY_SIZE
-        cmp bx, ROOT_MAX_IDX
-        jb .L
         ret
 
 ; Open file from directory entry in ES:BX
@@ -1379,9 +1252,6 @@ ReadFile:
         mov ax, ERR_INVALID_HAND
         stc
         ret
-.Err:
-        mov bx, MsgErrReadFile
-        jmp Fatal
 
 ; Fill buffer of file in ES:BX (buffer assumed to be empty before)
 ; File pointer is updated
@@ -1476,7 +1346,7 @@ Int21Dispatch:
         cmp ah, 0x56
         je Int21_56
 
-Int21_NotImpl:
+        ; Unimplemented syscall
         push ax
         xor bx, bx
         mov ds, bx
@@ -2067,7 +1937,6 @@ MsgErrOOM:       db 'Out of memory', 0
 MsgErrCluster:   db 'Cluster invalid', 0
 MsgErrCmdNotF:   db 'Command processor not found', 0
 MsgErrFileMax:   db 'Too many open files', 0
-MsgErrReadFile:  db 'Error reading from file', 0
 MsgErrFNotOpen:  db 'Invalid file handle', 0
 MsgErrRootFull:  db 'Root directory full', 0
 MsgErrCmdpRet:   db 'Command processor returned', 0
