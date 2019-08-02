@@ -104,6 +104,13 @@ if (DOSBOX)
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/uvi.com"
     )
+    add_custom_target(
+        test_sasm
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/tests/t22.asm" a.asm
+        COMMAND ${DOSBOX} sasm.com
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
+    )
 endif()
 
 if (MSVC)

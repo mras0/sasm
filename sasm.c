@@ -778,7 +778,7 @@ void OutputMR(U1 inst)
     if (ExplicitSize != NO_SIZE && ExplicitSize != OperandValue/8) {
         Error("Invalid register sizes");
     }
-    OutputByte(inst | (OperandValue/8 ? 1 : 0)); // 16 or 8-bit?
+    OutputByte(inst | (OperandValue/8 == 1 ? 1 : 0)); // 16 or 8-bit?
     OutputModRM(OperandValue&7);
 }
 
@@ -848,19 +848,13 @@ void InstMOV(U1 arg)
         } else {
             assert(OperandType < OP_REG);
             // MOV reg, mem
-            if (OperandLValue >= R_ES) {
-                Error("TODO: 0x8E in MOV Sreg, mem16");
-            }
-            OutputRM(0x8A);
+            OutputRM(OperandLValue >= R_ES ? 0x8E : 0x8A);
         }
     } else if (OperandLType < OP_REG) {
         // LHS is memory
         if (OperandType == OP_REG) {
             // MOV mem, reg
-            if (OperandValue >= R_ES) {
-                Error("Not implemented: MOV mem, Sreg");
-            }
-            OutputMR(0x88);
+            OutputMR(OperandValue >= R_ES ? 0x8C : 0x88);
         } else if (OperandType == OP_LIT) {
             // mov mem, lit
             OutputMImm(0xC6, 0);
@@ -1025,11 +1019,22 @@ void InstROT(U1 r)
             }
             return;
         }
-    } else if (OperandLType == OP_REG && OperandType == OP_LIT) {
-        const bool is16bit = OperandLValue/8==1;
-        OutputByte(0xc0 | (is16bit?1:0));
-        OutputByte(0xc0 | (r<<3) | (OperandLValue&7));
-        OutputImm8();
+    } else if (OperandType == OP_LIT) {
+        const U1 inst = OperandValue == 1 ? 0xD0 : 0xC0;
+        if (OperandLType == OP_REG) {
+            const bool is16bit = OperandLValue/8==1;
+            OutputByte(inst | (is16bit?1:0));
+            OutputByte(0xc0 | (r<<3) | (OperandLValue&7));
+        } else {
+            if (ExplicitSize == NO_SIZE) {
+                Error("Operand size not specified");
+            }
+            OutputByte(inst | ExplicitSize);
+            OutputModRM(r);
+        }
+        if (OperandValue != 1) {
+            OutputImm8();
+        }
         return;
     }
     PrintInstr("ROT", 2);
@@ -1040,11 +1045,20 @@ void InstMulDiv(U1 r)
 {
     assert(r >= 4 && r < 8);
     GetOperand();
-    if (OperandType != OP_REG || OperandValue >= R_ES) {
+    if (OperandType == OP_LIT || OperandValue >= R_ES) {
         Error("Invalid operands for mul/div");
     }
-    OutputByte(0xF6 | (OperandValue/8==1));
-    OutputByte(0xC0 | (r<<3) | (OperandValue&7));
+    if (OperandType == OP_REG) {
+        OutputByte(0xF6 | (OperandValue/8==1));
+        OutputByte(0xC0 | (r<<3) | (OperandValue&7));
+    } else {
+        if (ExplicitSize == NO_SIZE) {
+            Error("Operand size not specified");
+        }
+        OutputByte(0xF6 | ExplicitSize);
+        SwapOperands();
+        OutputModRM(r);
+    }
 }
 
 void InstPUSH(U1 arg)
@@ -1210,8 +1224,12 @@ static const struct {
     { "RETF"  , &OutputByte     , 0xCB },
     { "IRET"  , &OutputByte     , 0xCF },
     { "NOP"   , &OutputByte     , 0x90 },
+    { "CBW"   , &OutputByte     , 0x98 },
+    { "CWD"   , &OutputByte     , 0x99 },
     { "PUSHA" , &OutputByte     , 0x60 },
     { "POPA"  , &OutputByte     , 0x61 },
+    { "PUSHF" , &OutputByte     , 0x9C },
+    { "POPF"  , &OutputByte     , 0x9D },
     { "PUSH"  , &InstPUSH       , 0x00 },
     { "POP"   , &InstPOP        , 0x00 },
     { "MOVSB" , &OutputByte     , 0xA4 },

@@ -1,3 +1,52 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; SASM - Simple/Stupid/Self-hosting Assembler   ;;
+;;        for 16-bit x86 DOS-like Systems        ;;
+;;                                               ;;
+;; Copyright 2019 Michael Rasmussen              ;;
+;; See LICENSE.md for details                    ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; The primary purpose of this assembler is to be able
+;; to assemble itself running only under software assembled
+;; with itself (excluding the BIOS). DOS is of course the
+;; obvious choice as a bootstrapping environment and .COM
+;; files are easy to work with, so that's the basis.
+;;
+;; While the accepted syntax should be a strict subset of
+;; what NASM allows and subsequently outputs, there are
+;; some important differences (list not exhaustive):
+;;   * SASM is a one-pass assembler and only performs very
+;;     basic optimizations. In particular only backward
+;;     jumps can have an eight bit immediate.
+;;   * Literal expressions are only supported in memory
+;;     operands and even then are limited to addition.
+;;     (Yes, this means you have to write [SI+0xFFFF] to
+;;     subtract one from SI).
+;;   * The only supported instructions are those that
+;;     were at some point needed. This can include
+;;     some operand types not being supported.
+;;   * NASM warns about resb/resw in code sections and
+;;     ouputs zeros while SASM doesn't output anything
+;;     for trailing resb/resw's.
+;;   * SASM currently isn't case-sensitive for labels/
+;;     equates.
+;;
+;; Development was generally done by first implementing
+;; support for the new instruction/directive/etc. in the
+;; accompanying C-version assembler (while being careful
+;; to write in a fashion that would be implementable in
+;; assembly), and then getting this version up to date.
+;;
+;; Starting out, it was hard to know whether everything
+;; would fit in 64K, so I opted to play it safe and
+;; use far pointers in most places I anticipated it could
+;; become necessary. This helped stress test the assembler
+;; as well as my sanity. That's why some (most) things are
+;; dimensioned for sizes that haven't be necessary yet.
+;;
+;; Assemble using: nasm -f bin -o sasm.com sasm.asm
+;; or sasm sasm.asm
+;;
 ;; Calling convention (unless otherwise mentioned):
 ;;
 ;;   Callee-saved: DS, BP, SI, DI
@@ -5,9 +54,8 @@
 ;;   Return value: (DX:)AX or BX for pointer values,
 ;;                 boolean values via the carry flag
 ;;
-
-; TODO: Investigate whether stack potentially overlaps with allocations
-;;      SS:SP is intialized at the top of the 64K started at CS:0
+;; TODO: Investigate whether stack potentially overlaps with allocations
+;;       SS:SP is initialized at the top of the 64K started at CS:0
 
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 5          ; Maximum length of directive/instruction
@@ -15,7 +63,7 @@ BUFFER_SIZE      equ 512        ; Size of input buffer
 OUTPUT_MAX       equ 0x2000     ; Maximum output size
 LABEL_MAX        equ 200        ; Maximum number of labels
 FIXUP_MAX        equ 400        ; Maximum number of fixups
-EQU_MAX          equ 100        ; Maximum number of equavates
+EQU_MAX          equ 100        ; Maximum number of equates
 DISPATCH_SIZE    equ 8          ; Size of DispatchListEntry
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 LABEL_ADDR       equ 18         ; Offset of label address
@@ -1680,7 +1728,13 @@ InstMOV:
         mov al, 0x8e
         jmp OutputRR
 .MOVrm:
+        cmp byte [OperandLValue], R_ES
+        jae .MOVsrm
         mov al,0x8A
+        jmp OutputRM
+.MOVsrm:
+        ; MOV sreg, r/m
+        mov al, 0x8E
         jmp OutputRM
 .MOVm:
         cmp byte [OperandType], OP_REG
@@ -1689,7 +1743,12 @@ InstMOV:
         mov ax, 0xc600
         jmp OutputMImm
 .MOVmr:
+        cmp byte [OperandValue], R_ES
+        jae .MOVmsr
         mov al, 0x88
+        jmp OutputMR
+.MOVmsr:
+        mov al, 0x8C
         jmp OutputMR
 
 InstXCHG:
@@ -1863,6 +1922,7 @@ InstMulDiv:
         call GetOperand
         pop ax
         cmp byte [OperandType], OP_REG
+        jb .M
         jne InvalidOperand
         ; Output 0xF6 | is16bit, 0xC0 | r<<3 | (OperandValue&7)
         mov ah, al
@@ -1877,6 +1937,19 @@ InstMulDiv:
         shr al, 3
         or al, 0xF6
         jmp OutputWord
+.M:
+        push ax
+        mov al, [ExplicitSize]
+        dec al
+        jns .HasSize
+        mov bx, MsgErrNoSize
+        jmp Error
+.HasSize:
+        or al, 0xf6
+        call OutputByte
+        call SwapOperands
+        pop ax
+        jmp OutputModRM
 
 ; /r in AL (e.g. 4 for SHL)
 InstROT:
@@ -1893,7 +1966,24 @@ InstROT:
         mov bx, MsgErrNoSize
         jmp Error
 .HasSize:
+        cmp byte [OperandType], OP_REG
+        je .ROTmr
+        jb InvalidOperand
+        ; ROT mem, imm
+        ; Special handling for ROT r/m, 1
+        cmp byte [OperandValue], 1
+        jne .ROTmimm
+        or al, 0xd0
+        jmp .ROTmrFinal
+.ROTmimm:
+        or al, 0xc0
+        call .ROTmrFinal
+        jmp OutputImm8
+.ROTmr:
+        cmp byte [OperandValue], R_CL
+        jne InvalidOperand
         or al, 0xd2
+.ROTmrFinal:
         push bx
         call OutputByte
         pop ax
@@ -1918,6 +2008,12 @@ InstROT:
         or al, 0xd2
         jmp OutputWord
 .ROTrl:
+        ; Special handling for ROT r/m, 1
+        cmp byte [OperandValue], 1
+        jne .ROTrimm
+        or al, 0xd0
+        jmp OutputWord
+.ROTrimm:
         or al, 0xc0
         call OutputWord
         jmp OutputImm8
@@ -2118,6 +2214,14 @@ DispatchList:
 
     ; Misc
     db 'NOP',0,0,  0x90
+    dw OutputByte
+    db 'CBW',0,0,  0x98
+    dw OutputByte
+    db 'CWD',0,0,  0x99
+    dw OutputByte
+    db 'PUSHF',    0x9C
+    dw OutputByte
+    db 'POPF',0,   0x9D
     dw OutputByte
     db 'REP',0,0,  0xF3
     dw OutputByte
