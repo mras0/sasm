@@ -15,6 +15,7 @@
 ;;  * Unoptimized
 ;;  * Tabs in files aren't really supported (use spaces)
 ;;  * Files that don't fit in memory aren't handled
+;;  * Only simple (non-regex case-sesnsitive) search supported
 
 ;;
 ;; The file is stored in a doubly linked list of lines (without CR+LF)
@@ -45,6 +46,7 @@
         org 0x100
 
 BUFFER_SIZE     equ 512
+SEARCHBUF_SIZE  equ 80
 NDISP_LINES     equ 24   ; Number of displayed lines (of text from the file)
 DISP_LINE_WORDS equ 80   ; Width of screen (each is one character + one attribute byte)
 DISP_LINE_BYTES equ 160  ; DISP_LINE_WORDS * 2
@@ -457,7 +459,9 @@ CommandFromKey:
         pop ax
         ret
 .CommandList:
+        dw '/'      , SearchFwdCmd
         dw ':'      , ExCommand
+        dw '?'      , SearchBackCmd
         dw 'a'      , Append
         dw 'd'      , DeleteCmd
         dw 'g'      , GoCommand
@@ -469,6 +473,7 @@ CommandFromKey:
         dw 'k'      , MoveUp
         dw K_UP     , MoveUp
         dw 'l'      , MoveRight
+        dw 'n'      , SearchAgain
         dw K_RIGHT  , MoveRight
         dw 'p'      , PasteAfter
         dw 'y'      , Yank
@@ -476,6 +481,7 @@ CommandFromKey:
         dw 'G'      , GotoLine
         dw 'I'      , InsertBefore
         dw 'J'      , JoinLines
+        dw 'N'      , RevSearch
         dw 'P'      , PasteBefore
         dw '0'      , MoveCurHome
         dw K_HOME   , MoveCurHome
@@ -1594,14 +1600,14 @@ PasteBefore:
         mov byte [NeedUpdate], 1
         ret
 
-ExCommand:
-        mov word [Count], 0 ; TODO: If Count > 0 start with ':.,.+Count-1'
+; Do command line starting with AL (e.g. ':')
+; Calls function in BP on enter
+DoCommandLine:
         mov di, SLINE_OFFSET
         mov ah, COLOR_NORMAL
-        mov al, ':'
         stosw
         mov bx, Buffer
-        mov byte [bx], ':'
+        mov byte [bx], al
         inc bx
         mov dh, NDISP_LINES
         mov dl, 1
@@ -1629,7 +1635,7 @@ ExCommand:
 .Done:
         mov byte [bx], 0
         call ClearStatusLine
-        call PerformExCmd
+        call bp
 .Abort:
         call PlaceCursor
         ret
@@ -1642,8 +1648,14 @@ ExCommand:
         jz .Abort ; Backspaced over ':'
         jmp .ReadLoop
 
+ExCommand:
+        mov word [Count], 0 ; TODO: If Count > 0 start with ':.,.+Count-1'
+        mov al, ':'
+        mov bp, .PerformExCmd
+        jmp DoCommandLine
+
 ; Perform EX command in Buffer
-PerformExCmd:
+.PerformExCmd:
         mov ax, [Buffer]
         cmp ax, ':q'
         je Quit
@@ -1773,6 +1785,136 @@ ExWrite:
         jmp SPutHexWord
 .CRLF: db 13, 10
 
+SearchCmd:
+        mov [LastSearchDir], al
+        mov word [Count], 0 ; Ignore count (?)
+        mov bp, .DoSearch
+        jmp DoCommandLine
+.DoSearch:
+        push es
+        mov si, Buffer
+        inc si
+        cmp byte [si], 0 ; Empty pattern means repeat
+        je .Search
+        mov di, SearchBuffer
+        push ds
+        pop es
+        ; TODO: Possibly limit size
+.Copy:
+        movsb
+        cmp byte [si+0xFFFF], 0
+        jne .Copy
+.Search:
+        pop es
+        jmp SearchAgain
+
+SearchFwdCmd:
+        mov al, '/'
+        jmp SearchCmd
+
+SearchBackCmd:
+        mov al, '?'
+        jmp SearchCmd
+
+SearchAgain:
+        cmp byte [LastSearchDir], '/'
+        je SearchFwd
+        jmp SearchBack
+
+RevSearch:
+        cmp byte [LastSearchDir], '/'
+        jne SearchFwd
+        jmp SearchBack
+
+SrchMatchFound:
+        ; TODO: Place cursor in a nicer place..
+        mov [DispLine], bx
+        mov bx, es
+        mov [DispLine+2], bx
+        add [DispLineIdx], di
+        mov byte [CursorRelY], 0
+        mov byte [NeedUpdate], 1
+        ; DoCommandLine calls PlaceCurser
+        ret
+
+SearchFwd:
+        ;   Load cursor line
+        ; Loop:
+        ;   Load next line
+        ;     Otherwise goto End
+        ;   Check if it matches SearchBuffer
+        ;     Otherwise goto Loop
+        ;   Handle Match
+        ; End:
+        ;   Return
+        call LoadCursorLine
+        mov al, [CursorRelY]
+        xor ah, ah
+        mov di, ax
+.Search:
+        call LoadLineNext
+        jz .NotFound
+        inc di
+        call LLFromDXAX
+        call LineMatches
+        jc .Search
+        ; Match
+        jmp SrchMatchFound
+.NotFound:
+        ret
+
+SearchBack:
+        call LoadCursorLine
+        mov al, [CursorRelY]
+        xor ah, ah
+        mov di, ax
+.Search:
+        call LoadLinePrev
+        jz .NotFound
+        dec di
+        call LLFromDXAX
+        call LineMatches
+        jc .Search
+        jmp SrchMatchFound
+.NotFound:
+        ret
+
+; Returns carry clear if line in ES:BX matches SearchBuffer
+LineMatches:
+        pusha
+        mov cx, [es:bx+LINEH_LENGTH]
+        and cx, cx
+        jz .NoMatch
+        add bx, LINEH_SIZE
+.CheckMatch:
+        mov si, SearchBuffer
+        mov di, bx
+        mov dx, cx
+        ; Check if di..di+dx matches si
+.Compare:
+        lodsb
+        and al, al
+        jz .Match
+        cmp [es:di], al
+        jne .NextChar
+        inc di
+        jnz .Compare
+        cmp byte [si], 0
+        je .Match
+        ; Line ended before SearchBuffer - cannot match anymore
+        jmp .NoMatch
+.NextChar:
+        inc bx
+        dec cx
+        jnz .CheckMatch
+.NoMatch:
+        stc
+        jmp .Done
+.Match:
+        clc
+.Done:
+        popa
+        ret
 
 ; Replace line in ES:BX with new line in DX:AX
 ReplaceLine:
@@ -2698,6 +2840,9 @@ TotalBytes:       resw 2
 NextBackspace:    resb 2 ; Low/High: Current/Next backspace size (0 special)
 
 Buffer:           resb BUFFER_SIZE
+
+SearchBuffer:     resb SEARCHBUF_SIZE
+LastSearchDir:    resb 1
 
 EditBufHdr:       resb LINEH_SIZE
 EditBuffer:       resb BUFFER_SIZE ; Must follow EditBufHdr

@@ -38,7 +38,8 @@ SASM(os.asm os.sys)
 SASM(cmdp.asm cmdp.com)
 SASM(uvi.asm uvi.com)
 
-add_custom_target(sasm_com DEPENDS sasm.com)
+add_custom_target(sasm_com ALL DEPENDS sasm.com)
+add_custom_target(uvi_com ALL DEPENDS uvi.com)
 
 set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
 
