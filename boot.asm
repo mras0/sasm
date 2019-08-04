@@ -1,4 +1,11 @@
-; The disktool assumes the code starts after the DOS 3.0 BPB
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; BOOT.BIN - Boot sector that loads OS.SYS.     ;;
+;;                                               ;;
+;; Copyright 2019 Michael Rasmussen              ;;
+;; See LICENSE.md for details                    ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; The disktool (or insboot) assumes the code starts after the DOS 3.0 BPB
 ; It also handles putting in the boot signature at the end of the sector
 ; The boot sector searches for OS.SYS in the root directory and loads it at
 ; linear address 0x0500 (just after the IVT) and the stack top is at 0x7c00,

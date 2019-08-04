@@ -1,3 +1,12 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; INSBOOT.COM - Command line utility to install ;;
+;;               a bootloader from a raw binary. ;;
+;;                                               ;;
+;; Copyright 2019 Michael Rasmussen              ;;
+;; See LICENSE.md for details                    ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+        cpu 186
         org 0x100
 
 BOOT_CODE_OFF equ 0x001E ; (BPB_OFFSET = 0x0B + sizeof(DOS 3.0 BPB))

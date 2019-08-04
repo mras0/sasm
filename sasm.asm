@@ -1,6 +1,6 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; SASM - Simple/Stupid/Self-hosting Assembler   ;;
-;;        for 16-bit x86 DOS-like Systems        ;;
+;;        for 16-bit x86 DOS-like Systems.       ;;
 ;;                                               ;;
 ;; Copyright 2019 Michael Rasmussen              ;;
 ;; See LICENSE.md for details                    ;;
@@ -2253,7 +2253,7 @@ InstPUSH:
         ja .PushL
         jmp InvalidOperand
 .PushL:
-        mov al, 3
+        mov al, 1
         call CheckCPU
         cmp word [CurrentFixup], INVALID_ADDR
         jne .PushImm16
@@ -2406,16 +2406,8 @@ InstJCC:
 CheckCPU:
         cmp [CpuLevel], al
         jae .OK
-        pusha
-        mov ax, [CurrentLine]
-        call PutDec
-        mov al, ' '
-        call PutChar
         mov bx, MsgErrCpuLevel
-        call PutString
-        call PutCrLf
-        ;jmp Error
-        popa
+        jmp Error
 .OK:
         ret
 

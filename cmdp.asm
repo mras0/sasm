@@ -1,3 +1,12 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; CMDP.COM - Very limited command processor for ;;
+;;            bootstrapping SASM.                ;;
+;;                                               ;;
+;; Copyright 2019 Michael Rasmussen              ;;
+;; See LICENSE.md for details                    ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+        cpu 186
         org 0x100
 
 BUFFER_SIZE       EQU 512
@@ -282,7 +291,9 @@ CloseOutput:
 CloseFile:
         mov ah, 0x3e
         int 0x21
-        jc GenericError
+        jnc .OK
+        jmp GenericError
+.OK:
         ret
 
 ; Read from InputFile. Returns number of bytes read in AX
@@ -328,7 +339,9 @@ CommandDispatch:
 .SkipSpace:
         lodsb
         cmp al, 0x0D
-        je .Ret ; Empty line
+        jne .NotEmpty
+        jmp .Ret ; Empty line
+.NotEmpty:
         cmp al, ' '
         jbe .SkipSpace
         dec si ; unget non-space character
@@ -359,31 +372,35 @@ CommandDispatch:
         cmp word [bx], 'CO'
         jne .NotCopy
         cmp word [bx+2], 'PY'
-        jne .NotInternal
+        jne .NotInt
         cmp byte [bx+4], 0
-        jne .NotInternal
+        jne .NotInt
         jmp CmdCopy
 .NotCopy:
         cmp word [bx], 'DE'
         jne .NotDel
         cmp word [bx+2], 'L'
-        jne .NotInternal
+        jne .NotInt
         jmp CmdDel
+.NotInt:
+        jmp .NotInternal
 .NotDel:
         cmp word [bx], 'DI'
-        jne .NotDir
+        jne .NotDi
         cmp word [bx+2], 'R'
-        je CmdDir
-        cmp word [bx+2], 'SK'
-        jne .NotInternal
-        cmp word [bx+4], 'CO'
-        jne .NotInternal
-        cmp word [bx+6], 'PY'
-        jne .NotInternal
-        cmp byte [bx+8], 0
-        jne .NotInternal
-        jmp CmdDiskCopy
+        jne .NotDir
+        jmp CmdDir
 .NotDir:
+        cmp word [bx+2], 'SK'
+        jne .NotInt
+        cmp word [bx+4], 'CO'
+        jne .NotInt
+        cmp word [bx+6], 'PY'
+        jne .NotInt
+        cmp byte [bx+8], 0
+        jne .NotInt
+        jmp CmdDiskCopy
+.NotDi:
         cmp word [bx], 'EC'
         jne .NotEcho
         cmp word [bx+2], 'HO'
@@ -415,13 +432,15 @@ CommandDispatch:
         jmp CWaitKey
 .NotPause:
         cmp word [bx], 'RE'
-        jne .NotRen
+        jne .NotRe
         cmp word [bx+2], 'N'
-        je CmdRen
+        jne .NotRen
+        jmp CmdRen
+.NotRen:
         cmp word [bx+2], 'M'
         jne .NotInternal
         jmp CmdRem
-.NotRen:
+.NotRe:
         cmp word [bx], 'TY'
         jne .NotType
         cmp word [bx+2], 'PE'
@@ -462,8 +481,10 @@ CommandDispatch:
         mov dx, InFileName
         mov ax, 0x3d00
         int 0x21
-        jnc RunCommandFile
+        jc .NotBat
+        jmp RunCommandFile
 
+.NotBat:
         mov ax, '.C'
         stosw
         mov ax, 'OM'
@@ -791,8 +812,10 @@ CmdDiskCopy:
         int 0x21
         ; Too dangerous to allow other drives than 0 for now...
         cmp al, 0
+        je .DriveOK
         mov dx, MsgErrDrive
-        jne CError
+        jmp CError
+.DriveOK:
 
         ;
         ; Read boot sector to Buffer
@@ -831,17 +854,16 @@ CmdDiskCopy:
 .Read:
         ; AX: Number of sectors to copy this time round
         mov bp, .DoRead
-        call .Diskcmd
+        call .DiskCmd
         stc
         call .DiskChange
         mov bp, .DoWrite
-        call .Diskcmd
+        call .DiskCmd
         clc
         call .DiskChange
         call .AddSectors
         sub bx, ax
         jnz .CopyLoop
-
         ret
 .DiskCmd:
         ; Call BP for AX sectors
@@ -854,7 +876,7 @@ CmdDiskCopy:
         sub bx, si
         shr bx, 5
         cmp bx, ax
-        jbe .CntOk
+        jbe .CntOK
         mov bx, ax
 .CntOK:
         ; Limit to a track
@@ -985,8 +1007,8 @@ CmdHd:
         call CGetIn
 
         call OpenInput
-        jc COpenInError
-
+        jnc .L
+        jmp COpenInError
 .L:
         mov cx, 0x180 ; 24*16
         call ReadToBufferN
@@ -1008,8 +1030,10 @@ CmdRen:
         mov di, OutFileName
         mov ah, 0x56
         int 0x21
+        jnc .OK
         mov dx, MsgErrRename
-        jc CError
+        jmp CError
+.OK:
         ret
 
 CmdRem:
@@ -1019,8 +1043,9 @@ CmdType:
         call CGetIn
 
         call OpenInput
-        jc COpenInError
-
+        jnc .HasIn
+        jmp COpenInError
+.HasIn:
         xor di, di ; line counter
         xor bx, bx ; char counter
 .L:

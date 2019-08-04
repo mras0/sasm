@@ -43,6 +43,7 @@
 ;; or sasm uvi.asm
 ;;
 
+        cpu 186
         org 0x100
 
 BUFFER_SIZE     equ 512
@@ -162,7 +163,7 @@ Start:
         ; ES:DI -> HeapPtr
 
         cmp byte [FileName], 0
-        je .FileRead ; No file
+        je .DoFileRead ; No file
 
         ; Open file
         mov ax, 0x3d00
@@ -170,6 +171,7 @@ Start:
         int 0x21
         jnc .OpenOK
         mov word [File], 0xFFFF ; Signal new file
+.DoFileRead:
         jmp .FileRead
 .OpenOK:
         mov [File], ax
@@ -180,8 +182,10 @@ Start:
         mov cx, BUFFER_SIZE
         mov dx, Buffer
         int 0x21
+        jnc .ReadOK
         mov dx, MsgErrReadInit
-        jc Error
+        jmp Error
+.ReadOK:
         and ax, ax
         jz .ReadDone
 
@@ -1030,7 +1034,9 @@ Malloc:
 .FindBlock:
         mov cx, es
         or cx, bx
-        jz OutOfMemory
+        jnz .NotOOM
+        jmp OutOfMemory
+.NotOOM:
         ; Move prev to DI:SI
         cmp ax, [es:bx+HEAPN_LENGTH]
         jbe .Found
@@ -1405,7 +1411,9 @@ DeleteCmd:
         ; First line was cut
         mov cx, dx
         or cx, ax
-        jz NewDoc ; All lines cut
+        jnz .NotEmpty
+        jmp NewDoc ; All lines cut
+.NotEmpty:
         ; First line cut, but there are lines afterwards
         mov [FirstLine], ax
         mov [FirstLine+2], dx
@@ -1658,7 +1666,9 @@ ExCommand:
 .PerformExCmd:
         mov ax, [Buffer]
         cmp ax, ':q'
-        je Quit
+        jne .NotQ
+        jmp Quit
+.NotQ:
         cmp ax, ':w'
         je ExWrite
         cmp ax, ':h'
@@ -1760,7 +1770,9 @@ ExWrite:
         pop es
         pop si
         cmp byte [Buffer+2], 'q'
-        je Quit
+        jne .NotQuit
+        jmp Quit
+.NotQuit:
         mov di, SLINE_OFFSET
         mov ah, COLOR_NORMAL
         call SCopyStr
@@ -2055,21 +2067,37 @@ InsertMode:
         cmp al, K_ESCAPE
         je .InsertDone
         cmp al, K_RETURN
-        je .SplitLine
+        jne .NotReturn
+        jmp .SplitLine
+.NotReturn:
         cmp al, K_BACKSPACE
-        je .Backspace
+        jne .NotBS
+        jmp .Backspace
+.NotBS:
         cmp ax, K_DELETE
-        je .Delete
+        jne .NotDel
+        jmp .Delete
+.NotDel:
         cmp ax, K_LEFT
-        je .CursorLeft
+        jne .NotLeft
+        jmp .CursorLeft
+.NotLeft:
         cmp ax, K_RIGHT
-        je .CursorRight
+        jne .NotRight
+        jmp .CursorRight
+.NotRight:
         cmp ax, K_HOME
-        je .CursorHome
+        jne .NotHome
+        jmp .CursorHome
+.NotHome:
         cmp ax, K_END
-        je .CursorEnd
+        jne .NotEnd
+        jmp .CursorEnd
+.NotEnd:
         cmp al, K_TAB
-        je .InsertTab
+        jne .NotTab
+        jmp .InsertTab
+.NotTab:
         cmp al, ' '
         jb .Unknown
         ; Normal character
@@ -2133,32 +2161,36 @@ InsertMode:
         and al, al
         jz .BSDelAI
         ; Delete tab of size AL
-        xor cx, cx
-        mov cl, al
+        xor ah, ah
         jmp .BSDel
 .BSDelAI:
         ; Special case: last action inserted auto indent spaces
         ; Remove them (Note: CursorX should always be > 0 here)
-        mov cx, [CursorX]
+        mov ax, [CursorX]
 .BSDel:
-        sub [CursorX], cx
-        sub [EditBufHdr+LINEH_LENGTH], cx
+        sub [CursorX], ax
+        mov cx, [EditBufHdr+LINEH_LENGTH]
+        sub cx, ax
+        mov [EditBufHdr+LINEH_LENGTH], cx
         mov di, EditBuffer
         mov si, di
-        add si, cx
+        add si, ax
         rep movsb
         pop es
         jmp .UpdateRet
 .NormalBS:
         mov bx, [CursorX]
         and bx, bx
-        jz .InsertLoop
+        jnz .NotEmptyBS
+.GoBack:
+        jmp .InsertLoop
+.NotEmptyBS:
         dec bx
         mov cx, [EditBufHdr+LINEH_LENGTH]
         dec cx
         mov ax, cx
         sub cx, bx
-        jb .InsertLoop
+        jb .GoBack
         mov [EditBufHdr+LINEH_LENGTH], ax
         mov [CursorX], bx
         je .UpdateRet ; Nothing to copy (flags set above)
@@ -2178,10 +2210,10 @@ InsertMode:
 .Delete:
         mov cx, [EditBufHdr+LINEH_LENGTH]
         and cx, cx
-        jz .InsertLoop
+        jz .GoBack
         mov bx, [CursorX]
         cmp bx, cx
-        jae .InsertLoop
+        jae .GoBack
         mov ax, cx
         dec ax
         mov [EditBufHdr+LINEH_LENGTH], ax
@@ -2192,7 +2224,7 @@ InsertMode:
 .CursorLeft:
         mov ax, [CursorX]
         sub ax, 1
-        jc .InsertLoop
+        jc .GoBack
 .NewCursor:
         mov [CursorX], ax
         jmp .PlaceCursorRet
@@ -2200,7 +2232,7 @@ InsertMode:
         mov ax, [CursorX]
         inc ax
         cmp ax, [EditBufHdr+LINEH_LENGTH]
-        ja .InsertLoop
+        ja .GoBack
         jmp .NewCursor
 .CursorHome:
         xor ax, ax
@@ -2320,7 +2352,9 @@ InsertMode:
         mov bx, dx
         add bx, cx
         cmp bx, BUFFER_SIZE
-        jae .InsertLoop
+        jb .ITLenOK
+        jmp .InsertLoop
+.ITLenOK:
         mov [EditBufHdr+LINEH_LENGTH], bx
 
         mov byte [NextBackspace+1], cl

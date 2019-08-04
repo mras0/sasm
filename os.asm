@@ -1,3 +1,12 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; OS.SYS - Implements minimal support for the   ;;
+;;          DOS syscalls that SASM needs to run. ;;
+;;                                               ;;
+;; Copyright 2019 Michael Rasmussen              ;;
+;; See LICENSE.md for details                    ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+        cpu 186
         org 0x0500
 
 ; TODO: Should probably switch to O/S stack when processing syscalls
@@ -258,26 +267,24 @@ PutHexDigit:
 ; Convert LBA in AX to CHS in CX/DX
 LBAtoCHS:
         push ax
-        push bx
         xor dx, dx
-        mov bx, [BPB+BPB_SECPERTRACK]
-        div bx
+        div word [BPB+BPB_SECPERTRACK]
         inc dl
         mov cl, dl          ; CL=sector
         xor dx, dx
-        mov bx, [BPB+BPB_NUMHEADS]
-        div bx
+        div word [BPB+BPB_NUMHEADS]
         mov dh, dl          ; DH=head
         mov dl, [BootDrive] ; DL=drive number
         mov ch, al          ; CH=cylinder
-        pop bx
         pop ax
         ret
 
 ; Read cluster in AX to ES:DI
 ReadCluster:
         call ClusterValid
-        jc InvalidCluster
+        jnc .ClusterValid
+        jmp InvalidCluster
+.ClusterValid:
         add ax, 31 ; FAT_DATA_SEC - 2
         mov cx, 1
         ; Fall through
@@ -317,7 +324,9 @@ ReadSectors:
 ; See also ReadCluster
 WriteCluster:
         call ClusterValid
-        jc InvalidCluster
+        jnc .ClusterValid
+        jmp InvalidCluster
+.ClusterValid:
         add ax, 31 ; FAT_DATA_SEC - 2
         mov cx, 1
         ; Fall through
@@ -1306,45 +1315,22 @@ FillFileBuffer:
 Int21Dispatch:
         cld ; Make sure direction flag is always clear
 
-        ; TODO: Convert to table...
-        cmp ah, 0x02
-        je Int21_02
-        cmp ah, 0x08
-        je Int21_08
-        cmp ah, 0x09
-        je Int21_09
-        cmp ah, 0x0A
-        je Int21_0A
-        cmp ah, 0x19
-        je Int21_19
-        cmp ah, 0x1A
-        je Int21_1A
-        cmp ah, 0x2F
-        je Int21_2F
-        cmp ah, 0x3C
-        je Int21_3C
-        cmp ah, 0x3D
-        je Int21_3D
-        cmp ah, 0x3E
-        je Int21_3E
-        cmp ah, 0x3F
-        je Int21_3F
-        cmp ah, 0x40
-        je Int21_40
-        cmp ah, 0x41
-        je Int21_41
-        cmp ah, 0x4A
-        je Int21_4A
-        cmp ah, 0x4B
-        je Int21_4B
-        cmp ah, 0x4C
-        je Int21_4C
-        cmp ah, 0x4E
-        je Int21_4E
-        cmp ah, 0x4F
-        je Int21_4F
-        cmp ah, 0x56
-        je Int21_56
+        push bx
+        push bp
+        mov bp, .DispatchList
+        mov bx, .DispatchListEnd
+.L:
+        cmp ah, [cs:bp]
+        jne .Next
+        mov bx, [cs:bp+1]
+        mov bp, sp
+        xchg [bp+2], bx
+        pop bp
+        ret
+.Next:
+        add bp, 3
+        cmp bp, bx
+        jne .L
 
         ; Unimplemented syscall
         push ax
@@ -1358,6 +1344,46 @@ Int21Dispatch:
         call PutCrLf
 .Halt:  hlt
         jmp .Halt
+.DispatchList:
+        db  0x02
+        dw Int21_02
+        db  0x08
+        dw Int21_08
+        db  0x09
+        dw Int21_09
+        db  0x0A
+        dw Int21_0A
+        db  0x19
+        dw Int21_19
+        db  0x1A
+        dw Int21_1A
+        db  0x2F
+        dw Int21_2F
+        db  0x3C
+        dw Int21_3C
+        db  0x3D
+        dw Int21_3D
+        db  0x3E
+        dw Int21_3E
+        db  0x3F
+        dw Int21_3F
+        db  0x40
+        dw Int21_40
+        db  0x41
+        dw Int21_41
+        db  0x4A
+        dw Int21_4A
+        db  0x4B
+        dw Int21_4B
+        db  0x4C
+        dw Int21_4C
+        db  0x4E
+        dw Int21_4E
+        db  0x4F
+        dw Int21_4F
+        db  0x56
+        dw Int21_56
+.DispatchListEnd:
 
 ; IRET with carry flag
 ; TODO: This is really ugly..
