@@ -12,9 +12,8 @@
 ;; obvious choice as a bootstrapping environment and .COM
 ;; files are easy to work with, so that's the basis. Due to
 ;; programmer lazyness the minimum supported processor is
-;; currently the 80386 (mostly due the use of PUSHA/POPA and
-;; shift/rotates with an immediate other than 1 and using
-;; rel16 for forward jumps).
+;; currently the 80186 (mostly due the use of PUSHA/POPA and
+;; shift/rotates with an immediate other than 1).
 ;;
 ;; While the accepted syntax should be a strict subset of
 ;; what NASM allows and subsequently outputs, there are
@@ -62,6 +61,9 @@
 ;;   Return value: (DX:)AX or BX for pointer values,
 ;;                 boolean values via the carry flag
 ;;
+
+        cpu 186
+        org 0x100
 
 STACK_SIZE       equ 512
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
@@ -136,9 +138,6 @@ CC_G             equ 0xf
 ; Fixup types
 FIXUP_DISP16     equ 0
 FIXUP_REL8       equ 1
-
-        cpu 386
-        org 0x100
 
 ProgramEntry:
         ; Clear BSS
@@ -394,7 +393,8 @@ Dispatch:
 
 .Match:
         ; Found match, dispatch
-        movzx ax, byte [si+INST_MAX]
+        xor ah, ah
+        mov al, byte [si+INST_MAX]
         mov bx, [si+INST_MAX+1]
         call bx
         cmp word [CurrentFixup], INVALID_ADDR
@@ -896,7 +896,8 @@ IsTokenNumber:
 ; Read one or two character literal to OperandValue
 ; Assumes initial quote character has been consumed
 GetCharLit:
-        movzx ax, [CurrentChar]
+        xor ah, ah
+        mov al, [CurrentChar]
         mov [OperandValue], ax
         call ReadNext
         mov al, QUOTE_CHAR
@@ -959,8 +960,9 @@ GetOperand:
         jmp GetCharLit
 .NotLit:
         cmp byte [CurrentChar], '['
-        je GetOperandMem
-
+        jne .NotMem
+        jmp GetOperandMem
+.NotMem:
         call GetRegOrNumber
         jc .NotRegOrNumber
         ret
@@ -1047,7 +1049,9 @@ GetOperandMem:
         jne .Lit
         mov al, [OperandValue]
         cmp al, R_AX
-        jb InvalidOperand
+        jae .RegOK
+        jmp InvalidOperand
+.RegOK:
         cmp al, R_ES
         jae .SegOverride
         call .CombineModrm
@@ -1096,7 +1100,11 @@ GetOperandMem:
         and di, di
         jz .Done
         mov bx, di
-        movsx bx, bl
+        push ax
+        mov al, bl
+        cbw
+        mov bx, ax
+        pop ax
         cmp bx, di
         jne .Disp16
         or al, 0x40 ; Disp8
@@ -1125,16 +1133,19 @@ GetOperandMem:
         je .Translate
         mov bx, .Tab07
         cmp cl, 0x07
-        jne InvalidOperand
+        jne .InvalidOp
         ; Fall through
 .Translate:
-        movzx cx, al
-        add bx ,cx
+        add bl, al
+        adc bh, 0
         mov al, [bx]
         cmp al, 0xff
-        je InvalidOperand
-        movzx si, al
+        je .InvalidOp
+        mov si, ax
+        and si, 0xff
         ret
+.InvalidOp:
+        jmp InvalidOperand
 ;
 ; Conversion tables from previous modrm value to new
 ;
@@ -1144,6 +1155,7 @@ GetOperandMem:
 .Tab06: db  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x03 ; BP
 .Tab07: db  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x01 ; BX
 .TabFF: db  0xff, 0xff, 0xff, 0x07, 0xff, 0x06, 0x04, 0x05 ; Displacement only
+
 
 SwapOperands:
         mov al, [OperandType]
@@ -1413,7 +1425,8 @@ MakeLabel:
         mov [es:bx+LABEL_FIXUP], ax
         push di
         push si
-        movzx cx, [TokenLen]
+        xor ch, ch
+        mov cl, [TokenLen]
         inc cx
         mov di, bx
         mov si, Token
@@ -1487,7 +1500,8 @@ MakeEqu:
         mul bx
         push si
         push di
-        movzx cx, [TokenLen]
+        xor ch, ch
+        mov cl, [TokenLen]
         inc cx
         mov di, ax
         mov si, Token
@@ -1537,7 +1551,6 @@ DirCPU:
 .Invalid:
         mov bx, MsgErrInvalidCPU
         jmp Error
-
 
 ; AL = 1 if DB 2 if DW
 DirDX:
@@ -1591,7 +1604,9 @@ DirDX:
         jmp .Next
 .NamedLit:
         cmp si, 2
-        jne NotImplemented
+        je .DW
+        jmp NotImplemented
+.DW:
         call GetNamedLiteral
         call OutputImm16
         ; Fall thorugh
@@ -1735,7 +1750,7 @@ InstMOV:
         cmp byte [OperandLType], OP_REG
         je .MOVr
         jb .MOVm
-        jmp InvalidOperand
+        jmp .InvalidOp
 .MOVr:
         cmp byte [OperandType], OP_REG
         je .MOVrr
@@ -1763,7 +1778,7 @@ InstMOV:
         mov al, [OperandValue]
         sub al, R_AX
         cmp al, 7
-        ja InvalidOperand
+        ja .InvalidOp
         call SwapOperands
         mov al, 0x8e
         jmp OutputRR
@@ -1779,7 +1794,7 @@ InstMOV:
 .MOVm:
         cmp byte [OperandType], OP_REG
         je .MOVmr
-        jb InvalidOperand
+        jb .InvalidOp
         mov ax, 0xc600
         jmp OutputMImm
 .MOVmr:
@@ -1790,14 +1805,16 @@ InstMOV:
 .MOVmsr:
         mov al, 0x8C
         jmp OutputMR
+.InvalidOp:
+        jmp InvalidOperand
 
 InstXCHG:
         call Get2Operands
         cmp byte [OperandLType], OP_REG
         je .XCHGr
-        ja InvalidOperand
+        ja .InvalidOp
         cmp byte [OperandType], OP_REG
-        jne InvalidOperand
+        jne .InvalidOp
 .XCHGmr:
         mov al, 0x86
         call OutInst816
@@ -1807,12 +1824,14 @@ InstXCHG:
 .XCHGr:
         cmp byte [OperandType], OP_REG
         je .XCHGrr
-        ja InvalidOperand
+        ja .InvalidOp
         call SwapOperands
         jmp .XCHGmr
 .XCHGrr:
         mov al, 0x86
         jmp OutputRR
+.InvalidOp:
+        jmp InvalidOperand
 
 InstTEST:
         call Get2Operands
@@ -1820,7 +1839,7 @@ InstTEST:
         je .TESTr
         jb .TESTm
         cmp byte [OperandLType], OP_REG
-        ja InvalidOperand
+        ja .InvalidOp
         je .TESTrl
         ; TEST mem, lit
         mov al, [ExplicitSize]
@@ -1840,7 +1859,7 @@ InstTEST:
         ; TEST reg, lit 0x
         mov al, [OperandLValue]
         cmp al, R_ES
-        jae InvalidOperand
+        jae .InvalidOp
         mov ah, al
         shr al, 3
         push ax
@@ -1853,25 +1872,33 @@ InstTEST:
 .TESTr:
         ; TEST xxx, reg
         cmp byte [OperandValue], R_ES
-        jae InvalidOperand
+        jae .InvalidOp
         mov al, 0x84
         cmp byte [OperandLType], OP_REG
-        ja InvalidOperand
-        jb OutputMR
+        ja .InvalidOp
+        jb .TestMR
         jmp OutputRR
+.TestMR:
+        jmp OutputMR
 .TESTm:
         cmp byte [OperandLType], OP_REG
-        jne InvalidOperand
+        jne .InvalidOp
         call SwapOperands
         jmp .TESTr
+.InvalidOp:
+        jmp InvalidOperand
 
 ; AL=second opcode byte
 InstMOVXX:
         push ax
+        mov al, 3
+        call CheckCPU
         call Get2Operands
         pop ax
         cmp byte [OperandLType], OP_REG
-        jne NotImplemented
+        je .MOVXXr
+        jmp NotImplemented
+.MOVXXr:
         mov ah, al
         mov al, 0x0f
         call OutputWord
@@ -1894,14 +1921,16 @@ InstMOVXX:
 HandleLXXArgs:
         call Get2Operands
         cmp byte [OperandLType], OP_REG
-        jne InvalidOperand
+        jne .InvalidOp
         cmp byte [OperandType], OP_REG
-        jae InvalidOperand
+        jae .InvalidOp
         mov bl, [OperandLValue]
         shr bl, 3
         cmp bl, 1
-        jne InvalidOperand
+        jne .InvalidOp
         ret
+.InvalidOp:
+        jmp InvalidOperand
 
 InstLEA:
         call HandleLXXArgs
@@ -1925,7 +1954,9 @@ InstIncDec:
         pop ax
         cmp byte [OperandType], OP_REG
         je .Reg
-        ja InvalidOperand
+        jb .Mem
+        jmp InvalidOperand
+.Mem:
         mov ah, [ExplicitSize]
         dec ah
         jns .HasSize
@@ -1947,7 +1978,9 @@ InstIncDec:
         or al, ah
         or al, 0x40 ; AL = 0x40|dec<<3|(OperandValue&7)
         shr bl, 3
-        jnz OutputByte
+        jz .Reg8
+        jmp OutputByte
+.Reg8:
         or al, 0xc0 ; Could just be |0x80 since 0x40 is already or'ed in
         mov ah, al
         mov al, 0xfe
@@ -1959,7 +1992,10 @@ InstNotNeg:
         call GetOperand
         cmp byte [OperandType], OP_REG
         je .NNr
-        ja InvalidOperand
+        jb .NNm
+.InvalidOp:
+        jmp InvalidOperand
+.NNm:
         mov al, [ExplicitSize]
         dec al
         jns .HasSize
@@ -1976,7 +2012,7 @@ InstNotNeg:
         mov ah, al
         shr al, 3
         cmp al, 1
-        ja InvalidOperand
+        ja .InvalidOp
         or al, 0xF6
         call OutputByte
         and ah, 7
@@ -1994,19 +2030,23 @@ InstALU:
         pop ax
         cmp byte [OperandLType], OP_REG
         je .ALUr
-        ja InvalidOperand
+        ja .InvalidOp
         cmp byte [OperandType], OP_REG
-        je OutputMR
-        jb InvalidOperand
+        je .ALUmr
+        jb .InvalidOp
         shr al, 3
         mov ah, 0x80
         jmp OutputMImm
+.ALUmr:
+        jmp OutputMR
 .ALUr:
         cmp byte [OperandType], OP_REG
-        je OutputRR
+        je .ALUrr
         ja .ALUrl
         add al, 2
         jmp OutputRM
+.ALUrr:
+        jmp OutputRR
 .ALUrl:
         cmp byte [OperandLValue], R_AL
         jne .ALUrl2
@@ -2032,6 +2072,9 @@ InstALU:
         call OutputWord
         pop ax
         jmp OutputImm
+.InvalidOp:
+        jmp InvalidOperand
+
 
 ; /r in AL (e.g. 6 for DIV)
 InstMulDiv:
@@ -2040,14 +2083,14 @@ InstMulDiv:
         pop ax
         cmp byte [OperandType], OP_REG
         jb .M
-        jne InvalidOperand
+        jne .InvalidOp
         ; Output 0xF6 | is16bit, 0xC0 | r<<3 | (OperandValue&7)
         mov ah, al
         shl ah, 3
         or ah, 0xC0
         mov al, [OperandValue]
         cmp al, R_ES
-        jae InvalidOperand
+        jae .InvalidOp
         mov bl, al
         and bl, 7
         or ah, bl
@@ -2067,6 +2110,8 @@ InstMulDiv:
         call SwapOperands
         pop ax
         jmp OutputModRM
+.InvalidOp:
+        jmp InvalidOperand
 
 ; /r in AL (e.g. 4 for SHL)
 InstROT:
@@ -2075,7 +2120,7 @@ InstROT:
         pop bx
         cmp byte [OperandLType], OP_REG
         je .ROTr
-        ja InvalidOperand
+        ja .InvalidOp
 
         mov al, [ExplicitSize]
         dec al
@@ -2085,20 +2130,22 @@ InstROT:
 .HasSize:
         cmp byte [OperandType], OP_REG
         je .ROTmr
-        jb InvalidOperand
+        jb .InvalidOp
         ; ROT mem, imm
         ; Special handling for ROT r/m, 1
         cmp byte [OperandValue], 1
         jne .ROTmimm
         or al, 0xd0
         jmp .ROTmrFinal
+.InvalidOp:
+        jmp InvalidOperand
 .ROTmimm:
         or al, 0xc0
         call .ROTmrFinal
         jmp OutputImm8
 .ROTmr:
         cmp byte [OperandValue], R_CL
-        jne InvalidOperand
+        jne .InvalidOp
         or al, 0xd2
 .ROTmrFinal:
         push bx
@@ -2119,9 +2166,9 @@ InstROT:
 
         cmp byte [OperandType], OP_REG
         ja .ROTrl
-        jb InvalidOperand
+        jb .InvalidOp
         cmp byte [OperandValue], R_CL
-        jne InvalidOperand
+        jne .InvalidOp
         or al, 0xd2
         jmp OutputWord
 .ROTrl:
@@ -2131,6 +2178,10 @@ InstROT:
         or al, 0xd0
         jmp OutputWord
 .ROTrimm:
+        push ax
+        mov al, 1
+        call CheckCPU
+        pop ax
         or al, 0xc0
         call OutputWord
         jmp OutputImm8
@@ -2142,24 +2193,26 @@ InstIN:
 
 HandleInOut:
         cmp byte [OperandLType], OP_REG
-        jne InvalidOperand
+        jne .InvalidOp
         mov bl, [OperandLValue]
         test bl, 7
-        jnz InvalidOperand
+        jnz .InvalidOp
         shr bl, 3
         cmp bl, 1
-        ja InvalidOperand
+        ja .InvalidOp
         or al, bl
         cmp byte [OperandType], OP_REG
-        jb InvalidOperand
+        jb .InvalidOp
         ja .INl
         cmp byte [OperandValue], R_DX
-        jne InvalidOperand
+        jne .InvalidOp
         or al, 0x08
         jmp OutputByte
 .INl:
         call OutputByte
         jmp OutputImm8
+.InvalidOp:
+        jmp InvalidOperand
 
 InstOUT:
         call Get2Operands
@@ -2197,11 +2250,17 @@ InstPUSH:
         call GetOperand
         cmp byte [OperandType], OP_REG
         je .PushR
-        jb InvalidOperand
+        ja .PushL
+        jmp InvalidOperand
+.PushL:
+        mov al, 3
+        call CheckCPU
         cmp word [CurrentFixup], INVALID_ADDR
         jne .PushImm16
-        mov ax, [OperandValue]
-        movsx bx, al
+        mov bx, [OperandValue]
+        mov al, bl
+        cbw
+        xchg ax, bx
         cmp ax, bx
         jne .PushImm16
         mov al, 0x6A
@@ -2224,14 +2283,13 @@ InstPUSH:
         or al, 0x06
         jmp OutputByte
 
-
 InstPOP:
         call GetOperand
         cmp byte [OperandType], OP_REG
-        jne InvalidOperand
+        jne .InvalidOp
         mov al, [OperandValue]
         sub al, R_AX
-        js InvalidOperand
+        js .InvalidOp
         cmp al, 8
         jae .PopS
         or al, 0x58
@@ -2241,6 +2299,8 @@ InstPOP:
         shl al, 3
         or al, 0x07
         jmp OutputByte
+.InvalidOp:
+        jmp InvalidOperand
 
 ; Output instruction byte in AL and Rel8 if OperandValue is a short
 ; (known) jump or forced by AH=1 or SHORT in the program text.
@@ -2267,13 +2327,19 @@ HandleShortRel:
         pop ax
 .HasOperand:
         cmp byte [OperandType], OP_LIT
-        jne InvalidOperand
+        je .Lit
+        jmp InvalidOperand
+.Lit:
         cmp word [CurrentFixup], INVALID_ADDR
         jne .Fixup
         mov bx, [OperandValue]
         sub bx, [CurrentAddress]
         sub bx, 2
-        movsx cx, bl
+        push ax
+        mov al, bl
+        cbw
+        mov cx, ax
+        pop ax
         cmp cx, bx
         jne .NotShort
         push bx
@@ -2337,6 +2403,29 @@ InstJCC:
         call OutputWord
         jmp HandleRel16
 
+CheckCPU:
+        cmp [CpuLevel], al
+        jae .OK
+        pusha
+        mov ax, [CurrentLine]
+        call PutDec
+        mov al, ' '
+        call PutChar
+        mov bx, MsgErrCpuLevel
+        call PutString
+        call PutCrLf
+        ;jmp Error
+        popa
+.OK:
+        ret
+
+OutputByte186:
+        push ax
+        mov al, 1
+        call CheckCPU
+        pop ax
+        jmp OutputByte
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2368,6 +2457,7 @@ MsgErrInternalE:  db 'No fixup to register?', 0
 MsgErrMemOvrflow: db 'Address exceeds segment', 0
 MsgErrInvalidCPU: db 'Invalid/unsupported CPU', 0
 MsgErrNotRel8:    db 'Address out of 8-bit range', 0
+MsgErrCpuLevel:   db 'Instruction not supported at this CPU level', 0
 MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
 
 
@@ -2538,11 +2628,11 @@ DispatchList:
     db 'POP',0,0,0,  0x00
     dw InstPOP
     db 'POPA',0,0,   0x61
-    dw OutputByte
+    dw OutputByte186
     db 'PUSH',0,0,   0x00
     dw InstPUSH
     db 'PUSHA',0,    0x60
-    dw OutputByte
+    dw OutputByte186
 
     ; String instructions
     db 'INSB',0,0,   0x6C

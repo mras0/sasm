@@ -94,7 +94,7 @@ void Error(const char* msg)
 void CheckCPU(U1 level)
 {
     if (level > CpuLevel) {
-        printf("Line %u: Instruction not supported at this CPU level\n", CurrentLine);
+        Error("Instruction not supported at this CPU level");
     }
 }
 
