@@ -6,6 +6,7 @@
 
 ; FAT is kept at 0x8000
 
+        cpu 386 ; 8086 when SASM supports it
         org 0x7c1e
 
 SEC_PER_FAT   equ 0x7c16
@@ -21,8 +22,10 @@ DIR_ENTRY_SIZE   equ 0x20
 
         ; Ensure we're running from a known address
 Start:
-        push 0
-        push RealStart
+        xor ax, ax
+        push ax
+        mov ax, RealStart
+        push ax
         retf
 RealStart:
         cld
@@ -44,33 +47,31 @@ RealStart:
         mov cx, [SEC_PER_FAT]
         call ReadSectors
 
-        mov bx, 0x0050
-        mov si, bx
-        shl si, 4
+        mov si, 0x0500
         mov ax, FAT_ROOT_SEC
         mov cx, FAT_MAX_ROOTS
-        mov di, FileName
 .SearchFile:
-        pusha
+        push cx
+        mov bx, si
+        mov cl, 4
+        shr bx, cl
         mov cx, 1
         call ReadSectors
-        mov cx, 16 ; BytesPerSector / DIR_ENTRY_SIZE
+        pop cx
+        mov bx, 16 ; BytesPerSector / DIR_ENTRY_SIZE
 .DirLoop:
-        mov bx, 10
-.Cmp:
-        mov al, [di+bx]
-        cmp al, [si+bx]
+        push si
+        mov di, FileName
+        mov cx, 11
+        repe cmpsb
+        pop si
         jne .NextDE
-        dec bx
-        jns .Cmp
         mov ax, [si+DIR_ENTRY_LCLUST]
-        add sp, 16 ;popa
         jmp .FileFound
 .NextDE:
         add si, DIR_ENTRY_SIZE
-        dec cx
+        dec bx
         jnz .DirLoop
-        popa
         inc ax
         dec cx
         jnz .SearchFile
@@ -86,12 +87,13 @@ RealStart:
         cmp ax, 0xff0
         jae .LoadDone
 
-        pusha
+        push ax
         mov bx, cx
         mov cx, 1
         add ax, 31 ; FAT_DATA_SEC - 2
         call ReadSectors
-        popa
+        mov cx, bx
+        pop ax
         add cx, 0x0020 ; BytesPerSector/0x10
 
         ; Move to next cluster
@@ -101,12 +103,16 @@ RealStart:
         shr bx, 1
         mov ax, [si+bx]
         jnc .Even
-        shr ax, 4
+        shr ax, 1
+        shr ax, 1
+        shr ax, 1
+        shr ax, 1
 .Even:
         and ah, 0x0f
         jmp .LoadLoop
 .LoadDone:
-        push 0x0500
+        mov ax, 0x0500
+        push ax
         ; DL=boot drive
         ret
 Error:
@@ -129,7 +135,10 @@ PutHexWord:
         pop ax
 PutHexByte:
         push ax
-        shr al, 4
+        shr al, 1
+        shr al, 1
+        shr al, 1
+        shr al, 1
         call PutHexDig
         pop ax
 PutHexDig:
@@ -162,8 +171,13 @@ PutChar:
         pop ax
         ret
 
+; Read CX sectors from LBA AX segment BX
 ReadSectors:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push es
 .Read:
         push ax
         push bx
@@ -171,24 +185,20 @@ ReadSectors:
         push dx
         mov es, bx
         ; LBA->CHS
-        mov di, dx ; Preserve DL
+        mov bx, dx ; Preserve DL
         xor dx, dx
-        mov bx, [SEC_PER_TRACK]
-        div bx
+        div word [SEC_PER_TRACK]
         inc dl
         mov cx, dx
         xor dx, dx
-        mov bx, [NUM_HEADS]
-        div bx
+        div word [NUM_HEADS]
         ; CL = sector
         ; DX = head
         ; AX = cyl
-        mov bx, di
         mov dh, dl ; DH=head
         mov dl, bl ; DL=drive number
         mov ch, al ; CH=cylinder
-        ; ES:BX data buffer
-        xor bx, bx
+        xor bx, bx ; ES:BX data buffer
         mov ax, 0x0201 ; AL=number of sectors
         int 0x13
         jc .Error
@@ -200,7 +210,11 @@ ReadSectors:
         inc ax
         dec cx
         jnz .Read
-        popa
+        pop es
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 .Error:
         mov si, MsgDiskErr

@@ -1141,10 +1141,13 @@ void InstMulDiv(U1 r)
 {
     assert(r >= 4 && r < 8);
     GetOperand();
-    if (OperandType == OP_LIT || OperandValue >= R_ES) {
+    if (OperandType == OP_LIT) {
         Error("Invalid operands for mul/div");
     }
     if (OperandType == OP_REG) {
+        if (OperandValue >= R_ES) {
+            Error("Invalid register for mul/div");
+        }
         OutputByte(0xF6 | (OperandValue/8==1));
         OutputByte(0xC0 | (r<<3) | (OperandValue&7));
     } else {
@@ -1219,6 +1222,7 @@ void InstPUSH(U1 arg)
             OutputByte(0x50 | (OperandValue & 7));
         }
     } else if (OperandType == OP_LIT) {
+        CheckCPU(1);
         if (!IsShort(OperandValue) || CurrentFixup) {
             OutputByte(0x68);
             OutputImm16();
