@@ -30,13 +30,13 @@
 ;;   * NASM warns about resb/resw in code sections and
 ;;     ouputs zeros while SASM doesn't output anything
 ;;     for trailing resb/resw's.
-;;   * SASM currently isn't case-sensitive for labels/
-;;     equates.
 ;;   * Error checking is limited, and SASM might emit
 ;;     garbage opcode bytes when encountering an
 ;;     illegal instruction (like ADD ES, 4). Check the
 ;;     code with the C version or even better with NASM
 ;;     from time to time.
+;;   * Non-short jumps aren't synthesized for <386 like
+;;     NASM does (e.g. jc FarAway -> jnc $+5/jmp FarAway)
 ;;
 ;; Development was generally done by first implementing
 ;; support for the new instruction/directive/etc. in the
@@ -381,7 +381,7 @@ Dispatch:
 .Compare:
         xor bx, bx
 .CLoop:
-        mov al, [Token+bx]
+        mov al, [UToken+bx]
         mov ah, [si+bx]
         cmp al, ah
         jne .Next
@@ -780,8 +780,8 @@ GetToken:
         sub ah, '0'
         cmp ah, 9
         jbe .Store
-        and al, 0xDF ; to upper case
         mov ah, al
+        and ah, 0xDF ; to upper case
         sub ah, 'A'
         cmp ah, 26
         ja .Done
@@ -825,6 +825,19 @@ GetToken:
         jnz .Cvt
         mov byte [bx], 0
 .NotEqu:
+        xor bx, bx
+.UC:
+        mov al, [Token+bx]
+        cmp al, 'a'
+        jb .StoreUC
+        cmp al, 'z'
+        ja .StoreUC
+        and al, 0xDF
+.StoreUC:
+        mov [UToken+bx], al
+        inc bx
+        and al, al
+        jnz .UC
         ret
 
 ; Get number to AX
@@ -834,11 +847,11 @@ GetNumber:
 
 ; Get number from Token to AX
 GetTokenNumber:
-        cmp word [Token], '0X'
+        cmp word [UToken], '0X'
         je .Hex
         ; Decimal number
         xor ax, ax
-        mov bx, Token
+        mov bx, UToken
         xor ch, ch
 .Dec:
         mov cl, [bx]
@@ -862,7 +875,7 @@ GetTokenNumber:
         cmp cl, 4
         ja .Error
         xor ax, ax
-        mov bx, Token
+        mov bx, UToken
         add bx, 2
 .HexCvt:
         shl ax, 4
@@ -922,7 +935,7 @@ GetRegOrNumber:
         ; Check if register
         cmp byte [TokenLen], 2
         jne .CheckNumber
-        mov ax, [Token]
+        mov ax, [UToken]
         mov bx, RegNames
         mov cl, R_INVALID
 .ChecReg:
@@ -971,8 +984,8 @@ GetOperand:
         ; Check for word/byte [mem]
         cmp byte [TokenLen], 4
         jne .CheckNamedLit
-        mov ax, [Token]
-        mov bx, [Token+2]
+        mov ax, [UToken]
+        mov bx, [UToken+2]
         cmp ax, 'BY'
         jne .CheckWord
         cmp bx, 'TE'
@@ -2310,11 +2323,11 @@ HandleShortRel:
         call GetRegOrNumber
         pop ax
         jnc .HasOperand
-        cmp word [Token], 'SH'
+        cmp word [UToken], 'SH'
         jne .NamedLit
-        cmp word [Token+2], 'OR'
+        cmp word [UToken+2], 'OR'
         jne .NamedLit
-        cmp word [Token+4], 'T'
+        cmp word [UToken+4], 'T'
         jne .NamedLit
         push ax
         call GetOperand
@@ -2754,6 +2767,8 @@ CurrentChar:      resb 1 ; Current input character (0 on EOF)
 TokenLen:         resb 1
 Token:            resb TOKEN_MAX
 TokenEnd:         resb 1 ; NUL-terminator
+UToken:           resb TOKEN_MAX
+                  resb 1 ; NUL
 InputBufferPos:   resw 1
 InputBufferBytes: resw 1
 InputBuffer:      resb BUFFER_SIZE

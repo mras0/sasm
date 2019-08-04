@@ -45,6 +45,7 @@ U2 CurrentLine;
 U2 NumNewLines;
 U1 CurrentChar;
 char TokenText[TOKEN_MAX+1];
+char UTokenText[TOKEN_MAX+1];
 U1 TokenLen;
 U2 CurrentAddress;
 U1 OutputBuffer[OUTPUT_MAX];
@@ -85,9 +86,6 @@ __declspec(noreturn)
 void Error(const char* msg)
 {
     fprintf(stderr, "Line %u: %s (Current token: \"%s\")\n", CurrentLine, msg, TokenText);
-#if 0
-    for (int i = 0; i < OutputOffset; ++i) printf("%02X ", OutputBuffer[i]);
-#endif
     exit(1);
 }
 
@@ -220,7 +218,7 @@ void GetToken(void)
     TokenLen = 0;
     while (CurrentChar == '.' || CurrentChar == '_' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
         if (TokenLen < TOKEN_MAX) {
-            TokenText[TokenLen++] = ToUpper(CurrentChar);
+            TokenText[TokenLen++] = CurrentChar;
         }
         ReadNext();
     }
@@ -230,6 +228,9 @@ void GetToken(void)
     if (e) {
         TokenLen = (U1)sprintf(TokenText, "0X%X", e->Value);
     }
+
+    for (char* D = UTokenText, *S = TokenText; (*D++ = ToUpper(*S++)) != 0;)
+        ;
 }
 
 bool TryConsume(U1 ch)
@@ -252,13 +253,13 @@ void Expect(U1 ch) {
 U2 GetNumberFromToken(void)
 {
     U2 num = 0;
-    if (TokenLen > 2 && TokenText[0] == '0' && TokenText[1] == 'X') {
+    if (TokenLen > 2 && UTokenText[0] == '0' && UTokenText[1] == 'X') {
         if (TokenLen > 6) {
             Error("Hexnumber too large");
         }
         for (unsigned i = 2; i < TokenLen; ++i) {
             num <<= 4;
-            U1 ch = TokenText[i];
+            U1 ch = UTokenText[i];
             if (ch >= '0' && ch <= '9') {
                 num |= ch - '0';
             } else if (ch >= 'A' && ch <= 'F') {
@@ -269,7 +270,7 @@ U2 GetNumberFromToken(void)
         }
     } else {
         for (int i = 0; i < TokenLen; ++i) {
-            const U1 val = TokenText[i] - '0';
+            const U1 val = UTokenText[i] - '0';
             const U2 nn = num * 10 + val;
             if (val > 9 || nn < num) Error("Invalid decimal number");
             num = nn;
@@ -477,7 +478,7 @@ void GetReg(void)
 {
     OperandValue = R_INVALID;
     for (U1 r = 0; r < sizeof(RegNames)/sizeof(*RegNames); ++r) {
-        if (!strcmp(TokenText, RegNames[r])) {
+        if (!strcmp(UTokenText, RegNames[r])) {
             OperandValue = r;
             break;
         }
@@ -643,9 +644,9 @@ void GetOperand(void)
         if (GetRegOrNumber()) {
             return;
         }
-        if (!strcmp(TokenText, "BYTE") || !strcmp(TokenText, "WORD")) {
+        if (!strcmp(UTokenText, "BYTE") || !strcmp(UTokenText, "WORD")) {
             assert(ExplicitSize == NO_SIZE);
-            ExplicitSize = TokenText[0] == 'W';
+            ExplicitSize = UTokenText[0] == 'W';
             GetOperandMem();
             return;
         }
@@ -1301,7 +1302,7 @@ void InstCALL(U1 arg)
 bool HandleShortRel(U1 inst, bool force)
 {
     if (!GetRegOrNumber()) {
-        if (!strcmp(TokenText, "SHORT")) {
+        if (!strcmp(UTokenText, "SHORT")) {
             force = true;
             GetOperand();
         } else {
@@ -1517,7 +1518,7 @@ void Dispatch(void)
     }
     ExplicitSize = NO_SIZE;
     for (unsigned i = 0; i < sizeof(DispatchList)/sizeof(*DispatchList); ++i) {
-        if (!strcmp(TokenText, DispatchList[i].text)) {
+        if (!strcmp(UTokenText, DispatchList[i].text)) {
             DispatchList[i].func(DispatchList[i].arg);
             if (CurrentLFixup || CurrentFixup) {
                 Error("Fixup not handled");
