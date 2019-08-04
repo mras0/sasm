@@ -59,6 +59,7 @@ enum {
 U2 OperandValue, OperandLValue;
 struct Fixup* CurrentFixup, * CurrentLFixup;
 U1 ExplicitSize;
+U1 CpuLevel = 3; // Assume 386
 
 enum {
     R_AL, R_CL, R_DL, R_BL, R_AH, R_CH, R_DH, R_BH,
@@ -83,6 +84,13 @@ void Error(const char* msg)
     for (int i = 0; i < OutputOffset; ++i) printf("%02X ", OutputBuffer[i]);
 #endif
     exit(1);
+}
+
+void CheckCPU(U1 level)
+{
+    if (level > CpuLevel) {
+        printf("Line %u: Instruction not supported at this CPU level\n", CurrentLine);
+    }
 }
 
 void OutputByte(U1 b)
@@ -646,6 +654,25 @@ void DirectiveOrg(U1 arg)
     CurrentAddress = org;
 }
 
+void DirectiveCPU(U1 arg)
+{
+    (void)arg;
+    const U2 level = GetNumber();
+    switch (level) {
+    case 8086:
+        CpuLevel = 0;
+        break;
+    case 186:
+    case 286:
+    case 386:
+        CpuLevel = (U1)(level / 100);
+        break;
+    default:
+        Error("Unrecognized CPU");
+    }
+    assert(CpuLevel <= 3);
+}
+
 void OutputDx(U1 size, U2 val)
 {
     OutputByte(val&0xff);
@@ -870,6 +897,7 @@ Invalid:
 
 void InstMOVXX(U1 op2)
 {
+    CheckCPU(3);
     Get2Operands();
     if (OperandLType == OP_REG && OperandLValue/8 == 1) {
         OutputByte(0x0F);
@@ -884,6 +912,28 @@ void InstMOVXX(U1 op2)
         }
     }
     Error("Invalid/unsupported operands to MOVZX");
+}
+
+void InstLEA(U1 arg)
+{
+    (void)arg;
+    Get2Operands();
+    if (OperandLType != OP_REG || OperandLValue/8 != 1 || OperandType >= OP_REG) {
+        Error("Invalid operands to LEA");
+    }
+    OutputRM(0x8D);
+}
+
+void InstLXS(U1 inst)
+{
+    Get2Operands();
+    if (OperandLType != OP_REG || OperandLValue/8 != 1 || OperandType >= OP_REG) {
+        Error("Invalid operands to LDS/LES");
+    }
+    // Suppress |1 in OutputRM (for 16-bit register value)
+    OperandLValue %= 8;
+    ExplicitSize = NO_SIZE;
+    OutputRM(inst);
 }
 
 void InstXCHG(U1 arg)
@@ -906,6 +956,51 @@ void InstXCHG(U1 arg)
         return;
     }
     Error("Invalid/unsupported operands to XCHG");
+}
+
+void InstTEST(U1 arg)
+{
+    (void)arg;
+    Get2Operands();
+
+    // TODO: Use A8/A9 when OperandLType==OP_REG && (OperandValue == R_AL || OperandValue == R_AX)
+    if (OperandType == OP_LIT) {
+        bool is16bit = false;
+        if (OperandLType == OP_LIT) {
+            goto Invalid;
+        } else if (OperandLType == OP_REG) {
+            if (OperandLValue >= R_ES) {
+                goto Invalid;
+            }
+            is16bit = (OperandLValue/8==1?1:0);
+            OutputByte(0xF6 | is16bit);
+            OutputByte(0xC0 | (OperandLValue&7));
+        } else {
+            if (ExplicitSize == NO_SIZE) {
+                Error("Operand size not specified");
+            }
+            is16bit = ExplicitSize;
+            OutputByte(0xF6 | ExplicitSize);
+            OutputModRM(0);
+        }
+        OutputImm(is16bit);
+    } else if (OperandType == OP_REG || (OperandType < OP_REG && OperandLType == OP_REG)) {
+        if (OperandType != OP_REG) {
+            SwapOperands();
+        }
+        if (OperandValue >= R_ES || OperandLType == OP_LIT) {
+            goto Invalid;
+        }
+        if (OperandLType == OP_REG) {
+            OutputRR(0x84);
+        } else {
+            OutputMR(0x84);
+        }
+    } else {
+Invalid:
+        PrintInstr("TEST Not implmeneted", true);
+        Error("Invalid/unsupported operands to TEST");
+    }
 }
 
 void InstIncDec(U1 dec)
@@ -1033,6 +1128,7 @@ void InstROT(U1 r)
             OutputModRM(r);
         }
         if (OperandValue != 1) {
+            CheckCPU(1);
             OutputImm8();
         }
         return;
@@ -1059,6 +1155,53 @@ void InstMulDiv(U1 r)
         SwapOperands();
         OutputModRM(r);
     }
+}
+
+void InstIN(U1 arg)
+{
+    (void)arg;
+    Get2Operands();
+    if (OperandLType == OP_REG && (OperandLValue == R_AL || OperandLValue == R_AX)) {
+        const bool is16bit = OperandLValue == R_AX;
+        if (OperandType == OP_REG && OperandValue == R_DX) {
+            // IN AL/AX, DX
+            OutputByte(0xEC | is16bit);
+            return;
+        } else if (OperandType == OP_LIT) {
+            // IN AL/AX, imm8
+            OutputByte(0xE4 | is16bit);
+            OutputImm8();
+            return;
+        }
+    }
+
+    Error("Invalid operands to IN");
+}
+
+void InstOUT(U1 arg)
+{
+    (void)arg;
+    Get2Operands();
+    if (OperandType == OP_REG && (OperandValue == R_AL || OperandValue == R_AX)) {
+        const bool is16bit = OperandValue == R_AX;
+        if (OperandLType == OP_REG && OperandLValue == R_DX) {
+            OutputByte(0xEE | is16bit);
+            return;
+        } else if (OperandLType == OP_LIT) {
+            OutputByte(0xE6 | is16bit);
+            SwapOperands();
+            OutputImm8();
+            return;
+        }
+
+    }
+    Error("Invalid operands to OUT");
+}
+
+void InstAAX(U1 inst)
+{
+    OutputByte(inst);
+    OutputByte(0x0A);
 }
 
 void InstPUSH(U1 arg)
@@ -1157,10 +1300,27 @@ void InstJMP(U1 arg)
 void HandleJcc(U1 cc) {
     assert(cc < 16);
     GetOperand();
-    if (!HandleShortRel(0x70|cc)){
+    if (!HandleShortRel(0x70|cc)) {
+        // TODO: Support forced short fixups
+        CheckCPU(3);
         OutputWord(0x800F | cc<<8);
         HandleRel16();
     }
+}
+
+void HandleJ8(U1 inst)
+{
+    GetOperand();
+    if (!HandleShortRel(inst)) {
+        // TODO: Support forced short fixups
+        Error("Jump out of range / forward jump not supported");
+    }
+}
+
+void OutputByte186(U1 inst)
+{
+    CheckCPU(1);
+    OutputByte(inst);
 }
 
 #define JO   0x0
@@ -1181,94 +1341,127 @@ void HandleJcc(U1 cc) {
 #define JG   0xf
 
 static const struct {
-    const char text[6];
+    const char text[7];
     void (*func)(U1);
     U1 arg;
 } DispatchList[] = {
-//  { "12345" , &Directive12345 , 0x12 }
-    { "ORG"   , &DirectiveOrg   , 0x00 },
-    { "DB"    , &DirectiveDx    , 0x01 },
-    { "DW"    , &DirectiveDx    , 0x02 },
-    { "RESB"  , &DirectiveResx  , 0x01 },
-    { "RESW"  , &DirectiveResx  , 0x02 },
-    { "REP"   , &OutputByte     , 0xF3 },
-    { "MOV"   , &InstMOV        , 0x00 },
-    { "MOVZX" , &InstMOVXX      , 0xB6 },
-    { "MOVSX" , &InstMOVXX      , 0xBE },
-    { "XCHG"  , &InstXCHG       , 0x00 },
-    { "INC"   , &InstIncDec     , 0x00 },
-    { "DEC"   , &InstIncDec     , 0x01 },
-    { "NOT"   , &InstNotNeg     , 0x02 },
-    { "NEG"   , &InstNotNeg     , 0x03 },
-    { "ADD"   , &InstALU        , 0x00 },
-    { "OR"    , &InstALU        , 0x08 },
-    { "ADC"   , &InstALU        , 0x10 },
-    { "SBB"   , &InstALU        , 0x18 },
-    { "AND"   , &InstALU        , 0x20 },
-    { "SUB"   , &InstALU        , 0x28 },
-    { "XOR"   , &InstALU        , 0x30 },
-    { "CMP"   , &InstALU        , 0x38 },
-    { "ROL"   , &InstROT        , 0x00 },
-    { "ROR"   , &InstROT        , 0x01 },
-    { "RCL"   , &InstROT        , 0x02 },
-    { "RCR"   , &InstROT        , 0x03 },
-    { "SHL"   , &InstROT        , 0x04 },
-    { "SHR"   , &InstROT        , 0x05 },
-    { "SAR"   , &InstROT        , 0x07 },
-    { "MUL"   , &InstMulDiv     , 0x04 },
-    { "IMUL"  , &InstMulDiv     , 0x05 },
-    { "DIV"   , &InstMulDiv     , 0x06 },
-    { "IDIV"  , &InstMulDiv     , 0x07 },
-    { "INT"   , &InstINT        , 0x00 },
-    { "RET"   , &OutputByte     , 0xC3 },
-    { "RETF"  , &OutputByte     , 0xCB },
-    { "IRET"  , &OutputByte     , 0xCF },
-    { "NOP"   , &OutputByte     , 0x90 },
-    { "CBW"   , &OutputByte     , 0x98 },
-    { "CWD"   , &OutputByte     , 0x99 },
-    { "PUSHA" , &OutputByte     , 0x60 },
-    { "POPA"  , &OutputByte     , 0x61 },
-    { "PUSHF" , &OutputByte     , 0x9C },
-    { "POPF"  , &OutputByte     , 0x9D },
-    { "PUSH"  , &InstPUSH       , 0x00 },
-    { "POP"   , &InstPOP        , 0x00 },
-    { "MOVSB" , &OutputByte     , 0xA4 },
-    { "MOVSW" , &OutputByte     , 0xA5 },
-    { "STOSB" , &OutputByte     , 0xAA },
-    { "STOSW" , &OutputByte     , 0xAB },
-    { "LODSB" , &OutputByte     , 0xAC },
-    { "LODSW" , &OutputByte     , 0xAD },
-    { "HLT"   , &OutputByte     , 0xF4 },
-    { "CLC"   , &OutputByte     , 0xF8 },
-    { "STC"   , &OutputByte     , 0xF9 },
-    { "CLI"   , &OutputByte     , 0xFA },
-    { "STI"   , &OutputByte     , 0xFB },
-    { "CLD"   , &OutputByte     , 0xFC },
-    { "STD"   , &OutputByte     , 0xFD },
-    { "CALL"  , &InstCALL       , 0x00 },
-    { "JMP"   , &InstJMP        , 0x00 },
-    { "JO"    , &HandleJcc      , JO   },
-    { "JNO"   , &HandleJcc      , JNO  },
-    { "JC"    , &HandleJcc      , JC   },
-    { "JB"    , &HandleJcc      , JC   },
-    { "JNC"   , &HandleJcc      , JNC  },
-    { "JNB"   , &HandleJcc      , JNC  },
-    { "JAE"   , &HandleJcc      , JNC  },
-    { "JZ"    , &HandleJcc      , JZ   },
-    { "JE"    , &HandleJcc      , JZ   },
-    { "JNZ"   , &HandleJcc      , JNZ  },
-    { "JNE"   , &HandleJcc      , JNZ  },
-    { "JNA"   , &HandleJcc      , JNA  },
-    { "JBE"   , &HandleJcc      , JNA  },
-    { "JA"    , &HandleJcc      , JA   },
-    { "JS"    , &HandleJcc      , JS   },
-    { "JNS"   , &HandleJcc      , JNS  },
-    { "JPE"   , &HandleJcc      , JPE  },
-    { "JPO"   , &HandleJcc      , JPO  },
-    { "JL"    , &HandleJcc      , JL   },
-    { "JNL"   , &HandleJcc      , JNL  },
-    { "JNG"   , &HandleJcc      , JNG  },
-    { "JG"    , &HandleJcc      , JG   },
+//  { "123456" , &Directive123456 , 0x12 }
+    { "ORG"    , &DirectiveOrg    , 0x00 },
+    { "DB"     , &DirectiveDx     , 0x01 },
+    { "DW"     , &DirectiveDx     , 0x02 },
+    { "RESB"   , &DirectiveResx   , 0x01 },
+    { "RESW"   , &DirectiveResx   , 0x02 },
+    { "CPU"    , &DirectiveCPU    , 0x00 },
+    { "REPNE"  , &OutputByte      , 0xF2 },
+    { "REPE"   , &OutputByte      , 0xF3 },
+    { "REP"    , &OutputByte      , 0xF3 },
+    { "MOV"    , &InstMOV         , 0x00 },
+    { "MOVZX"  , &InstMOVXX       , 0xB6 },
+    { "MOVSX"  , &InstMOVXX       , 0xBE },
+    { "LEA"    , &InstLEA         , 0x00 },
+    { "LES"    , &InstLXS         , 0xC4 },
+    { "LDS"    , &InstLXS         , 0xC5 },
+    { "XCHG"   , &InstXCHG        , 0x00 },
+    { "TEST"   , &InstTEST        , 0x00 },
+    { "INC"    , &InstIncDec      , 0x00 },
+    { "DEC"    , &InstIncDec      , 0x01 },
+    { "NOT"    , &InstNotNeg      , 0x02 },
+    { "NEG"    , &InstNotNeg      , 0x03 },
+    { "ADD"    , &InstALU         , 0x00 },
+    { "OR"     , &InstALU         , 0x08 },
+    { "ADC"    , &InstALU         , 0x10 },
+    { "SBB"    , &InstALU         , 0x18 },
+    { "AND"    , &InstALU         , 0x20 },
+    { "SUB"    , &InstALU         , 0x28 },
+    { "XOR"    , &InstALU         , 0x30 },
+    { "CMP"    , &InstALU         , 0x38 },
+    { "ROL"    , &InstROT         , 0x00 },
+    { "ROR"    , &InstROT         , 0x01 },
+    { "RCL"    , &InstROT         , 0x02 },
+    { "RCR"    , &InstROT         , 0x03 },
+    { "SHL"    , &InstROT         , 0x04 },
+    { "SHR"    , &InstROT         , 0x05 },
+    { "SAR"    , &InstROT         , 0x07 },
+    { "MUL"    , &InstMulDiv      , 0x04 },
+    { "IMUL"   , &InstMulDiv      , 0x05 },
+    { "DIV"    , &InstMulDiv      , 0x06 },
+    { "IDIV"   , &InstMulDiv      , 0x07 },
+    { "INT"    , &InstINT         , 0x00 },
+    { "INT3"   , &OutputByte      , 0xCC },
+    { "INTO"   , &OutputByte      , 0xCE },
+    { "RET"    , &OutputByte      , 0xC3 },
+    { "RETF"   , &OutputByte      , 0xCB },
+    { "IRET"   , &OutputByte      , 0xCF },
+    { "NOP"    , &OutputByte      , 0x90 },
+    { "CBW"    , &OutputByte      , 0x98 },
+    { "CWD"    , &OutputByte      , 0x99 },
+    { "PUSHA"  , &OutputByte186   , 0x60 },
+    { "POPA"   , &OutputByte186   , 0x61 },
+    { "PUSHF"  , &OutputByte      , 0x9C },
+    { "POPF"   , &OutputByte      , 0x9D },
+    { "PUSH"   , &InstPUSH        , 0x00 },
+    { "POP"    , &InstPOP         , 0x00 },
+    { "INSB"   , &OutputByte      , 0x6C },
+    { "INSW"   , &OutputByte      , 0x6D },
+    { "OUTSB"  , &OutputByte      , 0x6E },
+    { "OUTSW"  , &OutputByte      , 0x6F },
+    { "MOVSB"  , &OutputByte      , 0xA4 },
+    { "MOVSW"  , &OutputByte      , 0xA5 },
+    { "CMPSB"  , &OutputByte      , 0xA6 },
+    { "CMPSW"  , &OutputByte      , 0xA7 },
+    { "STOSB"  , &OutputByte      , 0xAA },
+    { "STOSW"  , &OutputByte      , 0xAB },
+    { "LODSB"  , &OutputByte      , 0xAC },
+    { "LODSW"  , &OutputByte      , 0xAD },
+    { "SCASB"  , &OutputByte      , 0xAE },
+    { "SCASW"  , &OutputByte      , 0xAF },
+    { "IN"     , &InstIN          , 0x00 },
+    { "OUT"    , &InstOUT         , 0x00 },
+    { "SAHF"   , &OutputByte      , 0x9E },
+    { "LAHF"   , &OutputByte      , 0x9F },
+    { "XLATB"  , &OutputByte      , 0xD7 },
+    { "HLT"    , &OutputByte      , 0xF4 },
+    { "CMC"    , &OutputByte      , 0xF5 },
+    { "CLC"    , &OutputByte      , 0xF8 },
+    { "STC"    , &OutputByte      , 0xF9 },
+    { "CLI"    , &OutputByte      , 0xFA },
+    { "STI"    , &OutputByte      , 0xFB },
+    { "CLD"    , &OutputByte      , 0xFC },
+    { "STD"    , &OutputByte      , 0xFD },
+    { "DAA"    , &OutputByte      , 0x27 },
+    { "DAS"    , &OutputByte      , 0x2F },
+    { "AAA"    , &OutputByte      , 0x37 },
+    { "AAS"    , &OutputByte      , 0x3F },
+    { "AAM"    , &InstAAX         , 0xD4 },
+    { "AAD"    , &InstAAX         , 0xD5 },
+    { "CALL"   , &InstCALL        , 0x00 },
+    { "JMP"    , &InstJMP         , 0x00 },
+    { "LOOPNE" , &HandleJ8        , 0xE0 },
+    { "LOOPE"  , &HandleJ8        , 0xE1 },
+    { "LOOP"   , &HandleJ8        , 0xE2 },
+    { "JCXZ"   , &HandleJ8        , 0xE3 },
+    { "JO"     , &HandleJcc       , JO   },
+    { "JNO"    , &HandleJcc       , JNO  },
+    { "JC"     , &HandleJcc       , JC   },
+    { "JB"     , &HandleJcc       , JC   },
+    { "JNC"    , &HandleJcc       , JNC  },
+    { "JNB"    , &HandleJcc       , JNC  },
+    { "JAE"    , &HandleJcc       , JNC  },
+    { "JZ"     , &HandleJcc       , JZ   },
+    { "JE"     , &HandleJcc       , JZ   },
+    { "JNZ"    , &HandleJcc       , JNZ  },
+    { "JNE"    , &HandleJcc       , JNZ  },
+    { "JNA"    , &HandleJcc       , JNA  },
+    { "JBE"    , &HandleJcc       , JNA  },
+    { "JA"     , &HandleJcc       , JA   },
+    { "JS"     , &HandleJcc       , JS   },
+    { "JNS"    , &HandleJcc       , JNS  },
+    { "JPE"    , &HandleJcc       , JPE  },
+    { "JPO"    , &HandleJcc       , JPO  },
+    { "JL"     , &HandleJcc       , JL   },
+    { "JNL"    , &HandleJcc       , JNL  },
+    { "JNG"    , &HandleJcc       , JNG  },
+    { "JG"     , &HandleJcc       , JG   },
     };
 
 bool TryGetU(U1 ch)

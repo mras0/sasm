@@ -10,7 +10,11 @@
 ;; to assemble itself running only under software assembled
 ;; with itself (excluding the BIOS). DOS is of course the
 ;; obvious choice as a bootstrapping environment and .COM
-;; files are easy to work with, so that's the basis.
+;; files are easy to work with, so that's the basis. Due to
+;; programmer lazyness the minimum supported processor is
+;; currently the 80386 (mostly due the use of PUSHA/POPA and
+;; shift/rotates with an immediate other than 1 and using
+;; rel16 for forward jumps).
 ;;
 ;; While the accepted syntax should be a strict subset of
 ;; what NASM allows and subsequently outputs, there are
@@ -30,6 +34,11 @@
 ;;     for trailing resb/resw's.
 ;;   * SASM currently isn't case-sensitive for labels/
 ;;     equates.
+;;   * Error checking is limited, and SASM might emit
+;;     garbage opcode bytes when encountering an
+;;     illegal instruction (like ADD ES, 4). Check the
+;;     code with the C version or even better with NASM
+;;     from time to time.
 ;;
 ;; Development was generally done by first implementing
 ;; support for the new instruction/directive/etc. in the
@@ -54,17 +63,16 @@
 ;;   Return value: (DX:)AX or BX for pointer values,
 ;;                 boolean values via the carry flag
 ;;
-;; TODO: Investigate whether stack potentially overlaps with allocations
-;;       SS:SP is initialized at the top of the 64K started at CS:0
 
+STACK_SIZE       equ 512
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
-INST_MAX         equ 5          ; Maximum length of directive/instruction
+INST_MAX         equ 6          ; Maximum length of directive/instruction (LOOPNE is longest)
 BUFFER_SIZE      equ 512        ; Size of input buffer
 OUTPUT_MAX       equ 0x2000     ; Maximum output size
 LABEL_MAX        equ 200        ; Maximum number of labels
 FIXUP_MAX        equ 400        ; Maximum number of fixups
 EQU_MAX          equ 100        ; Maximum number of equates
-DISPATCH_SIZE    equ 8          ; Size of DispatchListEntry
+DISPATCH_SIZE    equ 9          ; Size of DispatchListEntry (INST_MAX + 3)
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 LABEL_ADDR       equ 18         ; Offset of label address
 LABEL_FIXUP      equ 20         ; Offset of label fixup
@@ -125,26 +133,30 @@ CC_NL            equ 0xd
 CC_NG            equ 0xe
 CC_G             equ 0xf
 
+        cpu 386
         org 0x100
 
 ProgramEntry:
+        ; Clear BSS
         mov di, BSS
         mov cx, ProgramEnd
         sub cx, di
         xor al, al
         rep stosb
 
-        call ParseCommandLine
-
-        mov bx, MsgHello
-        call PutString
-        mov bx, InFileName
-        call PutString
-        mov bx, MsgHello2
-        call PutString
-        mov bx, OutFileName
-        call PutString
-        call PutCrLf
+        ; First free paragraph is at the end of the program
+        ; COM files get the largest available block
+        mov ax, ProgramEnd
+        add ax, 15
+        and ax, 0xfff0
+        add ax, STACK_SIZE
+        cli
+        mov sp, ax
+        sti
+        shr ax, 4
+        mov bx, cs
+        add ax, bx
+        mov [FirstFreeSeg], ax
 
         call Init
         call MainLoop
@@ -218,14 +230,17 @@ CopyFileName:
         ret
 
 Init:
-        ; First free paragraph is at the end of the program
-        ; COM files get the largest available block
-        mov ax, ProgramEnd
-        add ax, 15
-        shr ax, 4
-        mov bx, cs
-        add ax, bx
-        mov [FirstFreeSeg], ax
+        call ParseCommandLine
+
+        mov bx, MsgHello
+        call PutString
+        mov bx, InFileName
+        call PutString
+        mov bx, MsgHello2
+        call PutString
+        mov bx, OutFileName
+        call PutString
+        call PutCrLf
 
         mov ax, OUTPUT_MAX
         mov bx, 1
@@ -259,6 +274,8 @@ Init:
         mov bx, EQU_SIZE
         call Malloc
         mov [EquSeg], ax
+
+        mov byte [CpuLevel], 3
 
         call ParserInit
         ret
@@ -1479,6 +1496,28 @@ DirORG:
         mov [CurrentAddress], ax
         ret
 
+DirCPU:
+        call GetNumber
+        xor dx, dx
+        mov bx, 100
+        div bx
+        cmp dx, 86
+        jne .Invalid
+        cmp ax, 0
+        je .Invalid
+        cmp ax, 3
+        jbe .OK
+        cmp ax, 80
+        jne .Invalid
+        mov ax, 0
+.OK:
+        mov [CpuLevel], al
+        ret
+.Invalid:
+        mov bx, MsgErrInvalidCPU
+        jmp Error
+
+
 ; AL = 1 if DB 2 if DW
 DirDX:
         push si
@@ -1774,6 +1813,57 @@ InstXCHG:
         mov al, 0x86
         jmp OutputRR
 
+InstTEST:
+        call Get2Operands
+        cmp byte [OperandType], OP_REG
+        je .TESTr
+        jb .TESTm
+        cmp byte [OperandLType], OP_REG
+        ja InvalidOperand
+        je .TESTrl
+        ; TEST mem, lit
+        mov al, [ExplicitSize]
+        dec al
+        jns .HasSize
+        mov bx, MsgErrNoSize
+        jmp Error
+.HasSize:
+        push ax
+        or al, 0xF6
+        call OutputByte
+        xor al, al
+        call OutputModRM
+        pop ax
+        jmp OutputImm
+.TESTrl:
+        ; TEST reg, lit 0x
+        mov al, [OperandLValue]
+        cmp al, R_ES
+        jae InvalidOperand
+        mov ah, al
+        shr al, 3
+        push ax
+        or al, 0xF6
+        and ah, 7
+        or ah, 0xC0
+        call OutputWord
+        pop ax
+        jmp OutputImm
+.TESTr:
+        ; TEST xxx, reg
+        cmp byte [OperandValue], R_ES
+        jae InvalidOperand
+        mov al, 0x84
+        cmp byte [OperandLType], OP_REG
+        ja InvalidOperand
+        jb OutputMR
+        jmp OutputRR
+.TESTm:
+        cmp byte [OperandLType], OP_REG
+        jne InvalidOperand
+        call SwapOperands
+        jmp .TESTr
+
 ; AL=second opcode byte
 InstMOVXX:
         push ax
@@ -1800,6 +1890,32 @@ InstMOVXX:
         or al, 0xc0
         jmp OutputByte
 
+HandleLXXArgs:
+        call Get2Operands
+        cmp byte [OperandLType], OP_REG
+        jne InvalidOperand
+        cmp byte [OperandType], OP_REG
+        jae InvalidOperand
+        mov bl, [OperandLValue]
+        shr bl, 3
+        cmp bl, 1
+        jne InvalidOperand
+        ret
+
+InstLEA:
+        call HandleLXXArgs
+        mov al, 0x8D
+        jmp OutputRM
+
+; AL=opcode byte
+InstLXS:
+        push ax
+        call HandleLXXArgs
+        pop ax
+        ; Suppress OR 1 in OutInst816
+        mov byte [ExplicitSize], 0
+        and byte [OperandLValue], 7
+        jmp OutputRM
 
 ; AL=0 if INC, AL=1 if DEC
 InstIncDec:
@@ -2018,6 +2134,43 @@ InstROT:
         call OutputWord
         jmp OutputImm8
 
+InstIN:
+        call Get2Operands
+        mov al, 0xE4
+        ; Fall through
+
+HandleInOut:
+        cmp byte [OperandLType], OP_REG
+        jne InvalidOperand
+        mov bl, [OperandLValue]
+        test bl, 7
+        jnz InvalidOperand
+        shr bl, 3
+        cmp bl, 1
+        ja InvalidOperand
+        or al, bl
+        cmp byte [OperandType], OP_REG
+        jb InvalidOperand
+        ja .INl
+        cmp byte [OperandValue], R_DX
+        jne InvalidOperand
+        or al, 0x08
+        jmp OutputByte
+.INl:
+        call OutputByte
+        jmp OutputImm8
+
+InstOUT:
+        call Get2Operands
+        call SwapOperands
+        mov al, 0xE6
+        jmp HandleInOut
+
+InstAAX:
+        call OutputByte
+        mov al, 0x0A
+        jmp OutputByte
+
 InstINT:
         mov al, 0xcd
         call OutputByte
@@ -2099,6 +2252,18 @@ InstJMP:
         call OutputByte
         jmp HandleRel16
 
+; AL contains opcode
+InstJ8:
+        push ax
+        call GetOperand
+        pop ax
+        call HandleShortRel
+        jnc .OK
+        mov bx, MsgErrNotJ8
+        jmp Error
+.OK:
+        ret
+
 ; AL contains the condition code
 InstJCC:
         push si
@@ -2146,6 +2311,8 @@ MsgErrEquMax:     db 'Too many EQUs', 0
 MsgErrOutMax:     db 'Output buffer full', 0
 MsgErrInternalE:  db 'No fixup to register?', 0
 MsgErrMemOvrflow: db 'Address exceeds segment', 0
+MsgErrInvalidCPU: db 'Invalid/unsupported CPU', 0
+MsgErrNotJ8:      db 'Address out of 8-bit range (or unsupported forward jump)', 0
 MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
 
 
@@ -2159,199 +2326,275 @@ RegNames:
 ; function in the final word.
 DispatchList:
     ; Directives
-    db 'DB',0,0,0, 0x01
+    db 'DB',0,0,0,0, 0x01
     dw DirDX
-    db 'DW',0,0,0, 0x02
+    db 'DW',0,0,0,0, 0x02
     dw DirDX
-    db 'RESB',0,   0x01
+    db 'RESB',0,0,   0x01
     dw DirResX
-    db 'RESW',0,   0x02
+    db 'RESW',0,0,   0x02
     dw DirResX
-    db 'ORG',0,0,  0x00
+    db 'ORG',0,0,0,  0x00
     dw DirORG
+    db 'CPU',0,0,0,  0x00
+    dw DirCPU
 
-    ; MOV/XCHG
-    db 'MOV',0,0,  0x00
+    ; MOV/XCHG/TEST
+    db 'MOV',0,0,0,  0x00
     dw InstMOV
-    db 'XCHG',0,   0x00
+    db 'XCHG',0,0,   0x00
     dw InstXCHG
+    db 'TEST',0,0,   0x00
+    dw InstTEST
 
-    ; MOVSX/MOVZX
-    db 'MOVZX',    0xB6
+    ; MOVSX/MOVZX/LEA/LES/LDS
+    db 'MOVZX',0,    0xB6
     dw InstMOVXX
-    db 'MOVSX',    0xBE
+    db 'MOVSX',0,    0xBE
     dw InstMOVXX
+    db 'LEA',0,0,0,  0x00
+    dw InstLEA
+    db 'LES',0,0,0,  0xC4
+    dw InstLXS
+    db 'LDS',0,0,0,  0xC5
+    dw InstLXS
 
     ; INC/DEC
-    db 'INC',0,0,  0x00
+    db 'INC',0,0,0,  0x00
     dw InstIncDec
-    db 'DEC',0,0,  0x01
+    db 'DEC',0,0,0,  0x01
     dw InstIncDec
 
     ; NOT/NEG (argument is /r)
-    db 'NOT',0,0,  0x02
+    db 'NOT',0,0,0,  0x02
     dw InstNotNeg
-    db 'NEG',0,0,  0x03
+    db 'NEG',0,0,0,  0x03
     dw InstNotNeg
 
     ; ALU instructions (argument is base instruction)
-    db 'ADD',0,0,  0x00
+    db 'ADD',0,0,0,  0x00
     dw InstALU
-    db 'OR',0,0,0, 0x08
+    db 'OR',0,0,0,0, 0x08
     dw InstALU
-    db 'ADC',0,0,  0x10
+    db 'ADC',0,0,0,  0x10
     dw InstALU
-    db 'SBB',0,0,  0x18
+    db 'SBB',0,0,0,  0x18
     dw InstALU
-    db 'AND',0,0,  0x20
+    db 'AND',0,0,0,  0x20
     dw InstALU
-    db 'SUB',0,0,  0x28
+    db 'SUB',0,0,0,  0x28
     dw InstALU
-    db 'XOR',0,0,  0x30
+    db 'XOR',0,0,0,  0x30
     dw InstALU
-    db 'CMP',0,0,  0x38
+    db 'CMP',0,0,0,  0x38
     dw InstALU
 
+    ; BCD instructions
+    db 'DAA',0,0,0,  0x27
+    dw OutputByte
+    db 'DAS',0,0,0,  0x2F
+    dw OutputByte
+    db 'AAA',0,0,0,  0x37
+    dw OutputByte
+    db 'AAS',0,0,0,  0x3F
+    dw OutputByte
+    db 'AAM',0,0,0,  0xD4
+    dw InstAAX
+    db 'AAD',0,0,0,  0xD5
+    dw InstAAX
+
     ; Misc
-    db 'NOP',0,0,  0x90
+    db 'NOP',0,0,0,  0x90
     dw OutputByte
-    db 'CBW',0,0,  0x98
+    db 'CBW',0,0,0,  0x98
     dw OutputByte
-    db 'CWD',0,0,  0x99
+    db 'CWD',0,0,0,  0x99
     dw OutputByte
-    db 'PUSHF',    0x9C
+    db 'PUSHF',0,    0x9C
     dw OutputByte
-    db 'POPF',0,   0x9D
+    db 'POPF',0,0,   0x9D
     dw OutputByte
-    db 'REP',0,0,  0xF3
+    db 'SAHF',0,0,   0x9E
     dw OutputByte
-    db 'HLT',0,0,  0xF4
+    db 'LAHF',0,0,   0x9F
     dw OutputByte
-    db 'CLC',0,0,  0xF8
+    db 'XLATB',0,    0xD7
     dw OutputByte
-    db 'STC',0,0,  0xF9
+
+    ; I/O
+    db 'IN',0,0,0,0, 0x00
+    dw InstIN
+    db 'OUT',0,0,0, 0x00
+    dw InstOUT
+
+    ; Prefixes
+    db 'REPNE',0,    0xF2
     dw OutputByte
-    db 'CLI',0,0,  0xFA
+    db 'REPE',0,0,   0xF3
     dw OutputByte
-    db 'STI',0,0,  0xFB
+    db 'REP',0,0,0,  0xF3
     dw OutputByte
-    db 'CLD',0,0,  0xFC
+
+    ; Flags/etc.
+    db 'HLT',0,0,0,  0xF4
     dw OutputByte
-    db 'STD',0,0,  0xFD
+    db 'CMC',0,0,0,  0xF5
+    dw OutputByte
+    db 'CLC',0,0,0,  0xF8
+    dw OutputByte
+    db 'STC',0,0,0,  0xF9
+    dw OutputByte
+    db 'CLI',0,0,0,  0xFA
+    dw OutputByte
+    db 'STI',0,0,0,  0xFB
+    dw OutputByte
+    db 'CLD',0,0,0,  0xFC
+    dw OutputByte
+    db 'STD',0,0,0,  0xFD
     dw OutputByte
 
     ; Mul/Div instructions (argument is /r)
-    db 'MUL',0,0,  0x04
+    db 'MUL',0,0,0,  0x04
     dw InstMulDiv
-    db 'IMUL',0,   0x05
+    db 'IMUL',0,0,   0x05
     dw InstMulDiv
-    db 'DIV',0,0,  0x06
+    db 'DIV',0,0,0,  0x06
     dw InstMulDiv
-    db 'IDIV',0,   0x07
+    db 'IDIV',0,0,   0x07
     dw InstMulDiv
 
     ; Rotate instructions (argument is /r)
-    db 'ROL',0,0,  0x00
+    db 'ROL',0,0,0,  0x00
     dw InstROT
-    db 'ROR',0,0,  0x01
+    db 'ROR',0,0,0,  0x01
     dw InstROT
-    db 'RCL',0,0,  0x02
+    db 'RCL',0,0,0,  0x02
     dw InstROT
-    db 'RCR',0,0,  0x03
+    db 'RCR',0,0,0,  0x03
     dw InstROT
-    db 'SHL',0,0,  0x04
+    db 'SHL',0,0,0,  0x04
     dw InstROT
-    db 'SHR',0,0,  0x05
+    db 'SHR',0,0,0,  0x05
     dw InstROT
-    db 'SAR',0,0,  0x07
+    db 'SAR',0,0,0,  0x07
     dw InstROT
 
     ; Stack instructions
-    db 'POP',0,0,  0x00
+    db 'POP',0,0,0,  0x00
     dw InstPOP
-    db 'POPA',0,   0x61
+    db 'POPA',0,0,   0x61
     dw OutputByte
-    db 'PUSH',0,   0x00
+    db 'PUSH',0,0,   0x00
     dw InstPUSH
-    db 'PUSHA',    0x60
+    db 'PUSHA',0,    0x60
     dw OutputByte
 
     ; String instructions
-    db 'MOVSB',    0xA4
+    db 'INSB',0,0,   0x6C
     dw OutputByte
-    db 'MOVSW',    0xA5
+    db 'INSW',0,0,   0x6D
     dw OutputByte
-    db 'STOSB',    0xAA
+    db 'OUTSB',0,    0x6E
     dw OutputByte
-    db 'STOSW',    0xAB
+    db 'OUTSW',0,    0x6F
     dw OutputByte
-    db 'LODSB',    0xAC
+    db 'MOVSB',0,    0xA4
     dw OutputByte
-    db 'LODSW',    0xAD
+    db 'MOVSW',0,    0xA5
+    dw OutputByte
+    db 'CMPSB',0,    0xA6
+    dw OutputByte
+    db 'CMPSW',0,    0xA7
+    dw OutputByte
+    db 'STOSB',0,    0xAA
+    dw OutputByte
+    db 'STOSW',0,    0xAB
+    dw OutputByte
+    db 'LODSB',0,    0xAC
+    dw OutputByte
+    db 'LODSW',0,    0xAD
+    dw OutputByte
+    db 'SCASB',0,    0xAE
+    dw OutputByte
+    db 'SCASW',0,    0xAF
     dw OutputByte
 
     ; Flow control
-    db 'RET',0,0,  0xC3
+    db 'RET',0,0,0,  0xC3
     dw OutputByte
-    db 'RETF',0,   0xCB
+    db 'RETF',0,0,   0xCB
     dw OutputByte
-    db 'IRET',0,   0xCF
+    db 'IRET',0,0,   0xCF
     dw OutputByte
-    db 'HLT',0,0,   0xF4
+    db 'HLT',0,0,0,  0xF4
     dw OutputByte
-    db 'INT',0,0,  0x00
+    db 'INT',0,0,0,  0x00
     dw InstINT
-    db 'CALL',0,   0x00
+    db 'INT3',0,0,   0xCC
+    dw OutputByte
+    db 'INTO',0,0,   0xCE
+    dw OutputByte
+    db 'CALL',0,0,   0x00
     dw InstCALL
 
     ; JMP
-    db 'JMP',0,0,  0x00
+    db 'JMP',0,0,0,  0x00
     dw InstJMP
 
+    ; JCXZ and looping instructions (argument is opcode)
+    db 'LOOPNE',     0xE0
+    dw InstJ8
+    db 'LOOPE',0,    0xE1
+    dw InstJ8
+    db 'LOOP',0,0,   0xE2
+    dw InstJ8
+    db 'JCXZ',0,0,   0xE3
+    dw InstJ8
+
     ; Conditional jump instructions (argument is condition code)
-    db 'JO',0,0,0, CC_O
+    db 'JO',0,0,0,0, CC_O
     dw InstJCC
-    db 'JNO',0,0,  CC_NO
+    db 'JNO',0,0,0,  CC_NO
     dw InstJCC
-    db 'JC',0,0,0, CC_C
+    db 'JC',0,0,0,0, CC_C
     dw InstJCC
-    db 'JB',0,0,0, CC_C
+    db 'JB',0,0,0,0, CC_C
     dw InstJCC
-    db 'JNC',0,0,  CC_NC
+    db 'JNC',0,0,0,  CC_NC
     dw InstJCC
-    db 'JNB',0,0,  CC_NC
+    db 'JNB',0,0,0,  CC_NC
     dw InstJCC
-    db 'JAE',0,0,  CC_NC
+    db 'JAE',0,0,0,  CC_NC
     dw InstJCC
-    db 'JZ',0,0,0, CC_Z
+    db 'JZ',0,0,0,0, CC_Z
     dw InstJCC
-    db 'JE',0,0,0, CC_Z
+    db 'JE',0,0,0,0, CC_Z
     dw InstJCC
-    db 'JNZ',0,0,  CC_NZ
+    db 'JNZ',0,0,0,  CC_NZ
     dw InstJCC
-    db 'JNE',0,0,  CC_NZ
+    db 'JNE',0,0,0,  CC_NZ
     dw InstJCC
-    db 'JNA',0,0,  CC_NA
+    db 'JNA',0,0,0,  CC_NA
     dw InstJCC
-    db 'JBE',0,0,  CC_NA
+    db 'JBE',0,0,0,  CC_NA
     dw InstJCC
-    db 'JA',0,0,0, CC_A
+    db 'JA',0,0,0,0, CC_A
     dw InstJCC
-    db 'JS',0,0,0, CC_S
+    db 'JS',0,0,0,0, CC_S
     dw InstJCC
-    db 'JNS',0,0,  CC_NS
+    db 'JNS',0,0,0,  CC_NS
     dw InstJCC
-    db 'JPE',0,0,  CC_PE
+    db 'JPE',0,0,0,  CC_PE
     dw InstJCC
-    db 'JPO',0,0,  CC_PO
+    db 'JPO',0,0,0,  CC_PO
     dw InstJCC
-    db 'JL',0,0,0, CC_L
+    db 'JL',0,0,0,0, CC_L
     dw InstJCC
-    db 'JNL',0,0,  CC_NL
+    db 'JNL',0,0,0,  CC_NL
     dw InstJCC
-    db 'JNG',0,0,  CC_NG
+    db 'JNG',0,0,0,  CC_NG
     dw InstJCC
-    db 'JG',0,0,0, CC_G
+    db 'JG',0,0,0,0, CC_G
     dw InstJCC
 
 DispatchListEnd:
@@ -2363,6 +2606,8 @@ DispatchListEnd:
 BSS:
 
 FirstFreeSeg:     resw 1
+
+CpuLevel:         resb 1
 
 ;;; Parser
 InputFile:        resw 1 ; Input file handle
