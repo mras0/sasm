@@ -6,7 +6,7 @@
 
 ; FAT is kept at 0x8000
 
-        cpu 386 ; 8086 when SASM supports it
+        cpu 8086
         org 0x7c1e
 
 SEC_PER_FAT   equ 0x7c16

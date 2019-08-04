@@ -17,6 +17,9 @@ typedef short S2;
 #define INVALID_ADDR 0xFFFF
 #define NO_SIZE 0xFF // ExplicitSize when no size specified
 
+#define FIXUP_DISP16 0
+#define FIXUP_REL8   1
+
 struct Label {
     char Name[TOKEN_MAX+1];
     U2 Address;
@@ -28,6 +31,8 @@ struct Label {
 struct Fixup {
     U2 Address;
     U2 Next;
+    U2 Line;
+    U1 Type;
 };
 
 struct Equ {
@@ -301,7 +306,7 @@ void RetireLabel(U2 index)
         Error("Undefined label");
     }
     if (!Labels[index].Used) {
-        printf("Warning label \"%s\" unused (Line %u)\n", Labels[index].Name, Labels[index].Line);
+        printf("Line %u: Warning label \"%s\" unused\n", Labels[index].Line, Labels[index].Name);
     }
     assert(Labels[index].Fixup == INVALID_ADDR);
     if (index < NumLabels-1) {
@@ -367,7 +372,18 @@ void ResolveFixups(struct Label* l)
     for (U2 idx = l->Fixup; idx != INVALID_ADDR;) {
         struct Fixup* f = &Fixups[idx];
         assert(f->Address < OutputOffset);
-        AddU2(&OutputBuffer[f->Address], l->Address);
+        if (f->Type == FIXUP_DISP16) {
+            AddU2(&OutputBuffer[f->Address], l->Address);
+        } else {
+            assert(f->Type == FIXUP_REL8);
+            // Note: this only works because multiple ORG commands aren't allowed
+            const U2 rel = OutputOffset - (f->Address + 1);
+            if (rel > 0x7F) {
+                printf("Line %u: 0x%04X - %04X (= %04X) > 0x7F for %s\n", f->Line, OutputOffset , f->Address + 1, rel, l->Name);
+                Error("Relative jump out of range");
+            }
+            OutputBuffer[f->Address] = (U1)rel;
+        }
         lastidx = idx;
         idx = f->Next;
     }
@@ -386,12 +402,14 @@ void SwapFixup(void)
     CurrentLFixup = temp;
 }
 
-void FixupIsHere(void)
+void RegisterFixup(U1 type)
 {
     if (!CurrentFixup) {
         Error("No fixup active?");
     }
     CurrentFixup->Address = OutputOffset;
+    CurrentFixup->Type    = type;
+    CurrentFixup->Line    = CurrentLine;
     CurrentFixup = NULL;
 }
 
@@ -647,6 +665,9 @@ void MoveToOperandL(void)
 void DirectiveOrg(U1 arg)
 {
     (void)arg;
+    if (OutputOffset) {
+        Error("ORG changed after emitting instruction");
+    }
     const U2 org = GetNumber();
     if (org < CurrentAddress) {
         Error("Invalid ORG (moving backwards)");
@@ -750,7 +771,7 @@ void Get2Operands(void)
 void OutputImm16(void)
 {
     if (CurrentFixup) {
-        FixupIsHere();
+        RegisterFixup(FIXUP_DISP16);
     }
     OutputWord(OperandValue);
 }
@@ -780,7 +801,7 @@ void OutputModRM(U1 r)
     if (OperandLType == 6 || (OperandLType & 0xc0) == 0x80) {
         if (CurrentLFixup) {
             SwapFixup();
-            FixupIsHere();
+            RegisterFixup(FIXUP_DISP16);
             SwapFixup();
         }
         // Disp16
@@ -1256,23 +1277,9 @@ void HandleRel16(void)
         Error("Expected literal");
     }
     if (CurrentFixup) {
-        FixupIsHere();
+        RegisterFixup(FIXUP_DISP16);
     }
     OutputWord((U2)(OperandValue - (CurrentAddress + 2)));
-}
-
-bool HandleShortRel(U1 inst)
-{
-    if (CurrentFixup || OperandType != OP_LIT) {
-        return false;
-    }
-    const U2 rel = OperandValue - (CurrentAddress + 2);
-    if (!IsShort(rel)) {
-        return false;
-    }
-    OutputByte(inst);
-    OutputByte(rel&0xff);
-    return true;
 }
 
 void InstCALL(U1 arg)
@@ -1291,22 +1298,54 @@ void InstCALL(U1 arg)
     HandleRel16();
 }
 
+bool HandleShortRel(U1 inst, bool force)
+{
+    if (!GetRegOrNumber()) {
+        if (!strcmp(TokenText, "SHORT")) {
+            force = true;
+            GetOperand();
+        } else {
+            GetNamedLiteral();
+        }
+    }
+
+    if (OperandType != OP_LIT) {
+        Error("Expected literal");
+    }
+
+    if (!CurrentFixup) {
+        const U2 rel = OperandValue - (CurrentAddress + 2);
+        if (IsShort(rel)) {
+            OutputByte(inst);
+            OutputByte(rel&0xff);
+            return true;
+        }
+    } else if (force) {
+        OutputByte(inst);
+        RegisterFixup(FIXUP_REL8);
+        OutputByte(0x00);
+        return true;
+    }
+
+    if (force) {
+        Error("Short jump out of range");
+    }
+    return false;
+}
+
+
 void InstJMP(U1 arg)
 {
     (void)arg;
-    GetOperand();
-    if (!HandleShortRel(0xEB)) {
+    if (!HandleShortRel(0xEB, false)) {
         OutputByte(0xE9);
         HandleRel16();
     }
 }
 
-void HandleJcc(U1 cc) {
+void InstJcc(U1 cc) {
     assert(cc < 16);
-    GetOperand();
-    if (!HandleShortRel(0x70|cc)) {
-        // TODO: Support forced short fixups
-        CheckCPU(3);
+    if (!HandleShortRel(0x70|cc, CpuLevel < 3)) {
         OutputWord(0x800F | cc<<8);
         HandleRel16();
     }
@@ -1314,11 +1353,7 @@ void HandleJcc(U1 cc) {
 
 void HandleJ8(U1 inst)
 {
-    GetOperand();
-    if (!HandleShortRel(inst)) {
-        // TODO: Support forced short fixups
-        Error("Jump out of range / forward jump not supported");
-    }
+    HandleShortRel(inst, true);
 }
 
 void OutputByte186(U1 inst)
@@ -1444,28 +1479,28 @@ static const struct {
     { "LOOPE"  , &HandleJ8        , 0xE1 },
     { "LOOP"   , &HandleJ8        , 0xE2 },
     { "JCXZ"   , &HandleJ8        , 0xE3 },
-    { "JO"     , &HandleJcc       , JO   },
-    { "JNO"    , &HandleJcc       , JNO  },
-    { "JC"     , &HandleJcc       , JC   },
-    { "JB"     , &HandleJcc       , JC   },
-    { "JNC"    , &HandleJcc       , JNC  },
-    { "JNB"    , &HandleJcc       , JNC  },
-    { "JAE"    , &HandleJcc       , JNC  },
-    { "JZ"     , &HandleJcc       , JZ   },
-    { "JE"     , &HandleJcc       , JZ   },
-    { "JNZ"    , &HandleJcc       , JNZ  },
-    { "JNE"    , &HandleJcc       , JNZ  },
-    { "JNA"    , &HandleJcc       , JNA  },
-    { "JBE"    , &HandleJcc       , JNA  },
-    { "JA"     , &HandleJcc       , JA   },
-    { "JS"     , &HandleJcc       , JS   },
-    { "JNS"    , &HandleJcc       , JNS  },
-    { "JPE"    , &HandleJcc       , JPE  },
-    { "JPO"    , &HandleJcc       , JPO  },
-    { "JL"     , &HandleJcc       , JL   },
-    { "JNL"    , &HandleJcc       , JNL  },
-    { "JNG"    , &HandleJcc       , JNG  },
-    { "JG"     , &HandleJcc       , JG   },
+    { "JO"     , &InstJcc         , JO   },
+    { "JNO"    , &InstJcc         , JNO  },
+    { "JC"     , &InstJcc         , JC   },
+    { "JB"     , &InstJcc         , JC   },
+    { "JNC"    , &InstJcc         , JNC  },
+    { "JNB"    , &InstJcc         , JNC  },
+    { "JAE"    , &InstJcc         , JNC  },
+    { "JZ"     , &InstJcc         , JZ   },
+    { "JE"     , &InstJcc         , JZ   },
+    { "JNZ"    , &InstJcc         , JNZ  },
+    { "JNE"    , &InstJcc         , JNZ  },
+    { "JNA"    , &InstJcc         , JNA  },
+    { "JBE"    , &InstJcc         , JNA  },
+    { "JA"     , &InstJcc         , JA   },
+    { "JS"     , &InstJcc         , JS   },
+    { "JNS"    , &InstJcc         , JNS  },
+    { "JPE"    , &InstJcc         , JPE  },
+    { "JPO"    , &InstJcc         , JPO  },
+    { "JL"     , &InstJcc         , JL   },
+    { "JNL"    , &InstJcc         , JNL  },
+    { "JNG"    , &InstJcc         , JNG  },
+    { "JG"     , &InstJcc         , JG   },
     };
 
 bool TryGetU(U1 ch)

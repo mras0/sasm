@@ -20,8 +20,7 @@
 ;; what NASM allows and subsequently outputs, there are
 ;; some important differences (list not exhaustive):
 ;;   * SASM is a one-pass assembler and only performs very
-;;     basic optimizations. In particular only backward
-;;     jumps can have an eight bit immediate.
+;;     basic optimizations.
 ;;   * Literal expressions are only supported in memory
 ;;     operands and even then are limited to addition.
 ;;     (Yes, this means you have to write [SI+0xFFFF] to
@@ -76,9 +75,10 @@ DISPATCH_SIZE    equ 9          ; Size of DispatchListEntry (INST_MAX + 3)
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 LABEL_ADDR       equ 18         ; Offset of label address
 LABEL_FIXUP      equ 20         ; Offset of label fixup
-FIXUP_SIZE       equ 4          ; Size of Fixup
 FIXUP_ADDR       equ 0          ; Offset of fixup address (into the output buffer)
 FIXUP_LINK       equ 2          ; Offset of fixup link pointer (INVALID_ADDR terminates list)
+FIXUP_TYPE       equ 4          ; Offset of fixup type (FIXUP_DISP16 or FIXUP_REL8)
+FIXUP_SIZE       equ 5          ; Size of Fixup
 EQU_SIZE         equ 20         ; Size of equate (TOKEN_MAX+2+sizeof(WORD))
 EQU_VAL          equ 18         ; Offset of value in equate
 
@@ -132,6 +132,10 @@ CC_L             equ 0xc
 CC_NL            equ 0xd
 CC_NG            equ 0xe
 CC_G             equ 0xf
+
+; Fixup types
+FIXUP_DISP16     equ 0
+FIXUP_REL8       equ 1
 
         cpu 386
         org 0x100
@@ -618,6 +622,7 @@ OutputImm:
 OutputImm16:
         cmp word [CurrentFixup], INVALID_ADDR
         je .Output
+        mov al, FIXUP_DISP16
         call RegisterFixup
 .Output:
         mov ax, [OperandValue]
@@ -1206,10 +1211,25 @@ DefineLabel:
         mov cx, bx ; Update last valid fixup node
         mov es, dx
         mov si, [es:bx+FIXUP_ADDR]
+        ; Note instruction order
+        cmp byte [es:bx+FIXUP_TYPE], FIXUP_DISP16
         mov bx, [es:bx+FIXUP_LINK]
         mov es, di
+        jne .FixupRel8
         add [es:si], ax
-
+        jmp .ResolveFixup
+.FixupRel8:
+        push ax
+        mov ax, [NumOutBytes]
+        sub ax, si
+        dec ax
+        cmp ax, 0x7F
+        jbe .RangeOK
+        mov bx, MsgErrNotRel8
+        jmp Error
+.RangeOK:
+        mov [es:si], al
+        pop ax
         jmp .ResolveFixup
 .Done:
         cmp cx, INVALID_ADDR
@@ -1323,20 +1343,21 @@ RetireLocLabs:
 .Done:
         ret
 
-; Register fixup for CurrentFixup at this exact output location
+; Register fixup of type AL for CurrentFixup at this exact output location
 RegisterFixup:
         mov bx, [CurrentFixup]
-        mov ax, INVALID_ADDR
-        cmp bx, ax
+        mov cx, INVALID_ADDR
+        cmp bx, cx
         jne .OK
         mov bx, MsgErrInternalE
         jmp Error
 .OK:
-        mov [CurrentFixup], ax
-        mov ax, [FixupSeg]
-        mov es, ax
-        mov ax, [NumOutBytes]
-        mov [es:bx+FIXUP_ADDR], ax
+        mov [CurrentFixup], cx
+        mov cx, [FixupSeg]
+        mov es, cx
+        mov cx, [NumOutBytes]
+        mov [es:bx+FIXUP_ADDR], cx
+        mov [es:bx+FIXUP_TYPE], al
         ret
 
 ; Find label matching Token, returns pointer in BX or
@@ -1611,34 +1632,13 @@ HandleRel16:
         jne InvalidOperand
         cmp word [CurrentFixup], INVALID_ADDR
         je .NoFixup
+        mov al, FIXUP_DISP16
         call RegisterFixup
 .NoFixup:
         mov ax, [OperandValue]
         sub ax, [CurrentAddress]
         sub ax, 2
         jmp OutputWord
-
-; Output instruction byte in AL and Rel8 if OperandValue is a short
-; (known) jump. Returns carry clear on success
-HandleShortRel:
-        cmp word [CurrentFixup], INVALID_ADDR
-        jne .NotShort ; Too advanced for now
-        mov bx, [OperandValue]
-        sub bx, [CurrentAddress]
-        sub bx, 2
-        movsx cx, bl
-        cmp cx, bx
-        jne .NotShort
-        push bx
-        call OutputByte
-        pop bx
-        mov al, bl
-        call OutputByte
-        clc
-        ret
-.NotShort:
-        stc
-        ret
 
 ; Output instruction byte in AL, ORed with 1 if OperandValue
 ; is a 16-bit register (R_AX .. R_DI)
@@ -1674,6 +1674,7 @@ OutputModRM:
         cmp word [CurrentLFixup], INVALID_ADDR
         je .Out
         call SwapFixup
+        mov al, FIXUP_DISP16
         call RegisterFixup
         call SwapFixup
 .Out:
@@ -2241,8 +2242,67 @@ InstPOP:
         or al, 0x07
         jmp OutputByte
 
-InstJMP:
+; Output instruction byte in AL and Rel8 if OperandValue is a short
+; (known) jump or forced by AH=1 or SHORT in the program text.
+; Returns carry clear on success
+HandleShortRel:
+        push ax
+        call GetRegOrNumber
+        pop ax
+        jnc .HasOperand
+        cmp word [Token], 'SH'
+        jne .NamedLit
+        cmp word [Token+2], 'OR'
+        jne .NamedLit
+        cmp word [Token+4], 'T'
+        jne .NamedLit
+        push ax
         call GetOperand
+        pop ax
+        mov ah, 1
+        jmp .HasOperand
+.NamedLit:
+        push ax
+        call GetNamedLiteral
+        pop ax
+.HasOperand:
+        cmp byte [OperandType], OP_LIT
+        jne InvalidOperand
+        cmp word [CurrentFixup], INVALID_ADDR
+        jne .Fixup
+        mov bx, [OperandValue]
+        sub bx, [CurrentAddress]
+        sub bx, 2
+        movsx cx, bl
+        cmp cx, bx
+        jne .NotShort
+        push bx
+        call OutputByte
+        pop ax
+        call OutputByte
+.RetNC:
+        clc
+        ret
+.Fixup:
+        and ah, ah
+        jz .NotShort
+        call OutputByte
+        mov al, FIXUP_REL8
+        call RegisterFixup
+        xor al, al
+        call OutputByte
+        jmp .RetNC
+.NotShort:
+        and ah, ah
+        jz .RetC
+        mov bx, MsgErrNotRel8
+        jmp Error
+.RetC:
+        stc
+        ret
+
+InstJMP:
+        xor ah, ah
         mov al, 0xEB
         call HandleShortRel
         jc .NotShort
@@ -2254,33 +2314,28 @@ InstJMP:
 
 ; AL contains opcode
 InstJ8:
-        push ax
-        call GetOperand
-        pop ax
-        call HandleShortRel
-        jnc .OK
-        mov bx, MsgErrNotJ8
-        jmp Error
-.OK:
-        ret
+        mov ah, 1 ; Force short jump
+        jmp HandleShortRel
 
 ; AL contains the condition code
 InstJCC:
-        push si
-        mov si, ax
-        call GetOperand
-        mov ax, 0x70
-        or ax, si
+        push ax
+        xor ah, ah
+        cmp byte [CpuLevel], 3
+        jae .Has386
+        inc ah ; Force Rel8
+.Has386:
+        or al, 0x70
         call HandleShortRel
-        jnc .Done
-        shl si, 8
-        mov ax, 0x800F
-        or ax, si
-        call OutputWord
-        call HandleRel16
-.Done:
-        pop si
+        pop ax
+        jc .Rel16
         ret
+.Rel16:
+        mov ah, al
+        or ah, 0x80
+        mov al, 0x0F
+        call OutputWord
+        jmp HandleRel16
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants
@@ -2312,7 +2367,7 @@ MsgErrOutMax:     db 'Output buffer full', 0
 MsgErrInternalE:  db 'No fixup to register?', 0
 MsgErrMemOvrflow: db 'Address exceeds segment', 0
 MsgErrInvalidCPU: db 'Invalid/unsupported CPU', 0
-MsgErrNotJ8:      db 'Address out of 8-bit range (or unsupported forward jump)', 0
+MsgErrNotRel8:    db 'Address out of 8-bit range', 0
 MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
 
 
