@@ -196,7 +196,7 @@ Start:
 .Char:
         movsb ; Copy from buffer to current line
         inc word [es:bp+LINEH_LENGTH] ; And increase line lnegth
-        cmp byte [es:di+0xFFFF], 10 ; LF?
+        cmp byte [es:di-1], 10 ; LF?
         jne .NextChar
 
         inc word [NumLines]
@@ -204,7 +204,7 @@ Start:
         mov ax, 1
         cmp word [es:bp+LINEH_LENGTH], ax
         je .RemoveCrLf
-        cmp byte [es:di+0xFFFE], 13 ; Char before CR?
+        cmp byte [es:di-2], 13 ; Char before CR?
         jne .RemoveCrLf
         inc ax
 .RemoveCrLf:
@@ -1814,7 +1814,7 @@ SearchCmd:
         ; TODO: Possibly limit size
 .Copy:
         movsb
-        cmp byte [si+0xFFFF], 0
+        cmp byte [si-1], 0
         jne .Copy
 .Search:
         pop es
@@ -2142,7 +2142,7 @@ InsertMode:
         sub cx, dx
         jbe .ShiftUpDone
 .ShiftUp:
-        mov ah, [si+0xFFFF]
+        mov ah, [si-1]
         mov [si], ah
         dec si
         dec cx

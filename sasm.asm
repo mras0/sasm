@@ -21,9 +21,7 @@
 ;;   * SASM is a one-pass assembler and only performs very
 ;;     basic optimizations.
 ;;   * Literal expressions are only supported in memory
-;;     operands and even then are limited to addition.
-;;     (Yes, this means you have to write [SI+0xFFFF] to
-;;     subtract one from SI).
+;;     operands, and only plus and minus are supported.
 ;;   * The only supported instructions are those that
 ;;     were at some point needed. This can include
 ;;     some operand types not being supported.
@@ -1050,19 +1048,28 @@ GetOperandMem:
         mov al, '['
         call Expect
 
-        ; si = MODRM (0xff = displacement only)
+        ; si = MODRM (0xff = displacement only), bit 8: minus
         ; di = DISP
         mov si, 0xff
         mov di, 0
 
 .Main:
+        and si, 0xff
+        mov al, '-'
+        call TryConsume
+        jc .NotMinus
+        or si, 0x100
+.NotMinus:
         call GetRegOrNumber
         jc .NamedLit
         cmp byte [OperandType], OP_REG
         jne .Lit
+        test si, 0x100
+        jnz .InvalidOp
         mov al, [OperandValue]
         cmp al, R_AX
         jae .RegOK
+.InvalidOp:
         jmp InvalidOperand
 .RegOK:
         cmp al, R_ES
@@ -1079,12 +1086,21 @@ GetOperandMem:
         call Expect
         jmp .Main
 .NamedLit:
+        test si, 0x100
+        jnz .InvalidOp
         call GetNamedLiteral
         ; Fall through
 .Lit:
+        test si, 0x100
+        jnz .Sub
         add di, [OperandValue]
         jmp .Next
+.Sub:
+        sub di, [OperandValue]
+        jmp .Next
 .Next:
+        cmp byte [CurrentChar], '-'
+        je .Main
         mov al, '+'
         call TryConsume
         jnc .Main
@@ -1146,18 +1162,18 @@ GetOperandMem:
         je .Translate
         mov bx, .Tab07
         cmp cl, 0x07
-        jne .InvalidOp
+        jne .CInvalidOp
         ; Fall through
 .Translate:
         add bl, al
         adc bh, 0
         mov al, [bx]
         cmp al, 0xff
-        je .InvalidOp
+        je .CInvalidOp
         mov si, ax
         and si, 0xff
         ret
-.InvalidOp:
+.CInvalidOp:
         jmp InvalidOperand
 ;
 ; Conversion tables from previous modrm value to new

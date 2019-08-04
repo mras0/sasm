@@ -94,7 +94,7 @@ RunCommandFile:
         sub ax, CL_Buffer
         cmp ax, CMDLINE_MAX
         jb .CharLoop
-        mov byte [si+0xFFFF], 0x0D
+        mov byte [si-1], 0x0D
 .Execute:
         call CommandDispatch
         jmp .LineLoop
@@ -507,7 +507,7 @@ CommandDispatch:
         ; Remove spaces just before the CR
         and bx, bx
         jz .CmdLineDone
-        cmp byte [si+bx+0xFFFF], ' '
+        cmp byte [si+bx-1], ' '
         ja .CmdLineDone
         dec bx
         jmp .RTrim

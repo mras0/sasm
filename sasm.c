@@ -576,30 +576,41 @@ void GetOperandMem(void)
 
     U1 ModRM = 0xFF;
     U2 Disp  = 0;
-
+    bool neg;
     do {
     redo:
+        neg = TryConsume('-');
         if (GetRegOrNumber()) {
             if (OperandType == OP_LIT) {
-                Disp += OperandValue;
-            } else {
-                assert(OperandType == OP_REG);
-                if (OperandValue >= R_ES) {
-                    // Segmnet override
-                    assert(OperandValue <= R_DS);
-                    OutputByte(0x26 | (U1)(OperandValue-R_ES)<<3);
-                    Expect(':');
-                    goto redo;
-                }
+                goto disp;
+            }
+            if (neg) {
+                Error("Can't negate register");
+            }
+            assert(OperandType == OP_REG);
+            if (OperandValue >= R_ES) {
+                // Segmnet override
+                assert(OperandValue <= R_DS);
+                OutputByte(0x26 | (U1)(OperandValue-R_ES)<<3);
+                Expect(':');
+                goto redo;
+            }
 
-                ModRM = CombineModrmWithReg(ModRM);
-                if (ModRM == 0xFF) {
-                    Error("Invalid register combination for memory operand");
-                }
+            ModRM = CombineModrmWithReg(ModRM);
+            if (ModRM == 0xFF) {
+                Error("Invalid register combination for memory operand");
             }
         } else {
             GetNamedLiteral();
-            Disp += OperandValue;
+        disp:
+            if (neg) {
+                Disp -= OperandValue;
+            } else {
+                Disp += OperandValue;
+            }
+        }
+        if (CurrentChar == '-') {
+            goto redo;
         }
     } while (TryConsume('+'));
     Expect(']');
