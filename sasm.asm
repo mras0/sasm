@@ -1763,6 +1763,21 @@ OutputMImm:
         mov bx, MsgErrNoSize
         jmp Error
 .HasSize:
+        jz .Output
+        cmp ah, 0x80
+        jne .Output
+        cmp word [CurrentFixup], INVALID_ADDR
+        jne .Output
+        push ax
+        mov ax, [OperandValue]
+        mov cx, ax
+        cbw
+        cmp cx, ax
+        pop ax
+        jne .Output
+        or ah, 3
+        xor bl, bl
+.Output:
         push bx
         push ax
         or bl, ah
@@ -1812,8 +1827,23 @@ InstMOV:
         mov al, 0x8e
         jmp OutputRR
 .MOVrm:
-        cmp byte [OperandLValue], R_ES
+        mov al, [OperandLValue]
+        cmp al, R_ES
         jae .MOVsrm
+        cmp byte [OperandType], 6
+        jne .MOVrm3
+        cmp al, R_AL
+        jne .MOVrm2
+        mov al, 0xA0
+        jmp .Imm16
+.MOVrm2:
+        cmp al, R_AX
+        jne .MOVrm3
+        mov al, 0xA1
+.Imm16:
+        call OutputByte
+        jmp OutputImm16
+.MOVrm3:
         mov al,0x8A
         jmp OutputRM
 .MOVsrm:
@@ -1827,8 +1857,23 @@ InstMOV:
         mov ax, 0xc600
         jmp OutputMImm
 .MOVmr:
-        cmp byte [OperandValue], R_ES
+        mov al, [OperandValue]
+        cmp al, R_ES
         jae .MOVmsr
+        cmp byte [OperandLType], 6
+        jne .MOVmr3
+        cmp al, R_AL
+        jne .MOVmr2
+        call SwapOperands
+        mov al, 0xA2
+        jmp .Imm16
+.MOVmr2:
+        cmp al, R_AX
+        jne .MOVmr3
+        call SwapOperands
+        mov al, 0xA3
+        jmp .Imm16
+.MOVmr3:
         mov al, 0x88
         jmp OutputMR
 .MOVmsr:
@@ -2094,12 +2139,28 @@ InstALU:
         mov al, [OperandLValue]
         mov bl, al
         shr al, 3
+        mov bh, al
+        cmp al, 1
+        jne .ALUrl4
+        cmp word [CurrentFixup], INVALID_ADDR
+        jne .ALUrl4
         push ax
+        mov cx, [OperandValue]
+        mov ax, cx
+        cbw
+        cmp ax, cx
+        pop ax
+        jne .ALUrl4
+        or al, 3
+        xor bh, bh
+.ALUrl4:
         or al, 0x80
         and bl, 7
         or ah, bl
+        push bx
         call OutputWord
-        pop ax
+        pop bx
+        mov al, bh
         jmp OutputImm
 .InvalidOp:
         jmp InvalidOperand

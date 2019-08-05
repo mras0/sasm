@@ -106,7 +106,7 @@ if (DOSBOX)
     )
     add_custom_target(
         test_sasm
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/tests/t26.asm" a.asm
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/tests/t27.asm" a.asm
         COMMAND ${DOSBOX} sasm.com
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"

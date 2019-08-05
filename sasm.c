@@ -864,6 +864,11 @@ void OutputMImm(U1 inst, U1 r)
     if (ExplicitSize == NO_SIZE) {
         Error("Unknown operand size");
     }
+    if (ExplicitSize && inst == 0x80 && !CurrentFixup && IsShort(OperandValue)) {
+        inst |= 3;
+        ExplicitSize = 0;
+    }
+
     OutputByte(inst | ExplicitSize);   // Opcode
     OutputModRM(r);
     OutputImm(ExplicitSize);           // Immediate
@@ -908,13 +913,24 @@ void InstMOV(U1 arg)
         } else {
             assert(OperandType < OP_REG);
             // MOV reg, mem
-            OutputRM(OperandLValue >= R_ES ? 0x8E : 0x8A);
+            if (OperandType == 6 && (OperandLValue == R_AL || OperandLValue == R_AX)) {
+                OutputByte(0xA0 | (OperandLValue/8==1));
+                OutputImm16();
+            } else {
+                OutputRM(OperandLValue >= R_ES ? 0x8E : 0x8A);
+            }
         }
     } else if (OperandLType < OP_REG) {
         // LHS is memory
         if (OperandType == OP_REG) {
             // MOV mem, reg
-            OutputMR(OperandValue >= R_ES ? 0x8C : 0x88);
+            if (OperandLType == 6 && (OperandValue == R_AL || OperandValue == R_AX)) {
+                OutputByte(0xA2 | (OperandValue/8==1));
+                SwapOperands();
+                OutputImm16();
+            } else {
+                OutputMR(OperandValue >= R_ES ? 0x8C : 0x88);
+            }
         } else if (OperandType == OP_LIT) {
             // mov mem, lit
             OutputMImm(0xC6, 0);
@@ -1108,10 +1124,16 @@ void InstALU(U1 base)
                 OutputImm16();
                 return;
             } else {
-                const bool is16bit = !!(OperandLValue/8);
-                OutputByte(0x80 | is16bit);
+                if (OperandLValue >= R_ES) {
+                    Error("Invalid operand");
+                }
+                U1 inst = 0x80 | !!(OperandLValue/8);
+                if ((inst&1) && !CurrentFixup && IsShort(OperandValue)) {
+                    inst |= 2;
+                }
+                OutputByte(inst);
                 OutputByte(0xC0 | (OperandLValue&7) | base);
-                OutputImm(is16bit);
+                OutputImm(inst==0x81);
                 return;
             }
         }
