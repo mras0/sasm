@@ -20,8 +20,9 @@
 ;; some important differences (list not exhaustive):
 ;;   * SASM is a one-pass assembler and only performs very
 ;;     basic optimizations.
-;;   * Literal expressions are only supported in memory
-;;     operands, and only plus and minus are supported.
+;;   * Literal expression support is pretty basic,
+;;     especially in memory operands where only addition
+;;     and subtraction are supported.
 ;;   * The only supported instructions are those that
 ;;     were at some point needed. This can include
 ;;     some operand types not being supported.
@@ -63,7 +64,7 @@
         cpu 186
         org 0x100
 
-STACK_SIZE       equ 512
+STACK_SIZE       equ 4096       ; TODO: Figure out correct size..
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 6          ; Maximum length of directive/instruction (LOOPNE is longest)
 BUFFER_SIZE      equ 512        ; Size of input buffer
@@ -346,6 +347,14 @@ MainLoop:
 .Done:
         cmp byte [CurrentChar], 0
         je .Ret
+        mov al, [CurrentChar]
+        push ax
+        call PutHexByte
+        mov al, ' '
+        call PutChar
+        pop ax
+        call PutChar
+        call PutCrLf
         mov bx, MsgErrNotDone
         call Error
 .Ret:
@@ -689,6 +698,7 @@ ReadNext:
         mov [CurrentChar], al
         cmp al, 10
         jne .Ret
+        mov byte [GotNL], 1
         inc word [NumNewLines]
 .Ret:
         ret
@@ -923,6 +933,255 @@ GetCharLit:
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Literal Expression Parser
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+MAX_PREC equ 0xFF
+OPER_LSH equ '<'|0x80
+OPER_RSH equ '>'|0x80
+
+NewExpr:
+        mov word [CurrentOp], 0
+        mov byte [GotNL], 0
+        ret
+
+; Get operand/precedence pair to CurrentOp
+; Preserves all registers
+GetOp:
+        pusha
+        call SkipWS
+        cmp byte [GotNL], 0
+        jne .NoOp
+        mov al, [CurrentChar]
+        mov ah, 5
+        cmp al, '*'
+        je .Ret
+        cmp al, '/'
+        je .Ret
+        cmp al, '%'
+        je .Ret
+        inc ah
+        cmp al, '+'
+        je .Ret
+        cmp al, '-'
+        je .Ret
+        mov ah, 7
+        cmp al, '<'
+        je .LtGt
+        cmp al, '>'
+        je .LtGt
+        mov ah, 11
+        cmp al, '&'
+        je .Ret
+        inc ah
+        cmp al, '^'
+        je .Ret
+        inc ah
+        cmp al, '|'
+        je .Ret
+.NoOp:
+        xor ax, ax
+        jmp .RetNoRead
+.LtGt:
+        push ax
+        call ReadNext
+        pop ax
+        cmp [CurrentChar], al
+        je .ShiftOp
+        mov ah, 9
+        jmp .RetNoRead
+.ShiftOp:
+        or al, 0x80
+        jmp .Ret
+.Ret:
+        push ax
+        call ReadNext
+        pop ax
+.RetNoRead:
+        mov [CurrentOp], ax
+        popa
+        ret
+
+GetPrimary:
+        call SkipWS
+        mov al, '('
+        call TryConsume
+        jc .NotPar
+        xor bx, bx
+        xchg bx, [CurrentOp]
+        push bx
+        call GetExpr0
+        pop bx
+        mov [CurrentOp], bx
+        push ax
+        mov al, ')'
+        call Expect
+        pop ax
+        ret
+.NotPar:
+        mov al, QUOTE_CHAR
+        call TryGet
+        jc .NotCharLit
+        call GetCharLit
+        mov ax, [OperandValue]
+        ret
+.NotCharLit:
+        call GetToken
+        call IsTokenNumber
+        jc .NotNum
+        jmp GetTokenNumber
+.NotNum:
+        call GetNamedLiteral
+        mov ax, [OperandValue]
+        ret
+
+; Returns carry clear if CurrentChar is an unary operator
+IsUnaryOp:
+        mov al, [CurrentChar]
+        cmp al, '+'
+        je .Yes
+        cmp al, '-'
+        je .Yes
+        cmp al, '~'
+        je .Yes
+        stc
+        ret
+.Yes:
+        clc
+        ret
+
+GetUnary:
+        call SkipWS
+        call IsUnaryOp
+        jc GetPrimary
+        mov al, [CurrentChar]
+        push ax
+        call MoveNext
+        call GetUnary
+        pop bx
+        cmp bl, '+'
+        je .Done
+        not ax
+        cmp bl, '-'
+        jne .Done
+        inc ax
+.Done:
+        ret
+
+GetExpr:
+        call NewExpr
+GetExpr0:
+        call GetUnary
+        mov bx, MAX_PREC
+GetExpr1:
+        ; AX = LHS, BL = outer precedence
+        mov cx, [CurrentOp]
+        and cx, cx
+        jnz .HasOp
+        call GetOp
+        mov cx, [CurrentOp]
+        and cx, cx
+        jz .Done
+        cmp ch, bl ; inner precedence > outer precedence?
+        jbe .HasOp
+.Done:
+        ret
+.HasOp:
+        ; CH = inner precedence, CL = current op
+        push ax ; Save LHS
+
+        push bx
+        push cx
+        call GetUnary
+        pop cx
+        pop bx
+        ; AX = RHS
+.RHSLoop:
+        call GetOp
+        mov dx, [CurrentOp]
+        and dx, dx
+        jz .RHSLoopDone
+        cmp dh, ch
+        jae .RHSLoopDone ; look ahead precedence >= inner precedence
+        push bx
+        push cx
+        xor bh, bh
+        mov bl, dh
+        call GetExpr1
+        pop cx
+        pop bx
+        jmp .RHSLoop
+.RHSLoopDone:
+        mov dx, cx ; DX = Operator
+        mov cx, ax ; CX = RHS
+        pop ax     ; AX = LHS
+        call .Compute
+        jmp GetExpr1
+.Compute:
+        ; AX @= CX, where DL contains the operator (@)
+        ; Preserves BX and updates AX
+        cmp dl, '*'
+        je .CMul
+        cmp dl, '/'
+        je .CDiv
+        cmp dl, '%'
+        je .CMod
+        cmp dl, '+'
+        je .CAdd
+        cmp dl, '-'
+        je .CSub
+        cmp dl, OPER_LSH
+        je .CLsh
+        cmp dl, OPER_RSH
+        je .CRsh
+        cmp dl, '&'
+        je .CBAnd
+        cmp dl, '^'
+        je .CBXor
+        cmp dl, '|'
+        je .CBOr
+        mov bx, MsgErrInternalE
+        jmp Error
+.CMul:
+        xor dx, dx
+        mul cx
+        ret
+.CDiv:
+        and cx, cx
+        jnz .DivOK
+        mov bx, MsgErrDivZero
+        jmp Error
+.DivOK:
+        xor dx, dx
+        div cx
+        ret
+.CMod:
+        call .CDiv
+        mov ax, dx
+        ret
+.CAdd:
+        add ax, cx
+        ret
+.CSub:
+        sub ax, cx
+        ret
+.CLsh:
+        shl ax, cl
+        ret
+.CRsh:
+        shr ax, cl
+        ret
+.CBAnd:
+        and ax, cx
+        ret
+.CBXor:
+        xor ax, cx
+        ret
+.CBOr:
+        or ax, cx
+        ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Operand Handling
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -963,42 +1222,64 @@ GetRegOrNumber:
 
 ; Get operand to OperandType/OperandValue (and possibly CurrentFixup)
 GetOperand:
-        ; TODO: Character literal
-        mov al, QUOTE_CHAR
-        call TryGet
-        jc .NotLit
-        mov byte [OperandType], OP_LIT
-        jmp GetCharLit
-.NotLit:
-        cmp byte [CurrentChar], '['
+        mov al, [CurrentChar]
+        cmp al, '['
         jne .NotMem
         jmp GetOperandMem
 .NotMem:
+        cmp al, QUOTE_CHAR
+        jne .NotCharLit
+.Expr:
+        call GetExpr
+        mov [OperandValue], ax
+        mov byte [OperandType], OP_LIT
+        ret
+.NotCharLit:
         call GetRegOrNumber
         jc .NotRegOrNumber
+        cmp byte [OperandType], OP_LIT
+        je .ContinueExpr
         ret
-
 .NotRegOrNumber:
         ; Check for word/byte [mem]
         cmp byte [TokenLen], 4
-        jne .CheckNamedLit
+        jne .CheckShort
         mov ax, [UToken]
         mov bx, [UToken+2]
         cmp ax, 'BY'
         jne .CheckWord
         cmp bx, 'TE'
-        jne .CheckNamedLit
+        jne .CheckShort
         mov byte [ExplicitSize], 1
         jmp GetOperandMem
 .CheckWord:
         cmp ax, 'WO'
-        jne .CheckNamedLit
+        jne .CheckShort
         cmp bx, 'RD'
-        jne .CheckNamedLit
+        jne .CheckShort
         mov byte [ExplicitSize], 2
         jmp GetOperandMem
+.CheckShort:
+        cmp byte [TokenLen], 5
+        jne .CheckNamedLit
+        cmp word [UToken], 'SH'
+        jne .CheckNamedLit
+        cmp word [UToken+2], 'OR'
+        jne .CheckNamedLit
+        cmp byte [UToken+4], 'T'
+        jne .CheckNamedLit
+        mov byte [ExplicitSize], 1
+        jmp .Expr
 .CheckNamedLit:
-        ; Otherwise do named literal (fall through)
+        call GetNamedLiteral
+.ContinueExpr:
+        call NewExpr
+        mov bx, MAX_PREC
+        mov ax, [OperandValue]
+        call GetExpr1
+        mov [OperandValue], ax
+        ret
+
 GetNamedLiteral:
         mov byte [OperandType], OP_LIT
         call FindOrMakeLabel
@@ -1243,6 +1524,7 @@ DefineLabel:
         mov bx, cx
         push si
         push di
+        push cx
         mov dx, [FixupSeg]
         mov di, [OutputSeg]
 .ResolveFixup:
@@ -1273,13 +1555,14 @@ DefineLabel:
         pop ax
         jmp .ResolveFixup
 .Done:
+        mov es, dx
+        pop dx ; First firxup
         cmp cx, INVALID_ADDR
         je .NoFixups
-        mov es, dx
         mov bx, cx
         mov ax, [NextFreeFixup]
         mov [es:bx+FIXUP_LINK], ax
-        mov [NextFreeFixup], bx
+        mov [NextFreeFixup], dx
 .NoFixups:
         pop di
         pop si
@@ -1538,15 +1821,7 @@ MakeEqu:
         pop di
         pop si
         push ax
-        mov al, QUOTE_CHAR
-        call TryGet
-        jc .Number
-        call GetCharLit
-        mov ax, [OperandValue]
-        jmp .HasVal
-.Number:
-        call GetNumber
-.HasVal:
+        call GetExpr
         pop bx
         mov [es:bx+EQU_VAL], ax
         ret
@@ -1556,12 +1831,12 @@ MakeEqu:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 DirORG:
-        call GetNumber
+        call GetExpr
         mov [CurrentAddress], ax
         ret
 
 DirCPU:
-        call GetNumber
+        call GetExpr
         xor dx, dx
         mov bx, 100
         div bx
@@ -1620,24 +1895,24 @@ DirDX:
         call OutputByte
         jmp .Next
 .NotLit:
-        call GetToken
-        call IsTokenNumber
-        jc .NamedLit
-        call GetTokenNumber
-        cmp si, 1
-        jne .OutputWord
-        call OutputByte
-        jmp .Next
-.OutputWord:
-        call OutputWord
-        jmp .Next
-.NamedLit:
+        call GetExpr
+        push ax
+        cmp word [CurrentFixup], INVALID_ADDR
+        je .Out1
         cmp si, 2
-        je .DW
-        jmp NotImplemented
-.DW:
-        call GetNamedLiteral
-        call OutputImm16
+        je .Fixup
+        mov bx, MsgErrDBFixup
+        jmp Error
+.Fixup:
+        mov al, FIXUP_DISP16
+        call RegisterFixup
+.Out1:
+        pop ax
+        call OutputByte
+        cmp si, 1
+        je .Next
+        mov al, ah
+        call OutputByte
         ; Fall thorugh
 .Next:
         mov al, ','
@@ -1649,7 +1924,7 @@ DirDX:
 ; AL = 1 if RESB 2 if RESW
 DirResX:
         push ax
-        call GetNumber
+        call GetExpr
         pop bx
         xor dx, dx
         mul bx
@@ -2397,24 +2672,11 @@ InstPOP:
 ; Returns carry clear on success
 HandleShortRel:
         push ax
-        call GetRegOrNumber
-        pop ax
-        jnc .HasOperand
-        cmp word [UToken], 'SH'
-        jne .NamedLit
-        cmp word [UToken+2], 'OR'
-        jne .NamedLit
-        cmp word [UToken+4], 'T'
-        jne .NamedLit
-        push ax
         call GetOperand
         pop ax
+        cmp byte [ExplicitSize], 1 ; SHORT?
+        jne .HasOperand
         mov ah, 1
-        jmp .HasOperand
-.NamedLit:
-        push ax
-        call GetNamedLiteral
-        pop ax
 .HasOperand:
         cmp byte [OperandType], OP_LIT
         je .Lit
@@ -2540,6 +2802,8 @@ MsgErrMemOvrflow: db 'Address exceeds segment', 0
 MsgErrInvalidCPU: db 'Invalid/unsupported CPU', 0
 MsgErrNotRel8:    db 'Address out of 8-bit range', 0
 MsgErrCpuLevel:   db 'Instruction not supported at this CPU level', 0
+MsgErrDBFixup:    db 'Fixup not possible with DB', 0
+MsgErrDivZero:    db 'Division by zero in literal expression', 0
 MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
 
 
@@ -2841,6 +3105,8 @@ InputFile:        resw 1 ; Input file handle
 CurrentLine:      resw 1 ; Current line being processed
 NumNewLines:      resw 1 ; Number of newlines passed by ReadNext
 CurrentChar:      resb 1 ; Current input character (0 on EOF)
+GotNL:            resb 1 ; Passed NL since last reset of var?
+CurrentOp:        resw 2 ; Current operand in GetExpr (low byte op, high byte precedence)
 TokenLen:         resb 1
 Token:            resb TOKEN_MAX
 TokenEnd:         resb 1 ; NUL-terminator

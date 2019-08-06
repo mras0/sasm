@@ -9,9 +9,10 @@ typedef unsigned char U1;
 typedef unsigned short U2;
 typedef short S2;
 
-#define TOKEN_MAX 32
+#define TOKEN_MAX 16
 #define LABEL_MAX 200
 #define FIXUP_MAX 400
+
 #define EQU_MAX   100
 #define OUTPUT_MAX 0x2000
 #define INVALID_ADDR 0xFFFF
@@ -44,6 +45,8 @@ FILE* InputFile;
 U2 CurrentLine;
 U2 NumNewLines;
 U1 CurrentChar;
+U1 GotNL;
+U2 CurrentOp;
 char TokenText[TOKEN_MAX+1];
 char UTokenText[TOKEN_MAX+1];
 U1 TokenLen;
@@ -82,21 +85,23 @@ const char RegNames[][3] = {
 
 #ifdef _MSC_VER
 __declspec(noreturn)
+#elif defined(__GNUC__)
+__attribute__((__noreturn__))
 #endif
-void Error(const char* msg)
+static void Error(const char* msg)
 {
     fprintf(stderr, "Line %u: %s (Current token: \"%s\")\n", CurrentLine, msg, TokenText);
     exit(1);
 }
 
-void CheckCPU(U1 level)
+static void CheckCPU(U1 level)
 {
     if (level > CpuLevel) {
         Error("Instruction not supported at this CPU level");
     }
 }
 
-void OutputByte(U1 b)
+static void OutputByte(U1 b)
 {
     if (OutputOffset + PendingZeros >= OUTPUT_MAX) {
         Error("Output overflow");
@@ -110,13 +115,13 @@ void OutputByte(U1 b)
     ++CurrentAddress;
 }
 
-void OutputWord(U2 w)
+static void OutputWord(U2 w)
 {
     OutputByte(w & 0xff);
     OutputByte(w >> 8);
 }
 
-struct Equ* FindEqu(void)
+static struct Equ* FindEqu(void)
 {
     for (int i = 0 ; i < NumEqus; ++i) {
         if (!strcmp(TokenText, Equs[i].Name)) {
@@ -126,7 +131,7 @@ struct Equ* FindEqu(void)
     return NULL;
 }
 
-struct Equ* DefineEqu(void)
+static struct Equ* DefineEqu(void)
 {
     if (FindEqu()) {
         printf("Equ: \"%s\"\n", TokenText);
@@ -141,19 +146,20 @@ struct Equ* DefineEqu(void)
     return e;
 }
 
-void ReadNext(void)
+static void ReadNext(void)
 {
     int c = fgetc(InputFile);
     if (c == EOF) {
         CurrentChar = 0;
         return;
     } else if (c == '\n') {
+        GotNL = 1;
         ++NumNewLines;
     }
     CurrentChar = (U1)c;
 }
 
-U1 GetChar(void)
+static U1 GetChar(void)
 {
     if (CurrentChar == 0) {
         Error("Unexpected EOF");
@@ -163,7 +169,7 @@ U1 GetChar(void)
     return c;
 }
 
-bool TryGet(U1 ch)
+static bool TryGet(U1 ch)
 {
     if (CurrentChar == ch) {
         ReadNext();
@@ -172,7 +178,7 @@ bool TryGet(U1 ch)
     return false;
 }
 
-void SkipWS(void)
+static void SkipWS(void)
 {
     for (;;) {
         while (CurrentChar && CurrentChar <= ' ') {
@@ -187,33 +193,33 @@ void SkipWS(void)
     }
 }
 
-void MoveNext(void)
+static void MoveNext(void)
 {
     ReadNext();
     SkipWS();
 }
 
-bool IsDigit(U1 ch)
+static bool IsDigit(U1 ch)
 {
     return ch >= '0' && ch <= '9';
 }
 
-bool IsAlpha(U1 ch)
+static bool IsAlpha(U1 ch)
 {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
 
-U1 ToUpper(U1 ch)
+static U1 ToUpper(U1 ch)
 {
     return ch >= 'a' && ch <= 'z' ? ch + 'A' - 'a' : ch;
 }
 
-bool IsTokenNumber(void)
+static bool IsTokenNumber(void)
 {
     return IsDigit(TokenText[0]);
 }
 
-void GetToken(void)
+static void GetToken(void)
 {
     TokenLen = 0;
     while (CurrentChar == '.' || CurrentChar == '_' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
@@ -233,7 +239,7 @@ void GetToken(void)
         ;
 }
 
-bool TryConsume(U1 ch)
+static bool TryConsume(U1 ch)
 {
     if (CurrentChar != ch) {
         return false;
@@ -242,7 +248,7 @@ bool TryConsume(U1 ch)
     return true;
 }
 
-void Expect(U1 ch) {
+static void Expect(U1 ch) {
     if (!TryConsume(ch)) {
         char err[] = "? expected";
         err[0] = ch;
@@ -250,7 +256,7 @@ void Expect(U1 ch) {
     }
 }
 
-U2 GetNumberFromToken(void)
+static U2 GetNumberFromToken(void)
 {
     U2 num = 0;
     if (TokenLen > 2 && UTokenText[0] == '0' && UTokenText[1] == 'X') {
@@ -279,7 +285,7 @@ U2 GetNumberFromToken(void)
     return num;
 }
 
-U2 GetNumber(void)
+static U2 GetNumber(void)
 {
     GetToken();
     if (!TokenLen) {
@@ -288,7 +294,7 @@ U2 GetNumber(void)
     return GetNumberFromToken();
 }
 
-struct Label* FindLabel(const char* text)
+static struct Label* FindLabel(const char* text)
 {
     for (int i = 0; i < NumLabels; ++i) {
         if (!strcmp(Labels[i].Name, text)) {
@@ -298,7 +304,7 @@ struct Label* FindLabel(const char* text)
     return NULL;
 }
 
-void RetireLabel(U2 index)
+static void RetireLabel(U2 index)
 {
     assert(index < NumLabels);
     //printf("Retiring %s\n", Labels[index].Name);
@@ -316,7 +322,7 @@ void RetireLabel(U2 index)
     --NumLabels;
 }
 
-struct Label* NewLabel(void)
+static struct Label* NewLabel(void)
 {
     assert(!FindLabel(TokenText));
     if (NumLabels == LABEL_MAX) {
@@ -331,13 +337,13 @@ struct Label* NewLabel(void)
     return l;
 }
 
-struct Label* FindOrMakeLabel(void)
+static struct Label* FindOrMakeLabel(void)
 {
     struct Label* l = FindLabel(TokenText);
     return l ? l :  NewLabel();
 }
 
-void AddFixup(struct Label* l)
+static void AddFixup(struct Label* l)
 {
     assert(l);
     if (FreeFixup == INVALID_ADDR) {
@@ -354,19 +360,19 @@ void AddFixup(struct Label* l)
     l->Fixup = idx;
 }
 
-bool IsShort(U2 num)
+static bool IsShort(U2 num)
 {
     return (S2)num <= 127 && (S2)num >= -128;
 }
 
-void AddU2(U1* d, U2 a)
+static void AddU2(U1* d, U2 a)
 {
     const U2 x = (d[0]|d[1]<<8)+a;
     d[0] = x & 0xff;
     d[1] = x >> 8;
 }
 
-void ResolveFixups(struct Label* l)
+static void ResolveFixups(struct Label* l)
 {
     assert(l->Address != INVALID_ADDR);
     U2 lastidx = INVALID_ADDR;
@@ -396,14 +402,14 @@ void ResolveFixups(struct Label* l)
     }
 }
 
-void SwapFixup(void)
+static void SwapFixup(void)
 {
     struct Fixup* temp = CurrentFixup;
     CurrentFixup = CurrentLFixup;
     CurrentLFixup = temp;
 }
 
-void RegisterFixup(U1 type)
+static void RegisterFixup(U1 type)
 {
     if (!CurrentFixup) {
         Error("No fixup active?");
@@ -414,7 +420,7 @@ void RegisterFixup(U1 type)
     CurrentFixup = NULL;
 }
 
-void DefineLabel(void)
+static void DefineLabel(void)
 {
     if (TokenText[0] != '.') {
         // Retire local labels
@@ -441,7 +447,7 @@ void DefineLabel(void)
     l->Line = CurrentLine;
 }
 
-void PrintOperand(bool alt)
+static void PrintOperand(bool alt)
 {
     const U1 t = (U1)(alt ? OperandLType : OperandType);
     const U2 v = alt ? OperandLValue : OperandValue;
@@ -463,7 +469,7 @@ void PrintOperand(bool alt)
     }
 }
 
-void PrintInstr(const char* name, bool has2Operands)
+static void PrintInstr(const char* name, bool has2Operands)
 {
     printf("%s ", name);
     if (has2Operands) {
@@ -474,18 +480,33 @@ void PrintInstr(const char* name, bool has2Operands)
     printf("\n");
 }
 
-void GetReg(void)
+static U1 GetReg(void)
 {
-    OperandValue = R_INVALID;
     for (U1 r = 0; r < sizeof(RegNames)/sizeof(*RegNames); ++r) {
         if (!strcmp(UTokenText, RegNames[r])) {
-            OperandValue = r;
-            break;
+            return r;
         }
     }
+    return R_INVALID;
 }
 
-void GetNamedLiteral(void)
+static bool GetRegOrNumber(void)
+{
+    GetToken();
+    if (IsTokenNumber()) {
+        OperandType  = OP_LIT;
+        OperandValue = GetNumberFromToken();
+        return true;
+    }
+    OperandValue = GetReg();
+    if (OperandValue != R_INVALID) {
+        OperandType = OP_REG;
+        return true;
+    }
+    return false;
+}
+
+static void GetNamedLiteral(void)
 {
     OperandType = OP_LIT;
     struct Label* l = FindOrMakeLabel();
@@ -498,7 +519,175 @@ void GetNamedLiteral(void)
     }
 }
 
-U1 ModrmFromReg(void)
+static U2 GetCharLit(void)
+{
+    U2 num = GetChar();
+    if (!TryConsume('\'')) {
+        num |= GetChar() << 8;
+        Expect('\'');
+    }
+    return num;
+}
+
+static U2 GetExpr0(void);
+
+static U2 GetPrimary(void)
+{
+    SkipWS();
+    if (TryConsume('(')) {
+        const U2 num = GetExpr0();
+        Expect(')');
+        return num;
+    } else if (TryGet('\'')) {
+        return GetCharLit();
+    } else if (IsDigit(CurrentChar)) {
+        return GetNumber();
+    } else {
+        GetToken();
+        if (IsTokenNumber()) {
+            return GetNumberFromToken();
+        }
+        GetNamedLiteral();
+        return OperandValue;
+    }
+}
+
+#define OPER_LSH 'l'
+#define OPER_RSH 'r'
+#define MAX_PREC 0xFF
+
+static U2 GetOp(void)
+{
+    SkipWS();
+    if (GotNL) {
+        return 0;
+    }
+    U1 prec = 0;
+    U1 op = CurrentChar;
+    switch (CurrentChar) {
+    case '*': case '/': case '%':
+        prec = 5;
+        break;
+    case '+': case '-':
+        prec = 6;
+        break;
+    case '<': case '>':
+        ReadNext();
+        if (CurrentChar != op) {
+            return 9<<8|op;
+        }
+        op = op == '<' ? OPER_LSH : OPER_RSH;
+        prec = 7;
+        break;
+    case '&':
+        prec = 11;
+        break;
+    case '^':
+        prec = 12;
+        break;
+    case '|':
+        prec = 13;
+        break;
+    default:
+        return 0;
+    }
+    assert(prec);
+    ReadNext();
+    return prec<<8|op;
+}
+
+static bool IsUnaryOp(void)
+{
+    return CurrentChar == '+' || CurrentChar == '-' || CurrentChar == '~';
+}
+
+static U2 GetUnary(void)
+{
+    SkipWS();
+    if (IsUnaryOp()) {
+        const char op = CurrentChar;
+        MoveNext();
+        const U2 num = GetUnary();
+        switch (op) {
+        case '+': return num;
+        case '-': return -num;
+        case '~': return ~num;
+        default:
+            Error("Internaal error: Invalid unary op");
+        }
+    }
+    return GetPrimary();
+}
+
+static U2 Compute(U1 op, U2 lhs, U2 rhs) {
+    if (rhs == 0 && (op == '/' || op == '%')) {
+        Error("Division by zero");
+    }
+    switch (op) {
+    case '*': return lhs * rhs;
+    case '/': return lhs / rhs;
+    case '%': return lhs % rhs;
+    case '+': return lhs + rhs;
+    case '-': return lhs - rhs;
+    case OPER_LSH: return lhs << rhs;
+    case OPER_RSH: return lhs << rhs;
+    case '&': return lhs & rhs;
+    case '^': return lhs ^ rhs;
+    case '|': return lhs | rhs;
+    default:
+        printf("%u %c %u\n", lhs, op, rhs);
+        Error("Internal error. Operator not supported");
+    }
+}
+
+static U2 GetExpr1(U2 LHS, U1 OuterPrecedence)
+{
+    for (;;) {
+        if (!CurrentOp) {
+            CurrentOp = GetOp();
+        }
+        const U1 InnerPrecedence = CurrentOp>>8;
+        if (!CurrentOp || InnerPrecedence > OuterPrecedence) {
+            return LHS;
+        }
+        const U1 Op = CurrentOp & 0xff;
+        CurrentOp = 0;
+        U2 RHS = GetUnary();
+        for (;;) {
+            CurrentOp = GetOp();
+            const U1 LookAheadPrcedence = CurrentOp>>8;
+            if (!CurrentOp || LookAheadPrcedence >= InnerPrecedence) { // TODO: Handle right associative ops here
+                break;
+            }
+            RHS = GetExpr1(RHS, LookAheadPrcedence);
+        }
+        LHS = Compute(Op, LHS, RHS);
+    }
+}
+
+static U2 GetExpr0(void)
+{
+    const U2 res = GetExpr1(GetUnary(), MAX_PREC);
+    if (CurrentOp) {
+        printf("CurrentOp: %c (prec: %d)\n", CurrentOp&0xff, CurrentOp>>8);
+        Error("Unprocessed operand");
+    }
+    return res;
+}
+
+static void NewExpr(void)
+{
+    CurrentOp = 0;
+    GotNL = 0;
+}
+
+static U2 GetExpr(void)
+{
+    NewExpr();
+    return GetExpr0();
+}
+
+static U1 ModrmFromReg(void)
 {
     switch (OperandValue) {
     case R_SI:
@@ -513,7 +702,7 @@ U1 ModrmFromReg(void)
     return 0xFF;
 }
 
-U1 CombineModrmWithReg(U1 ModRM)
+static U1 CombineModrmWithReg(U1 ModRM)
 {
     if (ModRM == 0xFF) {
         return ModrmFromReg();
@@ -552,23 +741,7 @@ U1 CombineModrmWithReg(U1 ModRM)
     return 0xFF;
 }
 
-bool GetRegOrNumber(void)
-{
-    GetToken();
-    if (IsTokenNumber()) {
-        OperandType  = OP_LIT;
-        OperandValue = GetNumberFromToken();
-        return true;
-    }
-    GetReg();
-    if (OperandValue != R_INVALID) {
-        OperandType = OP_REG;
-        return true;
-    }
-    return false;
-}
-
-void GetOperandMem(void)
+static void GetOperandMem(void)
 {
     assert(!CurrentFixup);
 
@@ -635,38 +808,45 @@ void GetOperandMem(void)
     OperandValue = Disp;
 }
 
-void GetCharLit(void)
+static void GetOperand(void)
 {
-    OperandValue = GetChar();
-    if (!TryConsume('\'')) {
-        OperandValue |= GetChar() << 8;
-        Expect('\'');
-    }
-}
-
-void GetOperand(void)
-{
-    if (TryGet('\'')) {
-        OperandType = OP_LIT;
-        GetCharLit();
-    } else if (CurrentChar == '[') {
+    if (CurrentChar == '[') {
         GetOperandMem();
-    } else {
-        if (GetRegOrNumber()) {
-            return;
-        }
-        if (!strcmp(UTokenText, "BYTE") || !strcmp(UTokenText, "WORD")) {
-            assert(ExplicitSize == NO_SIZE);
-            ExplicitSize = UTokenText[0] == 'W';
-            GetOperandMem();
-            return;
-        }
-
-        GetNamedLiteral();
+        return;
     }
+    if (TryGet('\'')) {
+        OperandValue = GetCharLit();
+        OperandType = OP_LIT;
+    } else {
+        GetToken();
+        if (IsTokenNumber()) {
+            OperandValue = GetNumberFromToken();
+            OperandType = OP_LIT;
+        } else {
+            OperandValue = GetReg();
+            if (OperandValue != R_INVALID) {
+                OperandType = OP_REG;
+                return;
+            } else if (!strcmp(UTokenText, "BYTE") || !strcmp(UTokenText, "WORD")) {
+                assert(ExplicitSize == NO_SIZE);
+                ExplicitSize = UTokenText[0] == 'W';
+                GetOperandMem();
+                return;
+            } else if (!strcmp(UTokenText, "SHORT")) {
+                ExplicitSize = 1;
+                OperandValue = GetExpr();
+                OperandType = OP_LIT;
+                return;
+            }
+            GetNamedLiteral();
+        }
+    }
+    assert(OperandType == OP_LIT);
+    NewExpr();
+    OperandValue = GetExpr1(OperandValue, MAX_PREC);
 }
 
-void MoveToOperandL(void)
+static void MoveToOperandL(void)
 {
     OperandLType  = OperandType;
     OperandLValue = OperandValue;
@@ -674,23 +854,23 @@ void MoveToOperandL(void)
     CurrentFixup = NULL;
 }
 
-void DirectiveOrg(U1 arg)
+static void DirectiveOrg(U1 arg)
 {
     (void)arg;
     if (OutputOffset) {
         Error("ORG changed after emitting instruction");
     }
-    const U2 org = GetNumber();
+    const U2 org = GetExpr();
     if (org < CurrentAddress) {
         Error("Invalid ORG (moving backwards)");
     }
     CurrentAddress = org;
 }
 
-void DirectiveCPU(U1 arg)
+static void DirectiveCPU(U1 arg)
 {
     (void)arg;
-    const U2 level = GetNumber();
+    const U2 level = GetExpr();
     switch (level) {
     case 8086:
         CpuLevel = 0;
@@ -706,20 +886,9 @@ void DirectiveCPU(U1 arg)
     assert(CpuLevel <= 3);
 }
 
-void OutputDx(U1 size, U2 val)
-{
-    OutputByte(val&0xff);
-    if (size != 1) {
-        assert(size == 2);
-        OutputByte(val>>8);
-    } else {
-        assert((val>>8) == 0);
-    }
-}
+static void OutputImm16(void);
 
-void OutputImm16(void);
-
-void DirectiveDx(U1 size)
+static void DirectiveDx(U1 size)
 {
     assert(size == 1 || size == 2);
     do {
@@ -730,7 +899,7 @@ void DirectiveDx(U1 size)
                 if (c < 0x20) {
                     Error("Unterminated literal");
                 }
-                OutputDx(1, c); // Always output one byte when in character literal mode
+                OutputByte(c); // Always output one byte when in character literal mode
                 ++n;
             }
             if (n % size) {
@@ -738,22 +907,25 @@ void DirectiveDx(U1 size)
                 OutputByte(0);
             }
         } else {
-            GetToken();
-            if (IsTokenNumber()) {
-                OutputDx(size, GetNumberFromToken());
-            } else {
-                if (size != 2) Error("Byte val reference not implemented");
-                GetNamedLiteral();
-                OutputImm16();
+            const U2 val = GetExpr();
+            if (CurrentFixup) {
+                if (size == 1) {
+                    Error("Fixup not possible for byte value");
+                }
+                RegisterFixup(FIXUP_DISP16);
+            }
+            OutputByte((U1)val);
+            if (size > 1) {
+                OutputByte(val>>8);
             }
         }
     } while (TryConsume(','));
 }
 
-void DirectiveResx(U1 size)
+static void DirectiveResx(U1 size)
 {
     assert(size == 1 || size == 2);
-    const U2 count = GetNumber();
+    const U2 count = GetExpr();
     if (count * size + CurrentAddress > 0xFFFF) {
         Error("Memory overflow in RESX");
     }
@@ -761,18 +933,18 @@ void DirectiveResx(U1 size)
     PendingZeros += count * size;
 }
 
-void InstINT(U1 arg)
+static void InstINT(U1 arg)
 {
     (void)arg;
-    const U2 i = GetNumber();
-    if (i > 0xff) {
-        Error("Interrupt no. out of range");
+    GetOperand();
+    if (OperandType != OP_LIT || OperandValue > 0xff) {
+        Error("Invalid operand to INT");
     }
     OutputByte(0xCD);
-    OutputByte(i&0xff);
+    OutputByte((U1)OperandValue);
 }
 
-void Get2Operands(void)
+static void Get2Operands(void)
 {
     GetOperand();
     MoveToOperandL();
@@ -780,7 +952,7 @@ void Get2Operands(void)
     GetOperand();
 }
 
-void OutputImm16(void)
+static void OutputImm16(void)
 {
     if (CurrentFixup) {
         RegisterFixup(FIXUP_DISP16);
@@ -788,7 +960,7 @@ void OutputImm16(void)
     OutputWord(OperandValue);
 }
 
-void OutputImm8(void)
+static void OutputImm8(void)
 {
     if (!IsShort(OperandValue) && OperandValue > 0xFF) {
         Error("8-bit immediate out of range");
@@ -796,7 +968,7 @@ void OutputImm8(void)
     OutputByte(OperandValue & 0xff);
 }
 
-void OutputImm(bool is16bit)
+static void OutputImm(bool is16bit)
 {
     if (is16bit) {
         OutputImm16();
@@ -806,7 +978,7 @@ void OutputImm(bool is16bit)
 }
 
 // Assumes left side operand is mem
-void OutputModRM(U1 r)
+static void OutputModRM(U1 r)
 {
     assert(r < 8 && OperandLType < OP_REG);
     OutputByte((U1)(OperandLType | (r<<3))); // ModRM
@@ -824,7 +996,7 @@ void OutputModRM(U1 r)
     }
 }
 
-void OutputRR(U1 inst)
+static void OutputRR(U1 inst)
 {
     if (!!(OperandLValue/8) != !!(OperandValue/8)) {
         Error("Invalid register sizes");
@@ -833,7 +1005,7 @@ void OutputRR(U1 inst)
     OutputByte(0xc0 | (OperandLValue&7) | (OperandValue&7)<<3);
 }
 
-void OutputMR(U1 inst)
+static void OutputMR(U1 inst)
 {
     if (ExplicitSize != NO_SIZE && ExplicitSize != OperandValue/8) {
         Error("Invalid register sizes");
@@ -842,7 +1014,7 @@ void OutputMR(U1 inst)
     OutputModRM(OperandValue&7);
 }
 
-void SwapOperands(void)
+static void SwapOperands(void)
 {
     U1 tempT = OperandLType;
     U2 tempV = OperandLValue;
@@ -853,13 +1025,13 @@ void SwapOperands(void)
     SwapFixup();
 }
 
-void OutputRM(U1 inst)
+static void OutputRM(U1 inst)
 {
     SwapOperands();
     OutputMR(inst);
 }
 
-void OutputMImm(U1 inst, U1 r)
+static void OutputMImm(U1 inst, U1 r)
 {
     if (ExplicitSize == NO_SIZE) {
         Error("Unknown operand size");
@@ -874,7 +1046,7 @@ void OutputMImm(U1 inst, U1 r)
     OutputImm(ExplicitSize);           // Immediate
 }
 
-void InstMOV(U1 arg)
+static void InstMOV(U1 arg)
 {
     (void)arg;
     Get2Operands();
@@ -944,7 +1116,7 @@ Invalid:
     }
 }
 
-void InstMOVXX(U1 op2)
+static void InstMOVXX(U1 op2)
 {
     CheckCPU(3);
     Get2Operands();
@@ -963,7 +1135,7 @@ void InstMOVXX(U1 op2)
     Error("Invalid/unsupported operands to MOVZX");
 }
 
-void InstLEA(U1 arg)
+static void InstLEA(U1 arg)
 {
     (void)arg;
     Get2Operands();
@@ -973,7 +1145,7 @@ void InstLEA(U1 arg)
     OutputRM(0x8D);
 }
 
-void InstLXS(U1 inst)
+static void InstLXS(U1 inst)
 {
     Get2Operands();
     if (OperandLType != OP_REG || OperandLValue/8 != 1 || OperandType >= OP_REG) {
@@ -985,7 +1157,7 @@ void InstLXS(U1 inst)
     OutputRM(inst);
 }
 
-void InstXCHG(U1 arg)
+static void InstXCHG(U1 arg)
 {
     (void)arg;
     Get2Operands();
@@ -1007,7 +1179,7 @@ void InstXCHG(U1 arg)
     Error("Invalid/unsupported operands to XCHG");
 }
 
-void InstTEST(U1 arg)
+static void InstTEST(U1 arg)
 {
     (void)arg;
     Get2Operands();
@@ -1052,7 +1224,7 @@ Invalid:
     }
 }
 
-void InstIncDec(U1 dec)
+static void InstIncDec(U1 dec)
 {
     assert(dec == 0 || dec == 1);
     GetOperand();
@@ -1079,7 +1251,7 @@ void InstIncDec(U1 dec)
     Error("TODO");
 }
 
-void InstNotNeg(U1 r)
+static void InstNotNeg(U1 r)
 {
     assert(r == 2 || r == 3);
     GetOperand();
@@ -1103,7 +1275,7 @@ void InstNotNeg(U1 r)
     }
 }
 
-void InstALU(U1 base)
+static void InstALU(U1 base)
 {
     assert(((base & 7) | (base >> 6)) == 0);
     Get2Operands();
@@ -1150,7 +1322,7 @@ void InstALU(U1 base)
     Error("Not implemented ALU with non-reg arguments");
 }
 
-void InstROT(U1 r)
+static void InstROT(U1 r)
 {
     assert(r < 8);
     Get2Operands();
@@ -1192,7 +1364,7 @@ void InstROT(U1 r)
     Error("Not implemented");
 }
 
-void InstMulDiv(U1 r)
+static void InstMulDiv(U1 r)
 {
     assert(r >= 4 && r < 8);
     GetOperand();
@@ -1215,7 +1387,7 @@ void InstMulDiv(U1 r)
     }
 }
 
-void InstIN(U1 arg)
+static void InstIN(U1 arg)
 {
     (void)arg;
     Get2Operands();
@@ -1236,7 +1408,7 @@ void InstIN(U1 arg)
     Error("Invalid operands to IN");
 }
 
-void InstOUT(U1 arg)
+static void InstOUT(U1 arg)
 {
     (void)arg;
     Get2Operands();
@@ -1256,13 +1428,13 @@ void InstOUT(U1 arg)
     Error("Invalid operands to OUT");
 }
 
-void InstAAX(U1 inst)
+static void InstAAX(U1 inst)
 {
     OutputByte(inst);
     OutputByte(0x0A);
 }
 
-void InstPUSH(U1 arg)
+static void InstPUSH(U1 arg)
 {
     (void)arg;
     GetOperand();
@@ -1290,7 +1462,7 @@ void InstPUSH(U1 arg)
     }
 }
 
-void InstPOP(U1 arg)
+static void InstPOP(U1 arg)
 {
     (void)arg;
     GetOperand();
@@ -1305,7 +1477,7 @@ void InstPOP(U1 arg)
     }
 }
 
-void HandleRel16(void)
+static void HandleRel16(void)
 {
     if (OperandType != OP_LIT) {
         Error("Expected literal");
@@ -1316,7 +1488,7 @@ void HandleRel16(void)
     OutputWord((U2)(OperandValue - (CurrentAddress + 2)));
 }
 
-void InstCALL(U1 arg)
+static void InstCALL(U1 arg)
 {
     (void)arg;
     GetOperand();
@@ -1332,15 +1504,11 @@ void InstCALL(U1 arg)
     HandleRel16();
 }
 
-bool HandleShortRel(U1 inst, bool force)
+static bool HandleShortRel(U1 inst, bool force)
 {
-    if (!GetRegOrNumber()) {
-        if (!strcmp(UTokenText, "SHORT")) {
-            force = true;
-            GetOperand();
-        } else {
-            GetNamedLiteral();
-        }
+    GetOperand();
+    if (ExplicitSize == 1) {
+        force = true;
     }
 
     if (OperandType != OP_LIT) {
@@ -1368,7 +1536,7 @@ bool HandleShortRel(U1 inst, bool force)
 }
 
 
-void InstJMP(U1 arg)
+static void InstJMP(U1 arg)
 {
     (void)arg;
     if (!HandleShortRel(0xEB, false)) {
@@ -1377,7 +1545,7 @@ void InstJMP(U1 arg)
     }
 }
 
-void InstJcc(U1 cc) {
+static void InstJcc(U1 cc) {
     assert(cc < 16);
     if (!HandleShortRel(0x70|cc, CpuLevel < 3)) {
         OutputWord(0x800F | cc<<8);
@@ -1385,12 +1553,12 @@ void InstJcc(U1 cc) {
     }
 }
 
-void HandleJ8(U1 inst)
+static void HandleJ8(U1 inst)
 {
     HandleShortRel(inst, true);
 }
 
-void OutputByte186(U1 inst)
+static void OutputByte186(U1 inst)
 {
     CheckCPU(1);
     OutputByte(inst);
@@ -1537,13 +1705,13 @@ static const struct {
     { "JG"     , &InstJcc         , JG   },
     };
 
-bool TryGetU(U1 ch)
+static bool TryGetU(U1 ch)
 {
     assert(ch >= 'A' && ch <= 'Z');
     return TryGet(ch) || TryGet(ch + 'a' - 'A');
 }
 
-void Dispatch(void)
+static void Dispatch(void)
 {
     if (TryConsume(':')) {
         DefineLabel();
@@ -1563,18 +1731,12 @@ void Dispatch(void)
     if (!TryGetU('E') || !TryGetU('Q') || !TryGetU('U')) {
         Error("Invalid directive");
     }
-    SkipWS();
 
     struct Equ* e = DefineEqu();
-    if (TryGet('\'')) {
-        GetCharLit();
-        e->Value = OperandValue;
-    } else {
-        e->Value  = GetNumber();
-    }
+    e->Value = GetExpr();
 }
 
-void ParserInit(const char* filename)
+static void ParserInit(const char* filename)
 {
     if ((InputFile = fopen(filename, "rb")) == NULL) {
         fprintf(stderr, "Error opening %s\n", filename);
@@ -1589,13 +1751,18 @@ void ParserInit(const char* filename)
     MoveNext();
 }
 
-void ParserFini(void)
+static void ParserFini(void)
 {
+    if (ferror(InputFile)) {
+        Error("Read error");
+    } else if (!feof(InputFile)) {
+        Error("File not completely read");
+    }
     fclose(InputFile);
     InputFile = NULL;
 }
 
-char* GetOutputFileName(const char* InputFileName)
+static char* GetOutputFileName(const char* InputFileName)
 {
     int l = strlen(InputFileName);
     char* OutputFileName = malloc(l + 4);
