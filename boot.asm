@@ -4,31 +4,58 @@
 ;; Copyright 2019 Michael Rasmussen              ;;
 ;; See LICENSE.md for details                    ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
-; The disktool (or insboot) assumes the code starts after the DOS 3.0 BPB
-; It also handles putting in the boot signature at the end of the sector
-; The boot sector searches for OS.SYS in the root directory and loads it at
-; linear address 0x0500 (just after the IVT) and the stack top is at 0x7c00,
-; DL contains the boot drive.
-
-; FAT is kept at 0x8000
+;;
+;; The boot sector searches for OS.SYS in the root directory
+;; and loads it at linear address 0x0500 (just after the IVT
+;; and BIOS data area) and the stack top is set to 0x7c00. This
+;; limits the size to around 30K, which should suffice for now.
+;; On entry to the loaded code DL contains the boot drive.
+;;
 
         cpu 8086
-        org 0x7c1e
+        org 0x7c00
 
-SEC_PER_FAT   equ 0x7c16
-SEC_PER_TRACK equ 0x7c18
-NUM_HEADS     equ 0x7c1a
+OS_SEG           equ 0x0050 ; Segment to load OS at
+FAT_SEG          equ 0x0800 ; Segment to load FAT at (FAT must be located in first 64K)
+SCRATCH_SEG      equ 0x0050 ; Segment in first 64K for 512 byte scratch buffer (before loading O/S)
 
-FAT_ROOT_SEC     equ 19 ; FAT_RES_SECS + FAT_NUM_FATS * FAT_SEC_CNT
-FAT_MAX_ROOTS    equ 14 ; ROOT_MAX_IDX / SECTOR_SIZE
-FAT_DATA_SEC     equ 33 ; FAT_ROOT_SEC + FAT_MAX_ROOTS
-
-DIR_ENTRY_LCLUST equ 0x1A ; WORD    Low word of start cluster (high word only used for FAT32)
+SECTOR_SIZE      equ 512
+PARAS_PER_SEC    equ SECTOR_SIZE/16 ; Sector size in paragraphs
+DIR_ENTRY_LCLUST equ 0x1A ; WORD Low word of start cluster (high word only used for FAT32)
 DIR_ENTRY_SIZE   equ 0x20
 
-        ; Ensure we're running from a known address
+        ;
+        ; Entry point
+        ;
+
+        jmp short Start     ; Use well known
+        nop                 ; instruction sequence
+
+        db 'SDOS 1.0'       ; OEM Name
+
+        ;
+        ; 1440 FD BPB
+        ;
+        dw 512              ; BytesPerSector
+        db 1                ; SectorsPerCluster
+ReservedSectors:
+        dw 1                ; ReservedSectors
+NumFats:
+        db 2                ; NumFats
+MaxRootEntries:
+        dw 224              ; MaxRootEntries
+        dw 2880             ; TotalSectors
+        db 0xF0             ; MediaDescriptor
+SectorsPerFat:
+        dw 9                ; SectorsPerFat
+SectorsPerTrack:
+        dw 18               ; SectorsPerTrack
+NumHeads:
+        dw 2                ; NumHeads
+        dw 0                ; HiddenSectors
+
 Start:
+        ; Ensure we're running from a known address
         xor ax, ax
         push ax
         mov ax, RealStart
@@ -49,23 +76,39 @@ RealStart:
         call PutString
 
         ; Read FAT
-        mov bx, 0x0800
+        mov bx, FAT_SEG
         mov ax, 1
-        mov cx, [SEC_PER_FAT]
+        mov cx, [SectorsPerFat]
         call ReadSectors
 
-        mov si, 0x0500
-        mov ax, FAT_ROOT_SEC
-        mov cx, FAT_MAX_ROOTS
+        push dx
+        ; Calculate number of root dir entry sectors
+        ; (Assumes completely filled sectors)
+        mov ax, [MaxRootEntries]
+        mov cl, 4 ; log2(SECTOR_SIZE) - log2(DIR_ENTRY_SIZE)
+        shr ax, cl
+        mov cx, ax
+
+        ; Calculate root sector index
+        xor ah, ah
+        mov al, [NumFats]
+        mul word [SectorsPerFat]
+        add ax, [ReservedSectors]
+
+        ; And store index of first data sector
+        mov dx, ax
+        add dx, cx
+        mov [FirstDataSector], dx
+        pop dx
+
 .SearchFile:
         push cx
-        mov bx, si
-        mov cl, 4
-        shr bx, cl
+        mov bx, SCRATCH_SEG
         mov cx, 1
         call ReadSectors
         pop cx
-        mov bx, 16 ; BytesPerSector / DIR_ENTRY_SIZE
+        mov bx, SECTOR_SIZE/DIR_ENTRY_SIZE
+        mov si, SCRATCH_SEG<<4
 .DirLoop:
         push si
         mov di, FileName
@@ -83,13 +126,14 @@ RealStart:
         dec cx
         jnz .SearchFile
 
+        ; Failed to find file
         xor ax, ax
         mov si, MsgBootDskErr
         jmp Error
 
 .FileFound:
-        mov si, 0x8000
-        mov cx, 0x0050 ; Destination segment
+        mov si, FAT_SEG<<4
+        mov cx, OS_SEG
 .LoadLoop:
         cmp ax, 0xff0
         jae .LoadDone
@@ -97,11 +141,12 @@ RealStart:
         push ax
         mov bx, cx
         mov cx, 1
-        add ax, 31 ; FAT_DATA_SEC - 2
+        sub ax, 2 ; First data sector is for cluster 2
+        add ax, [FirstDataSector]
         call ReadSectors
         mov cx, bx
         pop ax
-        add cx, 0x0020 ; BytesPerSector/0x10
+        add cx, PARAS_PER_SEC
 
         ; Move to next cluster
         mov bx, ax
@@ -118,17 +163,13 @@ RealStart:
         and ah, 0x0f
         jmp .LoadLoop
 .LoadDone:
-        mov ax, 0x0500
+        mov ax, OS_SEG<<4
         push ax
         ; DL=boot drive
         ret
 Error:
-        push ax
-        call PutString
-        mov al, ' '
-        call PutChar
-        pop ax
         call PutHexWord
+        call PutString
         mov si, MsgReboot
         call PutString
         xor ax, ax
@@ -142,14 +183,11 @@ PutHexWord:
         pop ax
 PutHexByte:
         push ax
-        shr al, 1
-        shr al, 1
-        shr al, 1
-        shr al, 1
+        mov cl, 4
+        shr al, cl
         call PutHexDig
         pop ax
 PutHexDig:
-        push ax
         and al, 0x0f
         add al, '0'
         cmp al, '9'
@@ -158,25 +196,18 @@ PutHexDig:
 .P:
         mov ah, 0x0e
         int 0x10
-        pop ax
         ret
 
 PutString:
-.Pr:
+        mov ah, 0x0e
+.L:
         lodsb
         and al, al
-        jz .Done
-        call PutChar
-        jmp .Pr
-.Done:
+        jnz .Pr
         ret
-
-PutChar:
-        push ax
-        mov ah, 0x0e
+.Pr:
         int 0x10
-        pop ax
-        ret
+        jmp .L
 
 ; Read CX sectors from LBA AX segment BX
 ReadSectors:
@@ -194,11 +225,11 @@ ReadSectors:
         ; LBA->CHS
         mov bx, dx ; Preserve DL
         xor dx, dx
-        div word [SEC_PER_TRACK]
+        div word [SectorsPerTrack]
         inc dl
         mov cx, dx
         xor dx, dx
-        div word [NUM_HEADS]
+        div word [NumHeads]
         ; CL = sector
         ; DX = head
         ; AX = cyl
@@ -213,7 +244,7 @@ ReadSectors:
         pop cx
         pop bx
         pop ax
-        add bx, 0x20   ; SECTOR_SIZE/0x10
+        add bx, PARAS_PER_SEC
         inc ax
         dec cx
         jnz .Read
@@ -233,3 +264,9 @@ MsgBootDskErr: db 13, 10, 'Could not load OS.SYS', 0
 MsgReboot:     db 13, 10, 'Press any key to reboot', 13, 10, 0
 
 FileName:     db 'OS      SYS'
+
+FirstDataSector: resw 1
+
+        ; Boot signature
+        resb 510-($-$$)
+        dw 0xaa55

@@ -66,9 +66,6 @@ struct DirEntry {
 #define CLUSTER_MAX         ((DiskBPB.TotalSectors - DATA_SECTOR) / DiskBPB.SectorsPerCluster)
 #define CLUSTER_SIZE        (DiskBPB.BytesPerSector * DiskBPB.SectorsPerCluster)
 
-#define BOOT_CODE_OFFSET    (BPB_OFFSET + sizeof(struct BPB))
-#define MAX_BOOT_CODE_SIZE  (510 - BOOT_CODE_OFFSET)
-
 static FILE* DiskImg;
 static struct BPB DiskBPB;
 static U1* FAT;
@@ -323,27 +320,6 @@ const U1 DefaultBootCode[] = {
 };
 const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '0' };
 
-void InstallBootLoader(const U1* Code, U2 CodeSize)
-{
-    if (CodeSize > MAX_BOOT_CODE_SIZE) {
-        Error("CodeSize %u exceeds max size %u\n", CodeSize, MAX_BOOT_CODE_SIZE);
-    }
-    U1 BootSect[512];
-    memset(BootSect, 0, sizeof(BootSect));
-
-    // Jump past BPB
-    BootSect[0] = 0xEB;
-    BootSect[1] = BPB_OFFSET + sizeof(struct BPB) - 2;
-    BootSect[2] = 0x90;
-    memcpy(BootSect + 3, OEMName, 8);
-    memcpy(BootSect + BPB_OFFSET, &DiskBPB, sizeof(DiskBPB));
-    memcpy(BootSect + BOOT_CODE_OFFSET, Code, CodeSize);
-    BootSect[510] = 0x55;
-    BootSect[511] = 0xAA;
-    WriteSector(0, BootSect);
-}
-
-
 void CreateDisk(void)
 {
     // Create 1440 FD
@@ -369,7 +345,17 @@ void CreateDisk(void)
 
     // For the BPB to be recognized it seems like the disk has to
     // be bootable? (At least with FreeDOS 1.2)
-    InstallBootLoader(DefaultBootCode, sizeof(DefaultBootCode));
+    U1 BootSect[512];
+    memset(BootSect, 0, sizeof(BootSect));
+    BootSect[0] = 0xEB; // JMP SHORT
+    BootSect[1] = BPB_OFFSET + sizeof(DiskBPB) - 2;
+    BootSect[2] = 0x90; // NOP
+    memcpy(BootSect + 3, OEMName, 8);
+    memcpy(BootSect + BPB_OFFSET, &DiskBPB, sizeof(DiskBPB));
+    memcpy(BootSect + BPB_OFFSET + sizeof(DiskBPB), DefaultBootCode, sizeof(DefaultBootCode));
+    BootSect[510] = 0x55;
+    BootSect[511] = 0xAA;
+    WriteSector(0, BootSect);
 
     AllocFAT();
     memset(FAT, 0, DiskBPB.SectorsPerFat * DiskBPB.BytesPerSector);
@@ -485,7 +471,12 @@ void UpdateBootLoader(const char* BootFileName)
 {
     U4 size;
     U1* data = ReadFile(BootFileName, &size);
-    InstallBootLoader(data, size);
+    if (size != 512) {
+        Error("Boot sector of size %u (expected 512)\n", size);
+    } else if (data[0] != 0xEB || data[510] != 0x55 || data[511] != 0xAA) {
+        Error("Boot sector looks invalid");
+    }
+    WriteSector(0, data);
     free(data);
 }
 
@@ -579,10 +570,10 @@ int main(int argc, char* argv[])
             "     list                 List information\n"
             "     fat                  Show FAT information\n"
             "     create               Create new disk\n"
-            "     boot boot-file       Update bootloader (note: special format assumes org 0x%04X)\n"
+            "     boot boot-file       Update bootloader\n"
             "     get file [sysname]   Get file fromt root directory (optionally to another filename)\n"
             "     put file [diskname]  Put file into root directory (optionally with another filename)\n"
-            , argv[0], 0x7c00 + BOOT_CODE_OFFSET);
+            , argv[0]);
     }
     const char* DiskImgFileName = argv[1];
     enum {OP_LIST, OP_FAT, OP_CREATE, OP_BOOT, OP_GET, OP_PUT } op;

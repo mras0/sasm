@@ -6,11 +6,8 @@
 ;; See LICENSE.md for details                    ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-        cpu 186
+        cpu 8086
         org 0x100
-
-BOOT_CODE_OFF equ 0x001E ; (BPB_OFFSET = 0x0B + sizeof(DOS 3.0 BPB))
-BOOT_MAX_SIZE equ 0x01E0 ; SECTOR_SIZE - (BOOT_CODE_OFF + 2) ; 2 for signature
 
 SECTOR_SIZE equ 512
 
@@ -89,46 +86,6 @@ Start:
         pop ax
 
         ;
-        ; Check size
-        ;
-        cmp ax, BOOT_MAX_SIZE
-        jb .SizeOK
-        mov dx, MsgErrInBig
-        jmp Error
-.SizeOK:
-
-        ;
-        ; Move boot code to correct offset
-        ;
-
-        mov bx, BOOT_CODE_OFF
-        mov di, Buffer
-        add di, bx
-        add di, ax
-        neg bx
-        mov cx, ax
-.Move:
-        dec di
-        mov al, [di+bx]
-        mov [di], al
-        dec cx
-        jnz .Move
-
-        ;
-        ; Copy in jmp instruction, OEM name and BPB
-        ;
-        mov di, Buffer
-        mov si, BootHeader
-        mov cx, BOOT_CODE_OFF
-        rep movsb
-
-        ;
-        ; Set boot signature
-        ;
-        mov word [Buffer+510], 0xAA55
-
-
-        ;
         ; Figure out current drive
         ;
         mov ah, 0x19
@@ -157,26 +114,9 @@ Error:
         mov ax, 0x4cff
         int 0x21
 
-BootHeader:
-        db 0xEB, 0x1C, 0x90 ; JMP SHORT BOOT_CODE_OFF; NOP
-        db 'SDOS 1.0'       ; OEM Name
-        ; 1440 FD BPB
-        dw 512              ; BytesPerSector
-        db 1                ; SectorsPerCluster
-        dw 1                ; ReservedSectors
-        db 2                ; NumFats
-        dw 224              ; MaxRootEntries
-        dw 2880             ; TotalSectors
-        db 0xF0             ; MediaDescriptor
-        dw 9                ; SectorsPerFat
-        dw 18               ; SectorsPerTrack
-        dw 2                ; NumHeads
-        dw 0                ; HiddenSectors
-
 MsgErrArgs:     db 'Invalid arguments$'
 MsgErrInOpen:   db 'Could not open input file$'
 MsgErrInRead:   db 'Could not read from input file$'
-MsgErrInBig:    db 'Input file is too big to fit in bootloader$'
 MsgErrDrive:    db 'Sorry, will only write boot sector to drive 0 for now$'
 MsgErrWrite:    db 'Error while writing boot sector$'
 
