@@ -199,9 +199,11 @@ HexDump:
         cmp bl, dl
         jne .C
         add si, dx
-        call PutCrLf
         and cx, cx
-        jnz HexDump
+        jz .Done
+        call PutCrLf
+        jmp HexDump
+.Done:
         ret
 
 ; Print 9 digit decimal number in DX:AX (space padded)
@@ -429,7 +431,8 @@ CommandDispatch:
         jne .NotInternal
         cmp word [bx+4], 'E'
         jne .NotInternal
-        jmp CWaitKey
+        call CWaitKey
+        jmp PutCrLf
 .NotPause:
         cmp word [bx], 'RE'
         jne .NotRe
@@ -599,11 +602,9 @@ CWaitKey:
         int 0x21
         mov ah, 8
         int 0x21
-        push ax
-        call PutCrLf
-        pop ax
         cmp al, 3
         jne .NE
+        call PutCrLf
         stc
         ret
 .NE:
@@ -990,6 +991,7 @@ CmdDiskCopy:
         mov ah, 9
         int 0x21
         call CWaitKey
+        call PutCrLf
         popa
         ret
 .MsgInsertSrc: db 'Insert source disk $'
@@ -1003,6 +1005,8 @@ CmdExit:
         mov ax, 0x4c00
         int 0x21
 
+HD_MAX_BYTES equ 24*16 ; 24 lines of hex and one for the message
+
 CmdHd:
         call CGetIn
 
@@ -1010,15 +1014,23 @@ CmdHd:
         jnc .L
         jmp COpenInError
 .L:
-        mov cx, 0x180 ; 24*16
+        mov cx, HD_MAX_BYTES
         call ReadToBufferN
         and ax, ax
         jz .Done
+        push ax
         mov cx, ax
         mov si, Buffer
         call HexDump
+        pop ax
+        cmp ax, HD_MAX_BYTES
+        jne .Done
+        call PutCrLf
         call CWaitKey
         jc .Done
+        mov dl, 0x0D
+        mov ah, 2
+        int 0x21
         jmp .L
 .Done:
         call CloseInput
@@ -1069,6 +1081,11 @@ CmdType:
         xor di, di
         push bx
         call CWaitKey
+        pushf
+        mov dl, 0x0D
+        mov ah, 2
+        int 0x21
+        popf
         pop bx
         jc .Done
         jmp .NextChar
