@@ -774,85 +774,6 @@ Expect:
         mov [bx], al
         jmp Error
 
-GetToken:
-        push di
-        mov di, Token
-.Get:
-        mov al, [CurrentChar]
-        cmp al, '.'
-        je .Store
-        cmp al, '_'
-        je .Store
-        ; IsDigit
-        mov ah, al
-        sub ah, '0'
-        cmp ah, 9
-        jbe .Store
-        mov ah, al
-        and ah, 0xDF ; to upper case
-        sub ah, 'A'
-        cmp ah, 26
-        ja .Done
-.Store:
-        cmp di, TokenEnd
-        jae .Next ; don't store if beyond limit
-        mov [di], al
-        inc di
-.Next:
-        call ReadNext
-        jmp .Get
-.Done:
-        mov byte [di], 0 ; zero-terminate
-        sub di, Token
-        mov ax, di
-        mov [TokenLen], al
-        pop di
-        call SkipWS
-        call FindEqu
-        cmp bx, INVALID_ADDR
-        je .NotEqu
-        ; Found EQU convert it to a hex string (yes a bit lame)
-        mov ax, [es:bx+EQU_VAL]
-        mov byte [TokenLen], 6
-        mov bx, Token
-        mov word [bx], '0X'
-        add bx, 2
-        mov cl, 4
-.Cvt:
-        rol ax, 4
-        mov ch, al
-        and ch, 0x0f
-        add ch, '0'
-        cmp ch, '9'
-        jbe .StoreDig
-        add ch, HEX_ADJUST
-.StoreDig:
-        mov [bx], ch
-        inc bx
-        dec cl
-        jnz .Cvt
-        mov byte [bx], 0
-.NotEqu:
-        xor bx, bx
-.UC:
-        mov al, [Token+bx]
-        cmp al, 'a'
-        jb .StoreUC
-        cmp al, 'z'
-        ja .StoreUC
-        and al, 0xDF
-.StoreUC:
-        mov [UToken+bx], al
-        inc bx
-        and al, al
-        jnz .UC
-        ret
-
-; Get number to AX
-GetNumber:
-        call GetToken
-        ; Fall through
-
 ; Get number from Token to AX
 GetTokenNumber:
         cmp word [UToken], '0X'
@@ -902,16 +823,75 @@ GetTokenNumber:
         mov bx, MsgErrInvalidNum
         jmp Error
 
-; Returns carry clear if token is number
-IsTokenNumber:
+GetToken:
+        push di
+        xor di, di
+.Get:
+        mov al, [CurrentChar]
+        mov ah, al
+        cmp al, '.'
+        je .Store
+        cmp al, '_'
+        je .Store
+        cmp al, '$'
+        je .Store
+        ; IsDigit
+        mov bh, al
+        sub bh, '0'
+        cmp bh, 9
+        jbe .Store
+        mov bh, al
+        and bh, 0xDF ; to upper case
+        sub bh, 'A'
+        cmp bh, 26
+        ja .Done
+        and ah, 0xDF
+.Store:
+        cmp di, TOKEN_MAX
+        jae .Next ; don't store if beyond limit
+        mov [Token+di], al
+        mov [UToken+di], ah
+        inc di
+.Next:
+        call ReadNext
+        jmp .Get
+.Done:
+        xor al, al
+        mov byte [Token+di], al ; zero-terminate
+        mov byte [UToken+di], al ; zero-terminate
+        mov byte [IsTokenNumber], al
+        mov ax, di
+        mov [TokenLen], al
+        pop di
+        call SkipWS
         mov al, [Token]
         sub al, '0'
         cmp al, 9
-        ja .NotNumber
-        clc
-        ret
-.NotNumber:
-        stc
+        ja .CheckSpecial
+        call GetTokenNumber
+        jmp .HasNum
+.CheckSpecial:
+        cmp word [Token], '$'
+        jne .CheckSpecial2
+        mov ax, [CurrentAddress]
+        jmp .HasNum
+.CheckSpecial2:
+        cmp byte [TokenLen], 2
+        jne .CheckEqu
+        cmp word [Token], '$$'
+        jne .CheckEqu
+        mov ax, [SectionStart]
+        jmp .HasNum
+.CheckEqu:
+        call FindEqu
+        cmp bx, INVALID_ADDR
+        je .NotEqu
+        ; Found EQU
+        mov ax, [es:bx+EQU_VAL]
+.HasNum:
+        mov word [OperandValue], ax
+        mov byte [IsTokenNumber], 1
+.NotEqu:
         ret
 
 ; Read one or two character literal to OperandValue
@@ -1027,11 +1007,10 @@ GetPrimary:
         ret
 .NotCharLit:
         call GetToken
-        call IsTokenNumber
-        jc .NotNum
-        jmp GetTokenNumber
-.NotNum:
+        cmp byte [IsTokenNumber], 0
+        jne .Number
         call GetNamedLiteral
+.Number:
         mov ax, [OperandValue]
         ret
 
@@ -1210,12 +1189,11 @@ GetRegOrNumber:
         jnz .ChecReg
         ; Fall through
 .CheckNumber:
-        call IsTokenNumber
-        jnc .Number
-        ret ; Keep carry set
+        cmp byte [IsTokenNumber], 0
+        jne .Number
+        stc
+        ret
 .Number:
-        call GetTokenNumber
-        mov [OperandValue], ax
         mov byte [OperandType], OP_LIT
         clc
         ret
@@ -1832,6 +1810,7 @@ MakeEqu:
 
 DirORG:
         call GetExpr
+        mov [SectionStart], ax
         mov [CurrentAddress], ax
         ret
 
@@ -2593,8 +2572,14 @@ InstAAX:
 InstINT:
         mov al, 0xcd
         call OutputByte
-        call GetNumber
+        call GetOperand
+        cmp byte [OperandType], OP_LIT
+        jne .Err
+        cmp byte [OperandValue+1], 0
+        jne .Err
         jmp OutputByte
+.Err:
+        jmp InvalidOperand
 
 InstCALL:
         call GetOperand
@@ -3107,9 +3092,10 @@ NumNewLines:      resw 1 ; Number of newlines passed by ReadNext
 CurrentChar:      resb 1 ; Current input character (0 on EOF)
 GotNL:            resb 1 ; Passed NL since last reset of var?
 CurrentOp:        resw 2 ; Current operand in GetExpr (low byte op, high byte precedence)
+IsTokenNumber:    resb 1 ; Is The current token a number?
 TokenLen:         resb 1
 Token:            resb TOKEN_MAX
-TokenEnd:         resb 1 ; NUL-terminator
+                  resb 1 ; NUL-terminator
 UToken:           resb TOKEN_MAX
                   resb 1 ; NUL
 InputBufferPos:   resw 1
@@ -3141,6 +3127,7 @@ NumEqus:          resw 1
 
 ;;; Output
 OutputSeg:        resw 1
+SectionStart:     resw 1
 CurrentAddress:   resw 1 ; Current memory address of code (e.g. 0x100 first in a COM file)
 NumOutBytes:      resw 1 ; Number of bytes output
 PendingZeros:     resw 1 ; Number of zeros to output before next actual byte

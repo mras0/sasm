@@ -45,11 +45,13 @@ FILE* InputFile;
 U2 CurrentLine;
 U2 NumNewLines;
 U1 CurrentChar;
-U1 GotNL;
+bool GotNL;
 U2 CurrentOp;
 char TokenText[TOKEN_MAX+1];
 char UTokenText[TOKEN_MAX+1];
+bool IsTokenNumber;
 U1 TokenLen;
+U2 SectionStart;
 U2 CurrentAddress;
 U1 OutputBuffer[OUTPUT_MAX];
 U2 OutputOffset;
@@ -153,7 +155,7 @@ static void ReadNext(void)
         CurrentChar = 0;
         return;
     } else if (c == '\n') {
-        GotNL = 1;
+        GotNL = true;
         ++NumNewLines;
     }
     CurrentChar = (U1)c;
@@ -214,47 +216,6 @@ static U1 ToUpper(U1 ch)
     return ch >= 'a' && ch <= 'z' ? ch + 'A' - 'a' : ch;
 }
 
-static bool IsTokenNumber(void)
-{
-    return IsDigit(TokenText[0]);
-}
-
-static void GetToken(void)
-{
-    TokenLen = 0;
-    while (CurrentChar == '.' || CurrentChar == '_' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
-        if (TokenLen < TOKEN_MAX) {
-            TokenText[TokenLen++] = CurrentChar;
-        }
-        ReadNext();
-    }
-    TokenText[TokenLen] = '\0';
-    SkipWS();
-    const struct Equ* e = FindEqu();
-    if (e) {
-        TokenLen = (U1)sprintf(TokenText, "0X%X", e->Value);
-    }
-
-    for (char* D = UTokenText, *S = TokenText; (*D++ = ToUpper(*S++)) != 0;)
-        ;
-}
-
-static bool TryConsume(U1 ch)
-{
-    if (CurrentChar != ch) {
-        return false;
-    }
-    MoveNext();
-    return true;
-}
-
-static void Expect(U1 ch) {
-    if (!TryConsume(ch)) {
-        char err[] = "? expected";
-        err[0] = ch;
-        Error(err);
-    }
-}
 
 static U2 GetNumberFromToken(void)
 {
@@ -285,13 +246,64 @@ static U2 GetNumberFromToken(void)
     return num;
 }
 
+static void GetToken(void)
+{
+    TokenLen = 0;
+    while (CurrentChar == '.' || CurrentChar == '_' || CurrentChar == '$' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
+        if (TokenLen < TOKEN_MAX) {
+            UTokenText[TokenLen] = ToUpper(CurrentChar);
+            TokenText[TokenLen++] = CurrentChar;
+        }
+        ReadNext();
+    }
+    UTokenText[TokenLen] = '\0';
+    TokenText[TokenLen] = '\0';
+    SkipWS();
+
+    IsTokenNumber = IsDigit(TokenText[0]);
+    if (IsTokenNumber) {
+        OperandValue = GetNumberFromToken();
+    } else {
+        if (!strcmp(TokenText, "$")) {
+            IsTokenNumber = true;
+            OperandValue = CurrentAddress;
+        } else if (!strcmp(TokenText, "$$")) {
+            IsTokenNumber = true;
+            OperandValue = SectionStart;
+        } else {
+            const struct Equ* e = FindEqu();
+            if (e) {
+                IsTokenNumber = true;
+                OperandValue = e->Value;
+            }
+        }
+    }
+}
+
+static bool TryConsume(U1 ch)
+{
+    if (CurrentChar != ch) {
+        return false;
+    }
+    MoveNext();
+    return true;
+}
+
+static void Expect(U1 ch) {
+    if (!TryConsume(ch)) {
+        char err[] = "? expected";
+        err[0] = ch;
+        Error(err);
+    }
+}
+
 static U2 GetNumber(void)
 {
     GetToken();
-    if (!TokenLen) {
+    if (!IsTokenNumber) {
         Error("Invalid number");
     }
-    return GetNumberFromToken();
+    return OperandValue;
 }
 
 static struct Label* FindLabel(const char* text)
@@ -493,9 +505,8 @@ static U1 GetReg(void)
 static bool GetRegOrNumber(void)
 {
     GetToken();
-    if (IsTokenNumber()) {
+    if (IsTokenNumber) {
         OperandType  = OP_LIT;
-        OperandValue = GetNumberFromToken();
         return true;
     }
     OperandValue = GetReg();
@@ -544,10 +555,9 @@ static U2 GetPrimary(void)
         return GetNumber();
     } else {
         GetToken();
-        if (IsTokenNumber()) {
-            return GetNumberFromToken();
+        if (!IsTokenNumber) {
+            GetNamedLiteral();
         }
-        GetNamedLiteral();
         return OperandValue;
     }
 }
@@ -678,7 +688,7 @@ static U2 GetExpr0(void)
 static void NewExpr(void)
 {
     CurrentOp = 0;
-    GotNL = 0;
+    GotNL = false;
 }
 
 static U2 GetExpr(void)
@@ -819,8 +829,7 @@ static void GetOperand(void)
         OperandType = OP_LIT;
     } else {
         GetToken();
-        if (IsTokenNumber()) {
-            OperandValue = GetNumberFromToken();
+        if (IsTokenNumber) {
             OperandType = OP_LIT;
         } else {
             OperandValue = GetReg();
@@ -865,6 +874,7 @@ static void DirectiveOrg(U1 arg)
         Error("Invalid ORG (moving backwards)");
     }
     CurrentAddress = org;
+    SectionStart = org;
 }
 
 static void DirectiveCPU(U1 arg)
