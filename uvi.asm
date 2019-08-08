@@ -4,11 +4,10 @@
 ;; Copyright 2019 Michael Rasmussen         ;;
 ;; See LICENSE.md for details               ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-
 ;;
 ;; Major limitations:
 ;;  * Probably so buggy you shouldn't trust it with your files
+;;  * No warning about unsaved data (so be even more careful)
 ;;  * There's only a handful of supported commands
 ;;  * dd/yy/pp only works on complete line (lists)
 ;;  * Only lines of length < BUFFER_SIZE can be edited
@@ -16,7 +15,9 @@
 ;;  * Tabs in files aren't really supported (use spaces)
 ;;  * Files that don't fit in memory aren't handled
 ;;  * Only simple (non-regex case-sesnsitive) search supported
-
+;;  * When using :e only RESERVED_PARAS*0x10 bytes can be stored in
+;;    the temp register (copy buffer). Should instead compact heap.
+;;
 ;;
 ;; The file is stored in a doubly linked list of lines (without CR+LF)
 ;; starting with 'FirstLine'. A pointer to the first displayed line (top
@@ -33,7 +34,8 @@
 ;;
 ;; The heap is managed like line buffers (and their structures MUST match),
 ;; meaning each block is limited to 0x10000-HEAPN_SIZE bytes of extra storage
-;; (for characters) since the line length is limited to 65535 bytes.
+;; (for characters) since the line length is limited to 65535 bytes. Free
+;; heap blocks aren't coalesced so fragmentation is likely a huge issue.
 ;;
 ;; The calling convention is a bit ad hoc, but generally the current node
 ;; or object will be stored in ES:BX and other pointer pairs are in DX:AX
@@ -46,59 +48,66 @@
         cpu 186
         org 0x100
 
-BUFFER_SIZE     equ 512
-SEARCHBUF_SIZE  equ 80
-NDISP_LINES     equ 24   ; Number of displayed lines (of text from the file)
-DISP_LINE_WORDS equ 80   ; Width of screen (each is one character + one attribute byte)
-DISP_LINE_BYTES equ 160  ; DISP_LINE_WORDS * 2
-SLINE_OFFSET    equ 3840 ; DISP_LINE_BYTES * NDISP_LINES
-SLINE_CNT_OFF   equ 3988 ; SLINE_OFFSET + DISP_LINE_BYTES - 6*2
-MAX_LINE_WIDTH  equ 74   ; DISP_LINE_WORDS - (5 digits + space)
+STACK_SIZE       equ 2048
+RESERVED_PARAS   equ 0x0800 ; Reserve 32K at end of heap
+BUFFER_SIZE      equ 512
+SEARCHBUF_SIZE   equ 80
+NDISP_LINES      equ 24   ; Number of displayed lines (of text from the file)
+DISP_LINE_WORDS  equ 80   ; Width of screen (each is one character + one attribute byte)
+DISP_LINE_BYTES  equ DISP_LINE_WORDS * 2
+SLINE_OFFSET     equ DISP_LINE_BYTES * NDISP_LINES
+SLINE_CNT_OFF    equ SLINE_OFFSET + DISP_LINE_BYTES - 6*2
+MAX_LINE_WIDTH   equ DISP_LINE_WORDS - 6 ; 6 : 5 digits + space
 
 ; Heap node
-HEAPN_PREV   equ 0  ; DWORD Previous node (far pointer)
-HEAPN_NEXT   equ 4  ; DWORD Next node (far pointer)
-HEAPN_LENGTH equ 8  ; WORD  Length (bytes)
-HEAPN_SIZE   equ 10
+HEAPN_PREV       equ 0  ; DWORD Previous node (far pointer)
+HEAPN_NEXT       equ 4  ; DWORD Next node (far pointer)
+HEAPN_LENGTH     equ 8  ; WORD  Length (bytes)
+HEAPN_SIZE       equ 10
 
 ; Line header (NOTE: Initial layout MUST match heap node)
-LINEH_PREV   equ 0  ; DWORD Previous line (far pointer)
-LINEH_NEXT   equ 4  ; DWORD Next line (far pointer)
-LINEH_LENGTH equ 8  ; WORD  Length
-LINEH_SIZE   equ 10
+LINEH_PREV       equ 0  ; DWORD Previous line (far pointer)
+LINEH_NEXT       equ 4  ; DWORD Next line (far pointer)
+LINEH_LENGTH     equ 8  ; WORD  Length
+LINEH_SIZE       equ 10
 
-                         ; +8 yields...
-; COLOR_BLACK   equ 0x0 ; 0x8 dark gray
-; COLOR_BLUE    equ 0x1 ; 0x9 bright blue
-; COLOR_GREEN   equ 0x2 ; 0xA bright green
-; COLOR_CYAN    equ 0x3 ; 0xB bright cyan
-; COLOR_RED     equ 0x4 ; 0xC bright red
-; COLOR_MAGENTA equ 0x5 ; 0xD bright magenta
-; COLOR_BROWN   equ 0x6 ; 0xE yellow
-; COLOR_GRAY    equ 0x7 ; 0xF white
+COLOR_BLACK      equ 0x0
+COLOR_BLUE       equ 0x1
+COLOR_GREEN      equ 0x2
+COLOR_CYAN       equ 0x3
+COLOR_RED        equ 0x4
+COLOR_MAGENTA    equ 0x5
+COLOR_BROWN      equ 0x6
+COLOR_GRAY       equ 0x7
+COLOR_DGRAY      equ 0x8 ; dark gray
+COLOR_BBLUE      equ 0x9 ; bright blue
+COLOR_BGREEN     equ 0xA ; bright green
+COLOR_BCYAN      equ 0xB ; bright cyan
+COLOR_BRED       equ 0xC ; bright red
+COLOR_BMAGENTA   equ 0xD ; bright magenta
+COLOR_YELLOW     equ 0xE ; yellow
+COLOR_WHITE      equ 0xF ; white
 
-COLOR_NORMAL equ 0x07
-COLOR_ERROR  equ 0x4f
-
-;; To avoid debugging change these:
-COLOR_LINENO     equ 0x0e
+COLOR_NORMAL     equ COLOR_BLACK<<4|COLOR_GRAY
+COLOR_ERROR      equ COLOR_RED<<4|COLOR_WHITE
+COLOR_LINENO     equ COLOR_BLACK<<4|COLOR_YELLOW
 COLOR_LINETEXT   equ COLOR_NORMAL
-LINE_FILL        equ 0x0720 ; COLOR_LINETEXT<<8|' '
-EMPTYNO_FILL     equ 0x017E ; COLOR_BLUE<<8|'~'
+LINE_FILL        equ COLOR_LINETEXT<<8|' '
+EMPTYNO_FILL     equ COLOR_BLUE<<8|'~'
 
-K_BACKSPACE equ 0x08
-K_TAB       equ 0x09
-K_RETURN    equ 0x0D
-K_ESCAPE    equ 0x1B
-K_HOME      equ 0x4700
-K_UP        equ 0x4800
-K_PGUP      equ 0x4900
-K_LEFT      equ 0x4B00
-K_RIGHT     equ 0x4D00
-K_END       equ 0x4F00
-K_DOWN      equ 0x5000
-K_PGDOWN    equ 0x5100
-K_DELETE    equ 0x5300
+K_BACKSPACE      equ 0x08
+K_TAB            equ 0x09
+K_RETURN         equ 0x0D
+K_ESCAPE         equ 0x1B
+K_HOME           equ 0x4700
+K_UP             equ 0x4800
+K_PGUP           equ 0x4900
+K_LEFT           equ 0x4B00
+K_RIGHT          equ 0x4D00
+K_END            equ 0x4F00
+K_DOWN           equ 0x5000
+K_PGDOWN         equ 0x5100
+K_DELETE         equ 0x5300
 
 Start:
         ; Clear BSS
@@ -107,6 +116,22 @@ Start:
         sub cx, di
         xor al, al
         rep stosb
+
+        ; Initialize stack and heap pointers
+        mov ax, BssEnd
+        add ax, 15
+        and ax, 0xfff0
+        add ax, STACK_SIZE
+        cli
+        mov sp, ax
+        sti
+        shr ax, 4
+        mov bx, cs
+        add ax, bx
+        mov [HeapStartSeg], ax
+        mov ax, [2]
+        sub ax, RESERVED_PARAS
+        mov [HeapEndSeg], ax
 
         ; Grab filename from command line
         mov di, FileName
@@ -142,9 +167,12 @@ Start:
         mov ax, 0x03 ; Set mode 3 to ensure we're in a known state
         int 0x10
 
-        mov ax, cs
-        add ax, 0x1000
-        mov [HeapStartSeg], ax
+        ; Fall through here first time round.
+        ; Otherwise we get here from ExEdit with TempReg
+        ; possibly pointing at a line list in the reserved area
+
+ReloadFile:
+        mov ax, [HeapStartSeg]
         mov word [FirstLine], 0
         mov [FirstLine+2], ax
         mov es, ax
@@ -279,7 +307,7 @@ Start:
 
         ; Calculate number of free paragraphs
         mov bx, es
-        mov cx, [2]
+        mov cx, [HeapEndSeg]
         sub cx, bx
 
         ; DX:DI = PREV
@@ -335,10 +363,15 @@ Start:
         mov [CursorX], ax
         mov [CurHScroll], ax
         mov [CursorRelY], al
-        mov [TempReg], ax
-        mov [TempReg+2], ax
         mov [IsInsertMode], al
 
+        ; If we reloaded, copy TempReg from the reserved area
+        ; after the heap has been re-initialized
+        mov bx, [TempReg]
+        mov es, [TempReg+2]
+        call CopyLineList
+        mov [TempReg], bx
+        mov [TempReg+2], es
 
         push 0xb800
         pop es
@@ -1671,6 +1704,10 @@ ExCommand:
 .NotQ:
         cmp ax, ':w'
         je ExWrite
+        cmp ax, ':e'
+        jne .NotE
+        jmp ExEdit
+.NotE:
         cmp ax, ':h'
         jne InvalidExCmd
         cmp word [Buffer+2], 'el'
@@ -1796,6 +1833,96 @@ ExWrite:
         pop dx
         jmp SPutHexWord
 .CRLF: db 13, 10
+
+
+; Copy TempReg to reserved area and
+; otherwise start from scratch with the
+; new filename
+ExEdit:
+        mov si, Buffer+2
+        lodsb
+        and al, al
+        jnz .HasFileName
+        mov di, SLINE_OFFSET
+        mov ah, COLOR_ERROR
+        mov si, .MsgNotImpl
+        jmp SCopyStr
+.MsgNotImpl: db 'Not implemented: plain :e', 0
+.HasFileName:
+        mov di, FileName
+.CopyFileName:
+        lodsb
+        mov [di], al
+        inc di
+        and al, al
+        jnz .CopyFileName
+
+        call LoadTempReg
+        jnz .NotEmpty
+.Done:
+        jmp ReloadFile
+.NotEmpty:
+        ; ES:BX source
+        mov dx, [HeapEndSeg]
+        xor ax, ax
+        mov [TempReg], ax
+        mov [TempReg+2], dx
+        call .CopyLine
+.CopyLoop:
+        ; DX:AX holds last copied line
+        mov di, dx
+        mov si, ax
+        call LoadLineNext
+        jz .Done
+        call LLFromDXAX
+        ; Allocate from reserved area
+        push ds
+        push di
+        pop ds
+        mov dx, di
+        mov ax, si
+        add ax, [si+LINEH_LENGTH]
+        add ax, LINEH_SIZE
+        pop ds
+        call .CopyLine
+        call Link2
+        jmp .CopyLoop
+.CopyLine:
+        ; Copy line from ES:BX to DX:AX
+        push ds
+        push es
+        push si
+        push di
+        mov cx, es
+        mov ds, cx
+        mov cx, [es:bx+LINEH_LENGTH]
+        mov si, bx
+        add si, LINEH_SIZE
+        mov di, ax
+        mov es, dx
+        xor ax, ax
+        mov [es:di+LINEH_PREV], ax
+        mov [es:di+LINEH_PREV+2], ax
+        mov [es:di+LINEH_NEXT], ax
+        mov [es:di+LINEH_NEXT+2], ax
+        mov [es:di+LINEH_LENGTH], cx
+        mov ax, di
+        add ax, LINEH_SIZE
+        add ax, cx
+        cmp ax, RESERVED_PARAS<<4
+        jbe .SizeOK
+        push cs
+        pop ds
+        jmp OutOfMemory
+.SizeOK:
+        mov ax, di
+        add di, LINEH_SIZE
+        rep movsb
+        pop di
+        pop si
+        pop es
+        pop ds
+        ret
 
 SearchCmd:
         mov [LastSearchDir], al
@@ -2852,6 +2979,7 @@ FileName:         resb 13
 
 PrevVideoMode:    resb 1
 HeapStartSeg:     resw 1
+HeapEndSeg:       resw 1
 HeapFree:         resw 2
 FirstLine:        resw 2
 File:             resw 1
