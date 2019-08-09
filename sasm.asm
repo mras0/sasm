@@ -61,7 +61,7 @@
 ;;                 boolean values via the carry flag
 ;;
 
-        cpu 186
+        cpu 8086
         org 0x100
 
 STACK_SIZE       equ 4096       ; TODO: Figure out correct size..
@@ -155,7 +155,8 @@ ProgramEntry:
         cli
         mov sp, ax
         sti
-        shr ax, 4
+        mov cl, 4
+        shr ax, cl
         mov bx, cs
         add ax, bx
         mov [FirstFreeSeg], ax
@@ -462,7 +463,8 @@ Malloc:
         and dx, dx
         jnz .Err ; Overflow
         add ax, 15
-        shr ax, 4
+        mov cl, 4
+        shr ax, cl
 
         mov cx, [FirstFreeSeg]
         add ax, cx
@@ -541,7 +543,10 @@ PutHex:
 ; Write hexadecimal byte in AX
 PutHexByte:
         push ax
-        shr al, 4
+        shr al, 1
+        shr al, 1
+        shr al, 1
+        shr al, 1
         call PutHexDigit
         pop ax
         ; Fall through
@@ -825,7 +830,10 @@ GetTokenNumber:
         mov bx, UToken
         add bx, 2
 .HexCvt:
-        shl ax, 4
+        shl ax, 1
+        shl ax, 1
+        shl ax, 1
+        shl ax, 1
         mov ch, [bx]
         inc bx
         sub ch, '0'
@@ -946,7 +954,10 @@ NewExpr:
 ; Get operand/precedence pair to CurrentOp
 ; Preserves all registers
 GetOp:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         call SkipWS
         cmp byte [GotNL], 0
         jne .NoOp
@@ -997,7 +1008,10 @@ GetOp:
         pop ax
 .RetNoRead:
         mov [CurrentOp], ax
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 
 GetPrimary:
@@ -1356,7 +1370,8 @@ GetOperandMem:
 .SegOverride:
         ; Output segment override here even though it's a bit dirty
         sub al, R_ES
-        shl al, 3
+        mov cl, 3
+        shl al, cl
         or al, 0x26
         call OutputByte
         mov al, ':'
@@ -1566,32 +1581,41 @@ DefineLabel:
 
 ; Print Label in BX (assumes ES=LabelSeg). Registers preserved.
 PrintLabel:
+        push ax
+        push bx
+        push cx
+        push dx
         push ds
-        pusha
         mov ax, es
         mov ds, ax
+        push bx
         call PutString
+        pop bx
         mov al, ' '
         call PutChar
-        popa
         pop ds
         mov ax, [es:bx+LABEL_ADDR]
-        pusha
+        push bx
         call PutHex
         mov al, ' '
         call PutChar
-        popa
+        pop bx
         mov ax, [es:bx+LABEL_FIXUP]
-        pusha
         call PutHex
         call PutCrLf
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 
 ; Print all labels (registers preserved)
 PrintLabels:
+        push ds
+        push ax
+        push bx
+        push cx
         push es
-        pusha
         mov ax, [LabelSeg]
         mov es, ax
         xor bx, bx
@@ -1604,7 +1628,10 @@ PrintLabels:
         dec cx
         jnz .L
 .Done:
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         pop es
         ret
 
@@ -1961,7 +1988,8 @@ HandleRel16:
 OutInst816:
         ; 16-bit?
         mov bl, [OperandValue]
-        shr bl, 3
+        mov cl, 3
+        shr bl, cl
         cmp bl, 1
         jne .Not16
         or al, 1
@@ -1971,7 +1999,8 @@ OutInst816:
 ; Outputs MODR/M byte(s) with register in AL
 ; and memory operand assumed in OperandL*
 OutputModRM:
-        shl al, 3
+        mov cl, 3
+        shl al, cl
         or al, [OperandLType]
         call OutputByte
         mov al, [OperandLType]
@@ -2008,7 +2037,8 @@ OutputRR:
         or al, ah
         mov ah, [OperandValue]
         and ah, 7
-        shl ah, 3
+        mov cl, 3
+        shl ah, cl
         or al, ah
         jmp OutputByte
 
@@ -2076,7 +2106,8 @@ InstMOV:
         add al, [OperandLValue]
         call OutputByte
         mov al, [OperandLValue]
-        shr al, 3
+        mov cl, 3
+        shr al, cl
         jmp OutputImm
 .MOVrr:
         ; MOV reg, reg
@@ -2207,7 +2238,8 @@ InstTEST:
         cmp al, R_ES
         jae .InvalidOp
         mov ah, al
-        shr al, 3
+        mov cl, 3
+        shr al, cl
         push ax
         or al, 0xF6
         and ah, 7
@@ -2259,7 +2291,8 @@ InstMOVXX:
         and al, 7
         mov ah, [OperandLValue]
         and ah, 7
-        shl ah, 3
+        mov cl, 3
+        shl ah, cl
         or al, ah
         or al, 0xc0
         jmp OutputByte
@@ -2271,7 +2304,8 @@ HandleLXXArgs:
         cmp byte [OperandType], OP_REG
         jae .InvalidOp
         mov bl, [OperandLValue]
-        shr bl, 3
+        mov cl, 3
+        shr bl, cl
         cmp bl, 1
         jne .InvalidOp
         ret
@@ -2317,13 +2351,14 @@ InstIncDec:
         pop ax
         jmp OutputModRM
 .Reg:
-        shl al, 3
+        mov cl, 3
+        shl al, cl
         mov ah, [OperandValue]
         mov bl, ah
         and ah, 7
         or al, ah
         or al, 0x40 ; AL = 0x40|dec<<3|(OperandValue&7)
-        shr bl, 3
+        shr bl, cl
         jz .Reg8
         jmp OutputByte
 .Reg8:
@@ -2356,14 +2391,15 @@ InstNotNeg:
 .NNr:
         mov al, [OperandValue]
         mov ah, al
-        shr al, 3
+        mov cl, 3
+        shr al, cl
         cmp al, 1
         ja .InvalidOp
         or al, 0xF6
         call OutputByte
         and ah, 7
         pop bx
-        shl bl, 3
+        shl bl, cl
         or ah, bl
         or ah, 0xc0
         mov al, ah
@@ -2380,9 +2416,12 @@ InstALU:
         cmp byte [OperandType], OP_REG
         je .ALUmr
         jb .InvalidOp
-        shr al, 3
+        mov cl, 3
+        shr al, cl
         mov ah, 0x80
         jmp OutputMImm
+.InvalidOp:
+        jmp InvalidOperand
 .ALUmr:
         jmp OutputMR
 .ALUr:
@@ -2410,7 +2449,8 @@ InstALU:
         or ah, 0xc0
         mov al, [OperandLValue]
         mov bl, al
-        shr al, 3
+        mov cl, 3
+        shr al, cl
         mov bh, al
         cmp al, 1
         jne .ALUrl4
@@ -2434,9 +2474,6 @@ InstALU:
         pop bx
         mov al, bh
         jmp OutputImm
-.InvalidOp:
-        jmp InvalidOperand
-
 
 ; /r in AL (e.g. 6 for DIV)
 InstMulDiv:
@@ -2448,7 +2485,8 @@ InstMulDiv:
         jne .InvalidOp
         ; Output 0xF6 | is16bit, 0xC0 | r<<3 | (OperandValue&7)
         mov ah, al
-        shl ah, 3
+        mov cl, 3
+        shl ah, cl
         or ah, 0xC0
         mov al, [OperandValue]
         cmp al, R_ES
@@ -2456,7 +2494,7 @@ InstMulDiv:
         mov bl, al
         and bl, 7
         or ah, bl
-        shr al, 3
+        shr al, cl
         or al, 0xF6
         jmp OutputWord
 .M:
@@ -2520,10 +2558,11 @@ InstROT:
         mov ah, [OperandLValue]
         mov al, ah
         and ah, 7
-        shl bl, 3
+        mov cl, 3
+        shl bl, cl
         or ah, bl
         or ah, 0xc0
-        shr al, 3
+        shr al, cl
         and al, 1
 
         cmp byte [OperandType], OP_REG
@@ -2559,7 +2598,8 @@ HandleInOut:
         mov bl, [OperandLValue]
         test bl, 7
         jnz .InvalidOp
-        shr bl, 3
+        mov cl, 3
+        shr bl, cl
         cmp bl, 1
         ja .InvalidOp
         or al, bl
@@ -2647,7 +2687,8 @@ InstPUSH:
         jmp OutputByte
 .PushS:
         sub al, 8
-        shl al, 3
+        mov cl, 3
+        shl al, cl
         or al, 0x06
         jmp OutputByte
 
@@ -2664,7 +2705,8 @@ InstPOP:
         jmp OutputByte
 .PopS:
         and al, 7
-        shl al, 3
+        mov cl, 3
+        shl al, cl
         or al, 0x07
         jmp OutputByte
 .InvalidOp:
