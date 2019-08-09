@@ -6,7 +6,7 @@
 ;; See LICENSE.md for details                    ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-        cpu 186
+        cpu 8086
         org 0x0500
 
 ; TODO: Should probably switch to O/S stack when processing syscalls
@@ -87,7 +87,8 @@ Main:
         mov sp, ax
         sti
         add ax, 15
-        shr ax, 4
+        mov cl, 4
+        shr ax, cl
         mov [FreeSeg], ax
 
         ; Add dot to loading message
@@ -97,8 +98,8 @@ Main:
         ; Copy BPB from boot sector
         push ds
         pop es
-        push 0
-        pop ds
+        xor ax, ax
+        mov ds, ax
         mov di, BPB
         mov si, BPB_OFFSET
         mov cx, BPB_SIZE
@@ -128,7 +129,8 @@ Main:
         mov [ClusterBytes], ax
 
         mov ax, [BPB+BPB_MAXROOTENTS]
-        shl ax, 5
+        mov cl, 5
+        shl ax, cl
         mov [RootMaxIdx], ax
 
         call GetFatRootSec
@@ -238,10 +240,10 @@ PutCrLf:
 ; Print character in AL
 ; Preserves all normal registers
 PutChar:
-        pusha
+        push ax
         mov ah, 0x0e
         int 0x10
-        popa
+        pop ax
         ret
 
 ; Print string in BX
@@ -263,7 +265,10 @@ PutHexWord:
         pop ax
 PutHexByte:
         push ax
-        shr al, 4
+        shr al, 1
+        shr al, 1
+        shr al, 1
+        shr al, 1
         call PutHexDigit
         pop ax
 PutHexDigit:
@@ -303,7 +308,10 @@ GetFatRootSec:
 ; AX = FAT_MAX_ROOTS
 GetFatNRootSecs:
         mov ax, [cs:BPB+BPB_MAXROOTENTS]
-        shr ax, 4 ; log2(SECTOR_SIZE) - log2(DIR_ENTRY_SIZE)
+        shr ax, 1
+        shr ax, 1
+        shr ax, 1
+        shr ax, 1
         ret
 
 
@@ -333,8 +341,11 @@ ReadCluster:
 
 ; Read CX sectors starting from AX into ES:DI
 ReadSectors:
+        push ax
+        push bx
+        push cx
+        push dx
         push es
-        pusha
 .Read:
         push cx
         call LBAtoCHS
@@ -351,8 +362,11 @@ ReadSectors:
         inc ax
         dec cx
         jnz .Read
-        popa
         pop es
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 .DiskReadErr:
         mov al, ah
@@ -376,7 +390,10 @@ WriteCluster:
 WriteSectors:
         push ds
         push es
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         mov dx, cs
         mov ds, dx
 .Write:
@@ -395,7 +412,10 @@ WriteSectors:
         inc ax
         dec cx
         jnz .Write
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         pop es
         pop ds
         ret
@@ -412,7 +432,8 @@ MallocBytes:
         mul bx
         and dx, dx
         jnz MallocOOM
-        shr ax, 4
+        mov cl, 4
+        shr ax, cl
         ; Fall through
 
 ; Alloc AX paragraphs, returns segment in AX
@@ -489,7 +510,8 @@ StartProgram:
         push bx
         mov bx, [LastProcStack+2]
         push bx
-        push .Done ; Local return in Int21_4C should go here
+        mov bx, .Done ; Local return in Int21_4C should go here
+        push bx
         ; Save stack pointer
         mov [LastProcStack], sp
         mov sp, ss
@@ -500,14 +522,15 @@ StartProgram:
         mov es, ax
         mov dx, ax
         mov sp, 0xFFFE
-        xor ax, ax
         xor bx, bx
         mov cx, 0x00FF
         mov si, 0x0100
         mov di, sp
         mov bp, 0x0900
         push bx ; So a local return will execute the INT 20 instruction at [cs:0]
-        push 2 ; Push flags
+        mov ax, 2
+        push ax ; Push flags
+        xor ax, ax
         push dx
         push si
         iret
@@ -552,7 +575,8 @@ NextCluster:
         shr bx, 1
         mov ax, [es:bx]
         jnc .Even
-        shr ax, 4
+        mov cl, 4
+        shr ax, cl
 .Even:
         and ah, 0x0f
         ret
@@ -578,9 +602,12 @@ AddCluster:
         jz .Found
         inc cx
         add bx, 2
-        shr dx, 8         ; DX=____H0L2
+        mov dl, dh        ; DX=____H0L2
         mov dh, [es:bx]   ; DX=H2H1H0L2
-        shr dx, 4         ; DX=__H2H1H0
+        shr dx, 1         ; DX=__H2H1H0
+        shr dx, 1
+        shr dx, 1
+        shr dx, 1
         jz .Found
         inc cx
         add bx, 1
@@ -614,7 +641,10 @@ UpdateCluster:
         shr bx, 1
         mov cx, [es:bx]
         jnc .Even
-        shl ax, 4
+        shl ax, 1
+        shl ax, 1
+        shl ax, 1
+        shl ax, 1
         and cl, 0x0F
         or al, cl
         jmp .UCDone
@@ -1177,7 +1207,9 @@ WriteFile:
         mov ax, cx
 .DoCopy:
         ; Copy AX bytes to buffer
-        pusha
+        push cx
+        push si
+        push di
         push es
         mov cx, ax
         mov ds, di
@@ -1187,7 +1219,9 @@ WriteFile:
         mov si, dx
         rep movsb
         pop es
-        popa
+        pop di
+        pop si
+        pop cx
 
         add dx, ax ; TODO: Handle if this overflows?
         sub cx, ax
@@ -1195,9 +1229,15 @@ WriteFile:
         sub [es:bx+FILE_INFO_BUFSZ], ax
         jnz .WriteLoop
 
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         call FlushFileBuffer
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         jmp .WriteLoop
 .Done:
         mov ax, si ; All bytes written
@@ -1245,13 +1285,19 @@ ReadFile:
         jnz .HasData
 
         ; Fill buffer
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         push ds
-        mov ax, cs
-        mov ds, ax
+        push cs
+        pop ds
         call FillFileBuffer
         pop ds
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         cmp word [es:bx+FILE_INFO_BUFSZ], 0
         jz .EOF
 
@@ -1312,7 +1358,6 @@ ReadFile:
 ; Fill buffer of file in ES:BX (buffer assumed to be empty before)
 ; File pointer is updated
 FillFileBuffer:
-        pusha
         ; How many bytes left in file?
         call GetFileSize
         mov cx, ax
@@ -1338,12 +1383,14 @@ FillFileBuffer:
         mov ax, [es:bx+FILE_INFO_CLUST]
 
         push es
-        pusha
+        push ax
+        push di
         mov di, [es:bx+FILE_INFO_BUFSEG]
         mov es, di
         xor di, di
         call ReadCluster
-        popa
+        pop di
+        pop ax
         push bx
         call NextCluster
         pop bx
@@ -1352,7 +1399,6 @@ FillFileBuffer:
         mov [es:bx+FILE_INFO_CLUST], ax
 
 .Done:
-        popa
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1485,7 +1531,12 @@ Int21_09:
 ; DS:DX points to buffer (first byte: maximum size,
 ; second byte: bytes read excluding CR)
 Int21_0A:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
         push ds
         push es
 
@@ -1534,7 +1585,12 @@ Int21_0A:
 .Ret:
         pop es
         pop ds
-        popa
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         iret
 .EraseChar:
         mov al, 8
@@ -1668,7 +1724,10 @@ Int21_3D:
 ; Returns carry clear on success
 ;         carry set on error and error code in AX
 Int21_3E:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         push ds
         push es
         mov ax, cs
@@ -1676,7 +1735,10 @@ Int21_3E:
         call CloseFileHandle
         pop es
         pop ds
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         clc ; Assumes we always succeed
         jmp IRETC
 
