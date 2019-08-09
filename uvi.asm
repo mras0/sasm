@@ -45,7 +45,7 @@
 ;; or sasm uvi.asm
 ;;
 
-        cpu 186
+        cpu 8086
         org 0x100
 
 STACK_SIZE       equ 2048
@@ -125,7 +125,8 @@ Start:
         cli
         mov sp, ax
         sti
-        shr ax, 4
+        mov cl, 4
+        shr ax, cl
         mov bx, cs
         add ax, bx
         mov [HeapStartSeg], ax
@@ -296,7 +297,8 @@ ReloadFile:
         add bp, LINEH_SIZE
         ; Round address to paragraph size
         add bp, 15
-        shr bp, 4
+        mov cl, 4
+        shr bp, cl
         mov ax, es
         add ax, bp
         mov es, ax
@@ -324,7 +326,10 @@ ReloadFile:
         mov ax, bx
 .SetHeap:
         sub cx, ax
-        shl ax, 4 ; Going to 0 is OK here
+        shl ax, 1 ; Going to 0 is OK here
+        shl ax, 1
+        shl ax, 1
+        shl ax, 1
         sub ax, HEAPN_SIZE
         mov [es:bp+HEAPN_LENGTH], ax
         mov [es:bp+HEAPN_PREV], di
@@ -373,7 +378,8 @@ ReloadFile:
         mov [TempReg], bx
         mov [TempReg+2], es
 
-        push 0xb800
+        mov ax, 0xb800
+        push ax
         pop es
 
         ;
@@ -609,7 +615,10 @@ CvtWordHex:
         pop ax
 CvtByteHex:
         push ax
-        shr al, 4
+        shr al, 1
+        shr al, 1
+        shr al, 1
+        shr al, 1
         call CvtNibHex
         pop ax
 CvtNibHex:
@@ -943,7 +952,10 @@ AddFreeNode:
         push di
         ; Minimize DI
         mov dx, di
-        shr dx, 4
+        shr dx, 1
+        shr dx, 1
+        shr dx, 1
+        shr dx, 1
         mov ax, es
         add dx, ax
         mov es, dx
@@ -977,7 +989,12 @@ AddFreeNode:
 
 ; Free line list in ES:BX
 FreeLineList:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
         push es
 .FreeLoop:
         mov ax, es
@@ -991,7 +1008,12 @@ FreeLineList:
 
 .Done:
         pop es
-        popa
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 
 ; Copy line list in ES:BX, returns new list in ES:BX
@@ -1031,7 +1053,10 @@ CopyLineList:
         mov ax, bx
         pop bx
         pop es
-        pusha
+        push ax
+        push cx
+        push si
+        push di
         push ds
         push es
         mov di, ax
@@ -1044,7 +1069,10 @@ CopyLineList:
         rep movsb
         pop es
         pop ds
-        popa
+        pop di
+        pop si
+        pop cx
+        pop ax
         ret
 
 ; Allocate HEAPN_SIZE + AX bytes
@@ -1523,10 +1551,16 @@ Yank:
         ; Copy list from ES:BX till DI:SI (inclusive)
         ; DX:AX points to line after the last one to copy
 
-        pusha
+        push ax
+        push dx
+        push si
+        push di
         call CopyLineList
         call SetTempReg
-        popa
+        pop di
+        pop si
+        pop dx
+        pop ax
 
         ; Restore modified next pointer
         push ds
@@ -2020,7 +2054,12 @@ SearchBack:
 
 ; Returns carry clear if line in ES:BX matches SearchBuffer
 LineMatches:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
         mov cx, [es:bx+LINEH_LENGTH]
         and cx, cx
         jz .NoMatch
@@ -2052,12 +2091,22 @@ LineMatches:
 .Match:
         clc
 .Done:
-        popa
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 
 ; Replace line in ES:BX with new line in DX:AX
 ReplaceLine:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
         ; Load prev node
         mov si, [es:bx+LINEH_PREV]
         mov di, [es:bx+LINEH_PREV+2]
@@ -2090,7 +2139,12 @@ ReplaceLine:
         mov [DispLine], si
         mov [DispLine+2], di
 .NotDisp:
-        popa
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 
 ; Replace line in ES:BX with EditBuf
@@ -2599,7 +2653,12 @@ JoinLines:
         ; DI    Length of second line (minus si)
 
         ; Build combined string
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
         push ds
         push es
         push si
@@ -2627,10 +2686,19 @@ JoinLines:
         rep movsb
         pop es
         pop ds
-        popa
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
 
         ; Handle previous
-        pusha
+        push ax
+        push dx
+        push si
+        push di
+        push bp
         xor di, di
         xor si, si
         xchg si, [es:bx+LINEH_PREV]
@@ -2644,11 +2712,17 @@ JoinLines:
         mov di, ds
         mov [cs:FirstLine+2], di
 .NotFirst:
-        popa
-
+        pop bp
+        pop di
+        pop si
+        pop dx
+        pop ax
 
         ; Handle next
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         push es
         mov bx, ax
         mov es, dx
@@ -2660,7 +2734,10 @@ JoinLines:
         mov di, ds
         call Link2
         pop es
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
 
         mov ax, bp
         mov dx, ds
@@ -2777,15 +2854,21 @@ DrawLines:
 
 .Main:
         push es
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+        push bp
 
         ;
         ; Line number
         ;
-        pusha
+        push di
         mov di, Buffer
         call CvtPadDecWord
-        popa
+        pop di
         mov si, Buffer
         mov ah, COLOR_LINENO
 .Pr:
@@ -2836,7 +2919,13 @@ DrawLines:
         mov ax, LINE_FILL
         rep stosw
 .NoRest:
-        popa
+        pop bp
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ; Move to next line
         mov es, dx
         mov dx, [es:bp+LINEH_NEXT+2]

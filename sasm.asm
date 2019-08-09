@@ -10,10 +10,7 @@
 ;; to assemble itself running only under software assembled
 ;; with itself (excluding the BIOS). DOS is of course the
 ;; obvious choice as a bootstrapping environment and .COM
-;; files are easy to work with, so that's the basis. Due to
-;; programmer lazyness the minimum supported processor is
-;; currently the 80186 (mostly due the use of PUSHA/POPA and
-;; shift/rotates with an immediate other than 1).
+;; files are easy to work with, so that's the basis.
 ;;
 ;; While the accepted syntax should be a strict subset of
 ;; what NASM allows and subsequently outputs, there are
