@@ -30,6 +30,8 @@ macro(SASM INPUT OUTPUT)
         COMMAND sasm -o "${OUTPUT_FILE}" "${CMAKE_CURRENT_SOURCE_DIR}/${INPUT}"
         DEPENDS sasm "${CMAKE_CURRENT_SOURCE_DIR}/${INPUT}"
     )
+    string(REPLACE "." "_" TARGET_NAME "${OUTPUT}")
+    add_custom_target(${TARGET_NAME} ALL DEPENDS "${OUTPUT_FILE}")
 endmacro()
 
 SASM(sasm.asm sasm.com)
@@ -37,9 +39,7 @@ SASM(boot.asm boot.bin)
 SASM(os.asm os.sys)
 SASM(cmdp.asm cmdp.com)
 SASM(uvi.asm uvi.com)
-
-add_custom_target(sasm_com ALL DEPENDS sasm.com)
-add_custom_target(uvi_com ALL DEPENDS uvi.com)
+SASM(insboot.asm insboot.com)
 
 set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
 
