@@ -6,7 +6,7 @@
 ;; See LICENSE.md for details                    ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-        cpu 186
+        cpu 8086
         org 0x100
 
 BUFFER_SIZE       EQU 512
@@ -36,7 +36,8 @@ Main:
         and bx, 0xFFF0
         add bx, STACK_SIZE
         mov sp, bx
-        shr bx, 4
+        mov cl, 4
+        shr bx, cl
         mov ax, ds
         add bx, ax
         mov [FirstFreeSeg], bx
@@ -122,11 +123,13 @@ Error:
 
 ; Put character in AL
 PutChar:
-        pusha
+        push ax
+        push dx
         mov dl, al
         mov ah, 2
         int 0x21
-        popa
+        pop dx
+        pop ax
         ret
 
 PutCrLf:
@@ -144,7 +147,10 @@ PutHexWord:
         pop ax
 PutHexByte:
         push ax
-        shr al, 4
+        shr al, 1
+        shr al, 1
+        shr al, 1
+        shr al, 1
         call PutHexDigit
         pop ax
 PutHexDigit:
@@ -327,13 +333,25 @@ WriteFromBuffer:
         jmp Error
 
 CommandDispatch:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+        push bp
         push ds
         push es
         call .RealCD
         pop es
         pop ds
-        popa
+        pop bp
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 .RealCD:
         mov [CmdOldSp], sp ; Save SP at entry (to allow easy exit)
@@ -566,7 +584,6 @@ CToUpper:
         and al, 0xDF ; to upper case
 .Ret:
         ret
-
 
 ; Skip spaces, returns next character in AL
 CSkipSpaces:
@@ -841,7 +858,11 @@ CmdDiskCopy:
         mov si, [2]
         and si, 0xffe0
         sub si, di
-        shr si, 5
+        shr si, 1
+        shr si, 1
+        shr si, 1
+        shr si, 1
+        shr si, 1
         ; DI: Start segment
         ; SI: Number of sectors that can be stored
         ; BX: Remaining sectors
@@ -868,14 +889,24 @@ CmdDiskCopy:
         ret
 .DiskCmd:
         ; Call BP for AX sectors
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+        push bp
 .SectorLoop:
         ; How many sectors can we read w/o crossing 64K boundary?
         mov bx, 0x1000
         mov si, di
         and si, 0x0fff
         sub bx, si
-        shr bx, 5
+        shr bx, 1
+        shr bx, 1
+        shr bx, 1
+        shr bx, 1
+        shr bx, 1
         cmp bx, ax
         jbe .CntOK
         mov bx, ax
@@ -885,20 +916,42 @@ CmdDiskCopy:
         jbe .CntOK2
         mov bx, [Buffer+SEC_PER_TRACK]
 .CntOK2:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+        push bp
         call bp
-        popa
+        pop bp
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         push ax
         mov ax, bx
         call .AddSectors
         pop ax
         sub ax, bx
         jz .Done
-        shl bx, 5
+        shr bx, 1
+        shr bx, 1
+        shr bx, 1
+        shr bx, 1
+        shr bx, 1
         add di, bx
         jmp .SectorLoop
 .Done:
-        popa
+        pop bp
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 .AddSectors:
         ; Add AX sectors to CHS in CX/DX
@@ -937,7 +990,10 @@ CmdDiskCopy:
         pop ax
         ret
 .DoRead:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         push dx
         push cx
         mov ax, bx
@@ -958,7 +1014,10 @@ CmdDiskCopy:
         pop ax
         call PutHexWord
         call PutCrLf
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         mov si, MsgErrDiskRead
         mov ah, 0x02
 .RWCommon:
@@ -973,17 +1032,22 @@ CmdDiskCopy:
         ret
 .MsgRead: db ' sectors to read to $'
 .DoWrite:
-        pusha
+        push ax
+        push dx
         mov dx, .MsgWrite
         mov ah, 9
         int 0x21
-        popa
+        pop dx
+        pop ax
         mov si, MsgErrDiskWrite
         mov ah, 0x03
         jmp .RWCommon
 .MsgWrite: db 'Writing...',13,10,'$'
 .DiskChange:
-        pusha
+        push ax
+        push bx
+        push cx
+        push dx
         mov dx, .MsgInsertSrc
         jnc .PDC
         mov dx, .MsgInsertDst
@@ -992,7 +1056,10 @@ CmdDiskCopy:
         int 0x21
         call CWaitKey
         call PutCrLf
-        popa
+        pop dx
+        pop cx
+        pop bx
+        pop ax
         ret
 .MsgInsertSrc: db 'Insert source disk $'
 .MsgInsertDst: db 'Insert destination disk $'
