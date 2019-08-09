@@ -10,6 +10,8 @@
         org 0x100
 
 SECTOR_SIZE equ 512
+BPB_SIZE    equ 0x13
+BPB_OFFSET  equ 0x0B
 
 Start:
         ;
@@ -48,6 +50,46 @@ Start:
 .ArgsOK:
 
         ;
+        ; Figure out current drive
+        ;
+        mov ah, 0x19
+        int 0x21
+        ; Too dangerous to allow other drives than 0 for now...
+        cmp al, 0
+        je .DriveOK
+        mov dx, MsgErrDrive
+        jmp Error
+
+.DriveOK:
+        ; DL = Drive
+        mov dl, al ; Won't work for hard drives (if C: = 0x02 as usual)
+        xor dh, dh
+        push dx
+
+        ;
+        ; Read current BPB
+        ;
+        mov ax, 0x0201
+        mov cx, 1
+        mov bx, Buffer
+        int 0x13
+        jnc .ReadOK
+        mov dx, MsgErrRead
+        jmp Error
+.ReadOK:
+        ; Copy it to temp area
+        mov di, BPB
+        mov si, Buffer+BPB_OFFSET
+        mov cx, BPB_SIZE
+        rep movsb
+
+        ; Clear buffer
+        mov di, Buffer
+        mov cx, SECTOR_SIZE
+        xor al, al
+        rep movsb
+
+        ;
         ; Open input file
         ;
 
@@ -60,12 +102,6 @@ Start:
 .OpenOK:
         mov bx, ax
 
-        ; Ensure buffer is filled with NULs
-        mov di, Buffer
-        mov cx, SECTOR_SIZE
-        xor al, al
-        rep stosb
-
         ;
         ; Read file
         ;
@@ -74,34 +110,45 @@ Start:
         mov ah, 0x3f
         mov dx, Buffer
         int 0x21
-        jnc .ReadOK
-        mov ah, 0x3e ; Close file
-        int 0x21
-        mov dx, MsgErrInRead
-        jmp Error
-.ReadOK:
+        pushf
         push ax
         mov ah, 0x3e ; Close file
         int 0x21
         pop ax
+        popf
+        jnc .FileReadOK
+        mov dx, MsgErrInRead
+        jmp Error
+.FileReadOK:
 
         ;
-        ; Figure out current drive
+        ; Perform basic sanity checks of boot sector
         ;
-        mov ah, 0x19
-        int 0x21
-        ; Too dangerous to allow other drives than 0 for now...
-        cmp al, 0
-        mov dx, MsgErrDrive
-        jne Error
+        cmp word [Buffer], 0xEB | (BPB_OFFSET+BPB_SIZE-2)<<8
+        jne .NotOK
+        cmp byte [Buffer+2], 0x90
+        jne .NotOK
+        cmp word [Buffer+510], 0xAA55
+        je .OK
+.NotOK:
+        mov dx, MsgErrBootSect
+        jmp Error
+.OK:
+
+        ;
+        ; Copy in old BPB
+        ;
+        mov si, BPB
+        mov di, Buffer+BPB_OFFSET
+        mov cx, BPB_SIZE
+        rep movsb
 
         ;
         ; Write boot sector
         ;
-        mov dl, al ; Won't work for hard drives (if C: = 0x02 as usual)
+        pop dx
         mov ax, 0x0301
         mov cx, 1 ; Write to first sector (boot sector)
-        xor dh, dh
         mov bx, Buffer
         int 0x13
         mov dx, MsgErrWrite
@@ -118,7 +165,10 @@ MsgErrArgs:     db 'Invalid arguments$'
 MsgErrInOpen:   db 'Could not open input file$'
 MsgErrInRead:   db 'Could not read from input file$'
 MsgErrDrive:    db 'Sorry, will only write boot sector to drive 0 for now$'
+MsgErrBootSect: db 'Boot sector does not look valid$'
+MsgErrRead:     db 'Error reading from disk$'
 MsgErrWrite:    db 'Error while writing boot sector$'
 
 InFileName:     resb 13
+BPB:            resb BPB_SIZE
 Buffer:         resb SECTOR_SIZE

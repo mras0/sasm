@@ -25,8 +25,8 @@ struct Label {
     char Name[TOKEN_MAX+1];
     U2 Address;
     U2 Fixup;
-    U1 Used;
-    U2 Line;
+    U2 Line;     // Line where label was defined
+    U2 UsedLine; // Where it was first used
 };
 
 struct Fixup {
@@ -320,12 +320,12 @@ static void RetireLabel(U2 index)
 {
     assert(index < NumLabels);
     //printf("Retiring %s\n", Labels[index].Name);
-    if (Labels[index].Address == INVALID_ADDR) {
-        printf("Label: \"%s\"\n", Labels[index].Name);
-        Error("Undefined label");
-    }
-    if (!Labels[index].Used) {
+    if (!Labels[index].UsedLine) {
         printf("Line %u: Warning label \"%s\" unused\n", Labels[index].Line, Labels[index].Name);
+        assert(Labels[index].Address != INVALID_ADDR);
+    } else if (Labels[index].Address == INVALID_ADDR) {
+        printf("Line %u: Label: \"%s\"\n", Labels[index].UsedLine, Labels[index].Name);
+        Error("Undefined label");
     }
     assert(Labels[index].Fixup == INVALID_ADDR);
     if (index < NumLabels-1) {
@@ -344,7 +344,7 @@ static struct Label* NewLabel(void)
     strcpy(l->Name, TokenText);
     l->Address = INVALID_ADDR;
     l->Fixup = INVALID_ADDR;
-    l->Used = NumLabels == 1; // Mark first label as used to avoid useless warning
+    l->UsedLine = NumLabels == 1 ? CurrentLine : 0; // Mark first label as used to avoid useless warning
     l->Line = 0;
     return l;
 }
@@ -521,7 +521,9 @@ static void GetNamedLiteral(void)
 {
     OperandType = OP_LIT;
     struct Label* l = FindOrMakeLabel();
-    l->Used = 1;
+    if (!l->UsedLine) {
+        l->UsedLine = CurrentLine;
+    }
     if (l->Address != INVALID_ADDR) {
         OperandValue = l->Address;
     } else {

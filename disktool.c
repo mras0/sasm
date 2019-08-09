@@ -4,6 +4,8 @@
 #include <string.h>
 #include <assert.h>
 
+// Little endian machine assumed
+
 typedef signed char S1;
 typedef unsigned char U1;
 typedef unsigned short U2;
@@ -130,7 +132,6 @@ void WriteCluster(U2 cluster, const U1* buf)
     WriteSectors(DATA_SECTOR + (cluster - 2) * DiskBPB.SectorsPerCluster, buf, DiskBPB.SectorsPerCluster);
 }
 
-
 void ReadBPB(void)
 {
     U1 BootSect[512];
@@ -140,7 +141,6 @@ void ReadBPB(void)
         Error("Disk is not a valid bootable DOS disk");
     }
 
-    // Little endian machine assumed...
     memcpy(&DiskBPB, BootSect + BPB_OFFSET, sizeof(DiskBPB));
     if (!DiskBPB.BytesPerSector || DiskBPB.BytesPerSector % 512 || DiskBPB.BytesPerSector > MAX_CLUSTER_SIZE) {
         Error("Invalid BPB: BytesPerSector = %u", DiskBPB.BytesPerSector);
@@ -297,11 +297,11 @@ void ShowFATInfo(void)
 }
 
 
-const U1 DefaultBootCode[] = {
+static const U1 DefaultBootCode[] = {
                         //        org 0x7c1e
-  0x6a,0x00,            //        push 0
-  0x1f,                 //        pop ds
-  0xbe,0x37,0x7c,       //        mov si,Msg
+  0x31,0xc0,            //        xor ax, ax
+  0x8e,0xd8,            //        mov ds, ax
+  0xbe,0x38,0x7c,       //        mov si,Msg
   0xb4,0x0e,            //        mov ah,0x0e
   0xac,                 //.L:     lodsb
   0x20,0xc0,            //        and al,al
@@ -318,22 +318,66 @@ const U1 DefaultBootCode[] = {
   0x79,0x20,0x74,0x6f,0x20,0x72,0x65,0x62,0x6f,0x6f,0x74,0x2e,
   0x00
 };
-const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '0' };
 
-void CreateDisk(void)
+static const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '0' };
+
+static const struct BPB DiskBPB_360 = {
+    .BytesPerSector    = 512,
+    .SectorsPerCluster = 2,
+    .ReservedSectors   = 1,
+    .NumFats           = 2,
+    .MaxRootEntries    = 112, // 7 sectors
+    .TotalSectors      = 720,
+    .MediaDescriptor   = 0xFD,
+    .SectorsPerFat     = 2,
+    .SectorsPerTrack   = 9,
+    .NumHeads          = 2,
+    .HiddenSectors     = 0,
+};
+
+static const struct BPB DiskBPB_720 = {
+    .BytesPerSector    = 512,
+    .SectorsPerCluster = 2,
+    .ReservedSectors   = 1,
+    .NumFats           = 2,
+    .MaxRootEntries    = 112, // 7 sectors
+    .TotalSectors      = 1440,
+    .MediaDescriptor   = 0xF9,
+    .SectorsPerFat     = 3,
+    .SectorsPerTrack   = 9,
+    .NumHeads          = 2,
+    .HiddenSectors     = 0,
+};
+
+static const struct BPB DiskBPB_1440 = {
+    .BytesPerSector    = 512,
+    .SectorsPerCluster = 1,
+    .ReservedSectors   = 1,
+    .NumFats           = 2,
+    .MaxRootEntries    = 224, // 14 sectors
+    .TotalSectors      = 2880,
+    .MediaDescriptor   = 0xF0,
+    .SectorsPerFat     = 9,
+    .SectorsPerTrack   = 18,
+    .NumHeads          = 2,
+    .HiddenSectors     = 0,
+};
+
+void CreateDisk(int SizeKB)
 {
-    // Create 1440 FD
-    DiskBPB.BytesPerSector    = 512;
-    DiskBPB.SectorsPerCluster = 1;
-    DiskBPB.ReservedSectors   = 1;
-    DiskBPB.NumFats           = 2;
-    DiskBPB.MaxRootEntries    = 14 * 512 / sizeof(struct DirEntry);
-    DiskBPB.TotalSectors      = 2880;
-    DiskBPB.MediaDescriptor   = 0xF0;
-    DiskBPB.SectorsPerFat     = 9;
-    DiskBPB.SectorsPerTrack   = 18;
-    DiskBPB.NumHeads          = 2;
-
+    switch (SizeKB) {
+    case 360:
+        memcpy(&DiskBPB, &DiskBPB_360, sizeof(DiskBPB));
+        break;
+    case 720:
+        memcpy(&DiskBPB, &DiskBPB_720, sizeof(DiskBPB));
+        break;
+    case 1440:
+        memcpy(&DiskBPB, &DiskBPB_1440, sizeof(DiskBPB));
+        break;
+    default:
+        Error("Invalid/unsupported disk size: %d\n", SizeKB);
+    }
 
     U1 Zeros[512];
     memset(Zeros, 0, sizeof(Zeros));
@@ -359,8 +403,8 @@ void CreateDisk(void)
 
     AllocFAT();
     memset(FAT, 0, DiskBPB.SectorsPerFat * DiskBPB.BytesPerSector);
-    SetFATEntry(0, 0xFF0);
-    SetFATEntry(1, 0xFFF);
+    SetFATEntry(0, 0x0F00 | DiskBPB.MediaDescriptor);
+    SetFATEntry(1, 0x0FFF);
 }
 
 void FlushFAT(void)
@@ -469,13 +513,17 @@ U1* ReadFile(const char* FileName, U4* size)
 
 void UpdateBootLoader(const char* BootFileName)
 {
+    MountDisk();
+
     U4 size;
     U1* data = ReadFile(BootFileName, &size);
     if (size != 512) {
         Error("Boot sector of size %u (expected 512)\n", size);
-    } else if (data[0] != 0xEB || data[510] != 0x55 || data[511] != 0xAA) {
-        Error("Boot sector looks invalid");
+    } else if (data[0] != 0xEB || data[1] != BPB_OFFSET + sizeof(DiskBPB) - 2 || data[510] != 0x55 || data[511] != 0xAA) {
+        Error("Boot sector looks invalid/incompatible");
     }
+    // Copy in existing BPB
+    memcpy(data + BPB_OFFSET, &DiskBPB, sizeof(DiskBPB));
     WriteSector(0, data);
     free(data);
 }
@@ -569,7 +617,7 @@ int main(int argc, char* argv[])
             "  Operations:\n"
             "     list                 List information\n"
             "     fat                  Show FAT information\n"
-            "     create               Create new disk\n"
+            "     create [size]        Create new disk (size is in KB, defaults to 1440)\n"
             "     boot boot-file       Update bootloader\n"
             "     get file [sysname]   Get file fromt root directory (optionally to another filename)\n"
             "     put file [diskname]  Put file into root directory (optionally with another filename)\n"
@@ -603,9 +651,10 @@ int main(int argc, char* argv[])
     }
 
     const U1 ReadOnly = op == OP_LIST || op == OP_FAT || op == OP_GET;
-    DiskImg = fopen(DiskImgFileName, ReadOnly ? "rb" : "rb+");
-    if (!DiskImg && op == OP_CREATE) {
-        DiskImg = fopen(DiskImgFileName, "wb+");
+    if (op == OP_CREATE) {
+        DiskImg = fopen(DiskImgFileName, "wb");
+    } else {
+        DiskImg = fopen(DiskImgFileName, ReadOnly ? "rb" : "rb+");
     }
     if (!DiskImg) {
         Error("Error opening %s", DiskImgFileName);
@@ -620,7 +669,7 @@ int main(int argc, char* argv[])
     } else if (op == OP_FAT) {
         ShowFATInfo();
     } else if (op == OP_CREATE) {
-        CreateDisk();
+        CreateDisk(argc > 3 ? atoi(argv[3]) : 1440);
     } else if (op == OP_BOOT) {
         UpdateBootLoader(argv[3]);
     } else if (op == OP_GET) {

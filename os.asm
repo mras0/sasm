@@ -13,8 +13,13 @@
 
 SECTOR_SIZE      equ 512
 
-BPB_SECPERTRACK  equ 0x0D
-BPB_NUMHEADS     equ 0x0F
+BPB_SECSPERCLUST equ 0x02 ; BYTE Logical sectors per cluster
+BPB_RSRVEDSECS   equ 0x03 ; WORD Number of reserved logical sectors
+BPB_NUMFATS      equ 0x05 ; BYTE Number of File Allocation Tables
+BPB_MAXROOTENTS  equ 0x06 ; WORD Maximum number of root directory entries
+BPB_SECSPERFAT   equ 0x0B ; WORD Logical sectors per FAT
+BPB_SECPERTRACK  equ 0x0D ; WORD Physical sectors per track
+BPB_NUMHEADS     equ 0x0F ; WORD Number of heads
 BPB_SIZE         equ 0x13
 BPB_OFFSET       equ 0x7C0B
 
@@ -28,15 +33,6 @@ DIR_ENTRY_FSIZE  equ 0x1C ; DWORD   File size
 DIR_ENTRY_SIZE   equ 0x20
 
 ENTRY_DELETED    equ 0xE5 ; Special value of DIR_ENTRY_FNAME[0]
-
-ROOT_MAX_IDX     equ 0x1C00 ; MaxRootEntries * DIR_ENTRY_SIZE
-
-FAT_RES_SECS     equ 1  ; Number of reserved sectors
-FAT_NUM_FATS     equ 2  ; Number of FATS
-FAT_SEC_CNT      equ 9  ; SectorsPerFat
-FAT_ROOT_SEC     equ 19 ; FAT_RES_SECS + FAT_NUM_FATS * FAT_SEC_CNT
-FAT_MAX_ROOTS    equ 14 ; ROOT_MAX_IDX / SECTOR_SIZE
-FAT_DATA_SEC     equ 33 ; FAT_ROOT_SEC + FAT_MAX_ROOTS
 
 EOC_CLUSTER      equ 0xFFF ; End of cluster chain marker (other values might be present on disk)
 
@@ -56,8 +52,6 @@ FILE_INFO_SIZE   equ 16 ; Size of file info
 FMODE_CLOSED     equ 0
 FMODE_READ_ONLY  equ 1
 FMODE_WRITE_ONLY equ 2
-
-FILE_BUFFER_SIZE equ SECTOR_SIZE
 
 ; Find First offsets into DTA
 FF_STEMPLATE     equ 0x01 ; BYTE[11] Search template
@@ -121,14 +115,27 @@ Main:
         mov word [0x86], 0x00
 
         mov ax, SECTOR_SIZE
-        mov bx, 1
-        call MallocBytes
-        mov [SectorBufSeg], ax
-
-        mov ax, SECTOR_SIZE
-        mov bx, FAT_SEC_CNT
+        mov bx, [BPB+BPB_SECSPERFAT]
         call Malloc
         mov [FATSeg], ax
+
+
+        xor dx, dx
+        xor ah, ah
+        mov al, [BPB+BPB_SECSPERCLUST]
+        mov bx, SECTOR_SIZE
+        mul bx
+        mov [ClusterBytes], ax
+
+        mov ax, [BPB+BPB_MAXROOTENTS]
+        shl ax, 5
+        mov [RootMaxIdx], ax
+
+        call GetFatRootSec
+        mov dx, ax
+        call GetFatNRootSecs
+        add ax, dx
+        mov [DataSector], ax
 
         mov ax, MAX_FILES
         mov bx, FILE_INFO_SIZE
@@ -149,7 +156,7 @@ Main:
         push es
         push bx
         push cx
-        mov ax, FILE_BUFFER_SIZE
+        mov ax, [ClusterBytes]
         mov bx, 1
         call MallocBytes
         pop cx
@@ -164,11 +171,11 @@ Main:
         xor di, di
         mov ax, [FATSeg]
         mov es, ax
-        mov ax, FAT_RES_SECS
-        mov cx, FAT_SEC_CNT
+        mov ax, [BPB+BPB_RSRVEDSECS]
+        mov cx, [BPB+BPB_SECSPERFAT]
         call ReadSectors
 
-        mov ax, FAT_MAX_ROOTS
+        call GetFatNRootSecs
         mov bx, SECTOR_SIZE
         call MallocBytes
         mov [RootSeg], ax
@@ -181,8 +188,9 @@ Main:
         mov ax, [RootSeg]
         mov es, ax
         xor di, di
-        mov ax, FAT_ROOT_SEC
-        mov cx, FAT_MAX_ROOTS
+        call GetFatNRootSecs
+        mov cx, ax
+        call GetFatRootSec
         call ReadSectors
 
         call PutCrLf ; Terminate Loading... message
@@ -205,6 +213,8 @@ Main:
 
 ; Halt with error message in BX
 Fatal:
+        push cs
+        pop ds
         push bx
         mov bx, cs
         mov ds, bx
@@ -246,11 +256,11 @@ PutString:
         jmp PutString
 
 ; Print word in AX
-;PutHexWord:
-;        push ax
-;        mov al, ah
-;        call PutHexByte
-;        pop ax
+PutHexWord:
+        push ax
+        mov al, ah
+        call PutHexByte
+        pop ax
 PutHexByte:
         push ax
         shr al, 4
@@ -279,14 +289,46 @@ LBAtoCHS:
         pop ax
         ret
 
+; AX = FAT_RES_SECS + FAT_NUM_FATS * FAT_SEC_CNT
+GetFatRootSec:
+        push dx
+        xor dx, dx
+        xor ah, ah
+        mov al, [cs:BPB+BPB_NUMFATS]
+        mul word [cs:BPB+BPB_SECSPERFAT]
+        add ax, [cs:BPB+BPB_RSRVEDSECS]
+        pop dx
+        ret
+
+; AX = FAT_MAX_ROOTS
+GetFatNRootSecs:
+        mov ax, [cs:BPB+BPB_MAXROOTENTS]
+        shr ax, 4 ; log2(SECTOR_SIZE) - log2(DIR_ENTRY_SIZE)
+        ret
+
+
+; Adjust cluster in AX to match LBA and set CX to sector count
+; AX = FAT_ROOT_SEC + FAT_MAX_ROOTS - 2
+GetClusterParams:
+        xor ch, ch
+        mov cl, [cs:BPB+BPB_SECSPERCLUST]
+        sub ax, 2
+        push dx
+        xor dx, dx
+        mul cx
+        add ax, [cs:DataSector]
+        pop dx
+        ; CX = SectorsPerCluster
+        ; AX = DATA_SECTOR + (cluster - 2) * SectorsPerCluster
+        ret
+
 ; Read cluster in AX to ES:DI
 ReadCluster:
         call ClusterValid
         jnc .ClusterValid
         jmp InvalidCluster
 .ClusterValid:
-        add ax, 31 ; FAT_DATA_SEC - 2
-        mov cx, 1
+        call GetClusterParams
         ; Fall through
 
 ; Read CX sectors starting from AX into ES:DI
@@ -304,7 +346,7 @@ ReadSectors:
         pop ax
         pop cx
         mov bx, es
-        add bx, 0x20 ; SECTOR_SIZE/0x10
+        add bx, SECTOR_SIZE/0x10
         mov es, bx
         inc ax
         dec cx
@@ -327,8 +369,7 @@ WriteCluster:
         jnc .ClusterValid
         jmp InvalidCluster
 .ClusterValid:
-        add ax, 31 ; FAT_DATA_SEC - 2
-        mov cx, 1
+        call GetClusterParams
         ; Fall through
 
 ; Write CX sectors starting from AX from ES:DI
@@ -349,7 +390,7 @@ WriteSectors:
         pop ax
         pop cx
         mov bx, es
-        add bx, 0x20 ; SECTOR_SIZE/0x10
+        add bx, SECTOR_SIZE/0x10
         mov es, bx
         inc ax
         dec cx
@@ -770,7 +811,7 @@ FindNextFile:
         push di
         mov dx, si ; Preserve original filename in DX
 .DirLoop:
-        cmp bx, ROOT_MAX_IDX
+        cmp bx, [cs:RootMaxIdx]
         jae .NotFound
 
         mov al, [es:bx]
@@ -903,7 +944,7 @@ NewRootEntry:
         cmp al, ENTRY_DELETED
         jz .Found
         add bx, DIR_ENTRY_SIZE
-        cmp bx, ROOT_MAX_IDX
+        cmp bx, [RootMaxIdx]
         jae .RootFull
         jmp .Search
 .Found:
@@ -1017,17 +1058,22 @@ WriteRootDir:
         mov ax, [cs:RootSeg]
         mov es, ax
         xor di, di
-        mov ax, FAT_ROOT_SEC
-        mov cx, FAT_MAX_ROOTS
+        call GetFatNRootSecs
+        mov cx, ax
+        call GetFatRootSec
         jmp WriteSectors
 
 WriteFAT:
         mov ax, [cs:FATSeg]
         mov es, ax
         xor di, di
-        mov ax, FAT_RES_SECS
-        mov cx, FAT_SEC_CNT
-        add cx, cx ; Write bot FATs
+
+        xor dx, dx
+        xor ah, ah
+        mov al, [cs:BPB+BPB_NUMFATS]
+        mul word [cs:BPB+BPB_SECSPERFAT]
+        mov cx, ax
+        mov ax, [cs:BPB+BPB_RSRVEDSECS]
         jmp WriteSectors
 
 ; Flush file (write) buffer for file with info in ES:BX
@@ -1037,7 +1083,7 @@ FlushFileBuffer:
         jnz .Flush
         ret ; Nothing to flush
 .Flush:
-        ; TODO: Clear from BUFOFF to FILE_BUFFER_SIZE to avoid writing junk to file
+        ; TODO: Clear from BUFOFF to ClusterBytes to avoid writing junk to file
 
         ; Alloc free cluster
         mov ax, [es:bx+FILE_INFO_CLUST]
@@ -1070,16 +1116,17 @@ FlushFileBuffer:
         pop bx
 
         ; Write buffer to cluster in AX
-        push es
         push di
+        push es
         mov di, [es:bx+FILE_INFO_BUFSEG]
         mov es, di
         xor di, di
         call WriteCluster
-        pop di
         pop es
         mov word [es:bx+FILE_INFO_BUFOFF], 0
-        mov word [es:bx+FILE_INFO_BUFSZ], FILE_BUFFER_SIZE
+        mov di, [cs:ClusterBytes]
+        mov word [es:bx+FILE_INFO_BUFSZ], di
+        pop di
         ret
 
 ; Write to from file handle in BX, CX bytes from DS:DX
@@ -1274,10 +1321,10 @@ FillFileBuffer:
 
         and dx, dx
         jnz .Limit
-        cmp cx, FILE_BUFFER_SIZE
+        cmp cx, [ClusterBytes]
         jbe .Update
 .Limit:
-        mov cx, FILE_BUFFER_SIZE
+        mov cx, [ClusterBytes]
 .Update:
         mov word [es:bx+FILE_INFO_BUFOFF], 0
         mov [es:bx+FILE_INFO_BUFSZ], cx
@@ -1286,7 +1333,7 @@ FillFileBuffer:
         and cx, cx ; EOF?
         jz .Done
 
-        ; Assume FILE_BUFFER_SIZE == SECTOR_SIZE
+        ; Assume FILE_BUFFER_SIZE == ClusterBytes
         ; If increased, loop here
         mov ax, [es:bx+FILE_INFO_CLUST]
 
@@ -1561,7 +1608,8 @@ Int21_3C:
         mov [es:bx+DIR_ENTRY_ATTR], cl ; Set attributes
         call OpenFileFromDE
         mov byte [es:bx+FILE_INFO_MODE], FMODE_WRITE_ONLY
-        mov word [es:bx+FILE_INFO_BUFSZ], FILE_BUFFER_SIZE
+        mov dx, [ClusterBytes]
+        mov word [es:bx+FILE_INFO_BUFSZ], dx
         mov word [es:bx+FILE_INFO_CLUST], EOC_CLUSTER
         ; AX = File handle
         clc
@@ -1971,8 +2019,10 @@ CmdpFName:       db 'CMDP.COM', 0
 
 BootDrive:       resb 1
 BPB:             resb BPB_SIZE
+DataSector:      resw 1
+ClusterBytes:    resw 1
+RootMaxIdx:      resw 1
 FreeSeg:         resw 1
-SectorBufSeg:    resw 1
 FATSeg:          resw 1
 FileInfoSeg:     resw 1
 RootSeg:         resw 1

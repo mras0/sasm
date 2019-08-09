@@ -34,9 +34,10 @@ DIR_ENTRY_SIZE   equ 0x20
         db 'SDOS 1.0'       ; OEM Name
 
         ;
-        ; 1440 FD BPB
+        ; 1440 FD BPB (Overwritten by insboot/disktool)
         ;
         dw 512              ; BytesPerSector
+SecsPerCluster:
         db 1                ; SectorsPerCluster
 ReservedSectors:
         dw 1                ; ReservedSectors
@@ -140,13 +141,21 @@ RealStart:
 
         push ax
         mov bx, cx
-        mov cx, 1
+        xor ch, ch
+        mov cl, [SecsPerCluster]
         sub ax, 2 ; First data sector is for cluster 2
+        push dx
+        xor dx, dx
+        mul cx
+        pop dx
         add ax, [FirstDataSector]
         call ReadSectors
+.A:
+        add bx, PARAS_PER_SEC
+        dec cl
+        jnz .A
         mov cx, bx
         pop ax
-        add cx, PARAS_PER_SEC
 
         ; Move to next cluster
         mov bx, ax
