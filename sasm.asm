@@ -73,9 +73,9 @@ LABEL_MAX        equ 200        ; Maximum number of labels
 FIXUP_MAX        equ 400        ; Maximum number of fixups
 EQU_MAX          equ 100        ; Maximum number of equates
 DISPATCH_SIZE    equ 9          ; Size of DispatchListEntry (INST_MAX + 3)
-LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 LABEL_ADDR       equ 18         ; Offset of label address
 LABEL_FIXUP      equ 20         ; Offset of label fixup
+LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
 FIXUP_ADDR       equ 0          ; Offset of fixup address (into the output buffer)
 FIXUP_LINK       equ 2          ; Offset of fixup link pointer (INVALID_ADDR terminates list)
 FIXUP_TYPE       equ 4          ; Offset of fixup type (FIXUP_DISP16 or FIXUP_REL8)
@@ -285,6 +285,24 @@ Init:
 Fini:
         call ParserFini
 
+        ; Check if there are undefined labels
+        mov es, [LabelSeg]
+        xor bx, bx
+        mov cx, [NumLabels]
+        and cx, cx
+        jz .Done
+.CheckLabels:
+        cmp word [es:bx+LABEL_ADDR], INVALID_ADDR
+        jne .Next
+        call PrintLabel
+        push cs
+        mov bx, MsgErrLabelUnd
+        jmp Error
+.Next:
+        add bx, LABEL_SIZE
+        dec cx
+        jnz .CheckLabels
+.Done:
         call WriteOutput
 
         ret
@@ -2789,6 +2807,7 @@ MsgErrNotRel8:    db 'Address out of 8-bit range', 0
 MsgErrCpuLevel:   db 'Instruction not supported at this CPU level', 0
 MsgErrDBFixup:    db 'Fixup not possible with DB', 0
 MsgErrDivZero:    db 'Division by zero in literal expression', 0
+MsgErrLabelUnd:   db 'Label not defined', 0
 MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
 
 
@@ -2900,7 +2919,7 @@ DispatchList:
     ; I/O
     db 'IN',0,0,0,0, 0x00
     dw InstIN
-    db 'OUT',0,0,0, 0x00
+    db 'OUT',0,0,0,  0x00
     dw InstOUT
 
     ; Prefixes
@@ -2912,8 +2931,6 @@ DispatchList:
     dw OutputByte
 
     ; Flags/etc.
-    db 'HLT',0,0,0,  0xF4
-    dw OutputByte
     db 'CMC',0,0,0,  0xF5
     dw OutputByte
     db 'CLC',0,0,0,  0xF8
@@ -2967,13 +2984,13 @@ DispatchList:
 
     ; String instructions
     db 'INSB',0,0,   0x6C
-    dw OutputByte
+    dw OutputByte186
     db 'INSW',0,0,   0x6D
-    dw OutputByte
+    dw OutputByte186
     db 'OUTSB',0,    0x6E
-    dw OutputByte
+    dw OutputByte186
     db 'OUTSW',0,    0x6F
-    dw OutputByte
+    dw OutputByte186
     db 'MOVSB',0,    0xA4
     dw OutputByte
     db 'MOVSW',0,    0xA5
