@@ -17,6 +17,7 @@ BPB_SECSPERCLUST equ 0x02 ; BYTE Logical sectors per cluster
 BPB_RSRVEDSECS   equ 0x03 ; WORD Number of reserved logical sectors
 BPB_NUMFATS      equ 0x05 ; BYTE Number of File Allocation Tables
 BPB_MAXROOTENTS  equ 0x06 ; WORD Maximum number of root directory entries
+BPB_TOTALSECTORS equ 0x08 ; WORD Total number of sectors on disk
 BPB_SECSPERFAT   equ 0x0B ; WORD Logical sectors per FAT
 BPB_SECPERTRACK  equ 0x0D ; WORD Physical sectors per track
 BPB_NUMHEADS     equ 0x0F ; WORD Number of heads
@@ -126,7 +127,6 @@ Main:
         call Malloc
         mov [FATSeg], ax
 
-
         xor dx, dx
         xor ah, ah
         mov al, [BPB+BPB_SECSPERCLUST]
@@ -144,6 +144,14 @@ Main:
         call GetFatNRootSecs
         add ax, dx
         mov [DataSector], ax
+
+        mov ax, [BPB+BPB_TOTALSECTORS]
+        sub ax, [DataSector]
+        xor dx, dx
+        xor bh, bh
+        mov bl, [BPB+BPB_SECSPERCLUST]
+        div bx
+        mov [MaxCluster], ax
 
         mov ax, MAX_FILES
         mov bx, FILE_INFO_SIZE
@@ -595,18 +603,12 @@ InvalidCluster:
 ; Returns new cluster in AX (or 0 if none could be found)
 AddCluster:
         push si
-        push di
         mov si, ax ; Save previous cluster in SI
-        mov cx, 9
-        mov di, [cs:BPB+BPB_SECSPERFAT]
-        shl di, cl ; DI is offset of last address in FAT
-        mov bx, [cs:FATSeg]
-        mov es, bx
+        mov es, [cs:FATSeg]
         ; First find free cluster
         xor bx, bx ; FAT pointer
         xor cx, cx ; cluster
 .Search:
-        ; TODO: Handle disk full...
         mov dx, [es:bx]   ; DX=H0L2L1L0
         mov ax, dx        ; AX=H0L2L1L0
         and ax, 0xfff     ; AX=__L2L1L0
@@ -622,9 +624,9 @@ AddCluster:
         jz .Found
         inc cx
         add bx, 1
-        cmp bx, di
+        cmp cx, [cs:MaxCluster]
         jb .Search
-        ; None found
+        ; None found - disk is full
         xor ax, ax
         jmp .Ret
 .Found:
@@ -644,7 +646,6 @@ AddCluster:
         call UpdateCluster
         pop ax
 .Ret:
-        pop di
         pop si
         ret
 
@@ -2110,6 +2111,7 @@ BootDrive:       resb 1
 BPB:             resb BPB_SIZE
 DataSector:      resw 1
 ClusterBytes:    resw 1
+MaxCluster:      resw 1
 RootMaxIdx:      resw 1
 MaxSeg:          resw 1
 FreeSeg:         resw 1
