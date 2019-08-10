@@ -17,7 +17,9 @@
 ;;  * Only simple (non-regex case-sesnsitive) search supported
 ;;  * When using :e only RESERVED_PARAS*0x10 bytes can be stored in
 ;;    the temp register (copy buffer). Should instead compact heap.
-;;
+;;  * Lots of snow on CGA. Could wait for verical retrace, but it slows
+;;    down the drawing a lot on ancient hardware (where it's most
+;;    noticable).
 ;;
 ;; The file is stored in a doubly linked list of lines (without CR+LF)
 ;; starting with 'FirstLine'. A pointer to the first displayed line (top
@@ -216,8 +218,10 @@ ReloadFile:
         jmp Error
 .ReadOK:
         and ax, ax
-        jz .ReadDone
+        jnz .MoreBytes
+        jmp .ReadDone
 
+.MoreBytes:
         add [TotalBytes], ax
         adc word [TotalBytes+2], 0
         mov cx, ax
@@ -252,6 +256,20 @@ ReloadFile:
         mov [es:di+LINEH_NEXT+2], ax
         mov [es:di+LINEH_LENGTH], ax
 
+        ; Check if we've exhausted the available memory
+        push cx
+        mov ax, di
+        add ax, 15
+        mov cl, 4
+        shr ax, cl
+        mov cx, es
+        add ax, cx
+        pop cx
+        cmp ax, [HeapEndSeg]
+        jb .CheckSeg
+        jmp OutOfMemory
+
+.CheckSeg:
         ; Getting too close to 64K?
         cmp di, 0x8000
         jbe .NextLine

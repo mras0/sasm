@@ -91,6 +91,12 @@ Main:
         shr ax, cl
         mov [FreeSeg], ax
 
+        ; Get free memory
+        int 0x12
+        mov cl, 6 ; log2(1024/16)
+        shl ax, cl
+        mov [MaxSeg], ax
+
         ; Add dot to loading message
         mov al, '.'
         call PutChar
@@ -440,8 +446,8 @@ MallocBytes:
 Malloc:
         mov bx, [FreeSeg]
         add ax, bx
-        cmp ax, 0xA000
-        jae MallocOOM
+        cmp ax, [MaxSeg]
+        ja MallocOOM
         mov [FreeSeg], ax
         mov ax, bx
         ret
@@ -488,7 +494,8 @@ LoadProgram:
         mov ax, [LastProcSeg]
         mov es, ax
         mov word [es:0], 0x20CD ; Int 20h
-        mov word [es:2], 0x9FFF ; Segment of first byte beyond memory allocated by program
+        mov bx, [MaxSeg]
+        mov word [es:2], bx     ; Segment of first byte beyond memory allocated by program
         mov byte [es:0x80], 0   ; No command line arguments
         ; Return with segment in ax
         ret
@@ -585,10 +592,14 @@ InvalidCluster:
         jmp Fatal
 
 ; Add new cluster to chain in AX
-; Returns new cluster in AX
+; Returns new cluster in AX (or 0 if none could be found)
 AddCluster:
         push si
+        push di
         mov si, ax ; Save previous cluster in SI
+        mov cx, 9
+        mov di, [cs:BPB+BPB_SECSPERFAT]
+        shl di, cl ; DI is offset of last address in FAT
         mov bx, [cs:FATSeg]
         mov es, bx
         ; First find free cluster
@@ -611,7 +622,11 @@ AddCluster:
         jz .Found
         inc cx
         add bx, 1
-        jmp .Search
+        cmp bx, di
+        jb .Search
+        ; None found
+        xor ax, ax
+        jmp .Ret
 .Found:
         push cx
         mov ax, si
@@ -628,6 +643,8 @@ AddCluster:
         mov ax, EOC_CLUSTER
         call UpdateCluster
         pop ax
+.Ret:
+        pop di
         pop si
         ret
 
@@ -1107,10 +1124,12 @@ WriteFAT:
         jmp WriteSectors
 
 ; Flush file (write) buffer for file with info in ES:BX
+; Returns carry clear on success, carry set on error.
 FlushFileBuffer:
         mov cx, [es:bx+FILE_INFO_BUFOFF]
         and cx, cx
         jnz .Flush
+        clc
         ret ; Nothing to flush
 .Flush:
         ; TODO: Clear from BUFOFF to ClusterBytes to avoid writing junk to file
@@ -1124,6 +1143,11 @@ FlushFileBuffer:
         pop es
         pop bx
         pop dx ; Last cluster
+        and ax, ax
+        jnz .HasCluster
+        stc
+        ret
+.HasCluster:
         mov [es:bx+FILE_INFO_CLUST], ax
 
         ; Update directory entry
@@ -1157,6 +1181,7 @@ FlushFileBuffer:
         mov di, [cs:ClusterBytes]
         mov word [es:bx+FILE_INFO_BUFSZ], di
         pop di
+        clc
         ret
 
 ; Write to from file handle in BX, CX bytes from DS:DX
@@ -1238,7 +1263,9 @@ WriteFile:
         pop cx
         pop bx
         pop ax
-        jmp .WriteLoop
+        jnc .WriteLoop
+        mov ax, ERR_ACCESS_DENIE
+        jmp .Ret
 .Done:
         mov ax, si ; All bytes written
         clc
@@ -2084,6 +2111,7 @@ BPB:             resb BPB_SIZE
 DataSector:      resw 1
 ClusterBytes:    resw 1
 RootMaxIdx:      resw 1
+MaxSeg:          resw 1
 FreeSeg:         resw 1
 FATSeg:          resw 1
 FileInfoSeg:     resw 1
