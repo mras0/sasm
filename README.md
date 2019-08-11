@@ -62,7 +62,7 @@ First make sure you've read the warning section. The bootstrapping
 process will use `int 13h/ah=03`, so make sure you're not going to
 regret this :)
 
-(Note: This has only been tested with DOS 5.0 and FreeDOS
+(Note: This has only been tested with MS-DOS 5.0 and FreeDOS 0.84)
 
 Assemble sasm.asm using either the provided C version of SASM or NASM:
 

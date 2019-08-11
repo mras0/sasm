@@ -140,11 +140,13 @@ PutCrLf:
         ret
 
 ; Print word in AX
+%if 0
 PutHexWord:
         push ax
         mov al, ah
         call PutHexByte
         pop ax
+%endif
 PutHexByte:
         push ax
         shr al, 1
@@ -991,7 +993,7 @@ CmdDiskCopy:
 .DoWrite:
         mov si, MsgErrDiskWrite
         mov ah, 0x03
-        jmp .RWCommon
+        jmp short .RWCommon
 .DoRead:
         mov si, MsgErrDiskRead
         mov ah, 0x02

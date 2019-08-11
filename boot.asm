@@ -208,13 +208,13 @@ PutHexDig:
         ret
 
 PutString:
-        mov ah, 0x0e
 .L:
         lodsb
         and al, al
         jnz .Pr
         ret
 .Pr:
+        mov ah, 0x0e
         int 0x10
         jmp .L
 
