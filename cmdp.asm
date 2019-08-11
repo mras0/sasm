@@ -851,7 +851,6 @@ CmdDiskCopy:
         mov dx, MsgErrDiskRead
         jmp CError
 .ReadBootOK:
-
         mov di, [FirstFreeSeg]
         add di, 0x001f
         and di, 0xffe0
@@ -937,11 +936,11 @@ CmdDiskCopy:
         pop ax
         sub ax, bx
         jz .Done
-        shr bx, 1
-        shr bx, 1
-        shr bx, 1
-        shr bx, 1
-        shr bx, 1
+        shl bx, 1
+        shl bx, 1
+        shl bx, 1
+        shl bx, 1
+        shl bx, 1
         add di, bx
         jmp .SectorLoop
 .Done:
@@ -989,37 +988,14 @@ CmdDiskCopy:
         pop bx
         pop ax
         ret
+.DoWrite:
+        mov si, MsgErrDiskWrite
+        mov ah, 0x03
+        jmp .RWCommon
 .DoRead:
-        push ax
-        push bx
-        push cx
-        push dx
-        push dx
-        push cx
-        mov ax, bx
-        call PutHexWord
-        mov dx, .MsgRead
-        mov ah, 0x09
-        int 0x21
-        mov ax, di
-        call PutHexWord
-        mov ah, 2
-        mov dl, ' '
-        int 0x21
-        pop ax
-        call PutHexWord
-        mov ah, 2
-        mov dl, ':'
-        int 0x21
-        pop ax
-        call PutHexWord
-        call PutCrLf
-        pop dx
-        pop cx
-        pop bx
-        pop ax
         mov si, MsgErrDiskRead
         mov ah, 0x02
+        ; Fall through
 .RWCommon:
         mov al, bl
         mov es, di
@@ -1030,19 +1006,6 @@ CmdDiskCopy:
         jmp CError
 .RWOK:
         ret
-.MsgRead: db ' sectors to read to $'
-.DoWrite:
-        push ax
-        push dx
-        mov dx, .MsgWrite
-        mov ah, 9
-        int 0x21
-        pop dx
-        pop ax
-        mov si, MsgErrDiskWrite
-        mov ah, 0x03
-        jmp .RWCommon
-.MsgWrite: db 'Writing...',13,10,'$'
 .DiskChange:
         push ax
         push bx

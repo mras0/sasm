@@ -45,12 +45,13 @@ set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
 
 add_custom_command(
     OUTPUT ${DISK_IMG}
-    COMMAND disktool "${DISK_IMG}" create 360
+    COMMAND disktool "${DISK_IMG}" create 1440#360
     COMMAND disktool "${DISK_IMG}" boot   "${CMAKE_CURRENT_BINARY_DIR}/boot.bin"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/os.sys"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/cmdp.com"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/help.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/strap.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/boot.asm"
