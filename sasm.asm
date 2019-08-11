@@ -79,6 +79,7 @@ FIXUP_TYPE       equ 4          ; Offset of fixup type (FIXUP_DISP16 or FIXUP_RE
 FIXUP_SIZE       equ 5          ; Size of Fixup
 EQU_SIZE         equ 20         ; Size of equate (TOKEN_MAX+2+sizeof(WORD))
 EQU_VAL          equ 18         ; Offset of value in equate
+IF_MAX           equ 8          ; Max %if nesting depth
 
 HEX_ADJUST       equ 7          ; 'A'-'0'-10
 QUOTE_CHAR       equ 39         ; '\''
@@ -134,6 +135,11 @@ CC_G             equ 0xf
 ; Fixup types
 FIXUP_DISP16     equ 0
 FIXUP_REL8       equ 1
+
+; Flags for %if handling
+IF_ACTIVE        equ 1 ; Current %if/%elif/%else is active
+IF_WAS_ACTIVE    equ 2 ; A block has previously been active (= skip %elif/%else)
+IF_SEEN_ELSE     equ 4 ; %else has been passed, only %endif is legal
 
 ProgramEntry:
         ; Clear BSS
@@ -283,6 +289,13 @@ Init:
 Fini:
         call ParserFini
 
+        ; Check for open %if blocks
+        cmp byte [NumIfs], 0
+        je .IfsOK
+        mov bx, MsgErrIfActive
+        jmp Error
+
+.IfsOK:
         ; Check if there are undefined labels
         mov es, [LabelSeg]
         xor bx, bx
@@ -345,13 +358,37 @@ Exit:
         int 0x21
 
 MainLoop:
-        ; Update line counter
-        mov ax, [NumNewLines]
-        add [CurrentLine], ax
-        mov word [NumNewLines], 0
-
+        ;
+        ; Check if we're in a conditionally disabled block
+        ;
+        xor bh, bh
+        mov bl, [NumIfs]
+        sub bl, 1
+        jc .NoIfs
+        test byte [Ifs+bx], IF_ACTIVE
+        jnz .NoIfs
+.Skip:
+        mov al, [CurrentChar]
+        and al, al
+        jz .Done
+        cmp al, '%'
+        je .CheckDir
+        call MoveNext
+        jmp .Skip
+.CheckDir:
+        call .GetToken
+        mov ax, [UToken+1]
+        cmp ax, 'IF'
+        je .Dispatch
+        cmp ax, 'EL'
+        je .Dispatch
+        cmp ax, 'EN'
+        je .Dispatch
+        jmp .Skip
+.NoIfs:
         ; Grab next token
-        call GetToken
+        call .GetToken
+.Dispatch:
         cmp byte [TokenLen], 0
         je .Done
 
@@ -375,6 +412,12 @@ MainLoop:
         call Error
 .Ret:
         ret
+.GetToken:
+        ; Update line counter
+        xor ax, ax
+        xchg ax, [NumNewLines]
+        add [CurrentLine], ax
+        jmp GetToken
 
 Dispatch:
         push si
@@ -858,6 +901,8 @@ GetToken:
         je .Store
         cmp al, '$'
         je .Store
+        cmp al, '%'
+        je .Store
         ; IsDigit
         mov bh, al
         sub bh, '0'
@@ -939,9 +984,15 @@ GetCharLit:
 ;; Literal Expression Parser
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-MAX_PREC equ 0xFF
-OPER_LSH equ '<'|0x80
-OPER_RSH equ '>'|0x80
+MAX_PREC  equ 0xFF
+
+OPER_LSH  equ '<'|0x80
+OPER_RSH  equ '>'|0x80
+OPER_LEQ  equ '<'|0xC0
+OPER_GEQ  equ '>'|0xC0
+OPER_LAND equ '&'|0x80
+OPER_LXOR equ '^'|0x80
+OPER_LOR  equ '|'|0x80
 
 NewExpr:
         mov word [CurrentOp], 0
@@ -976,15 +1027,20 @@ GetOp:
         je .LtGt
         cmp al, '>'
         je .LtGt
-        mov ah, 11
+        mov ah, 10
+        cmp al, '='
+        je .EqOp
+        cmp al, '!'
+        je .EqOp
+        inc ah
         cmp al, '&'
-        je .Ret
+        je .LogOp
         inc ah
         cmp al, '^'
-        je .Ret
+        je .LogOp
         inc ah
         cmp al, '|'
-        je .Ret
+        je .LogOp
 .NoOp:
         xor ax, ax
         jmp .RetNoRead
@@ -995,10 +1051,29 @@ GetOp:
         cmp [CurrentChar], al
         je .ShiftOp
         mov ah, 9
-        jmp .RetNoRead
+        cmp byte [CurrentChar], '='
+        jne .RetNoRead
+        or al, 0xc0
+        jmp short .Ret
 .ShiftOp:
         or al, 0x80
-        jmp .Ret
+        jmp short .Ret
+.EqOp:
+        push ax
+        call ReadNext
+        pop ax
+        cmp byte [CurrentChar], '='
+        je .Ret
+        mov bx, MsgErrInvalidOp
+        jmp Error
+.LogOp:
+        push ax
+        call ReadNext
+        pop ax
+        cmp byte [CurrentChar], al
+        jne .RetNoRead
+        or al, 0x80
+        add ah, 3
 .Ret:
         push ax
         call ReadNext
@@ -1052,6 +1127,8 @@ IsUnaryOp:
         je .Yes
         cmp al, '~'
         je .Yes
+        cmp al, '!'
+        je .Yes
         stc
         ret
 .Yes:
@@ -1070,6 +1147,11 @@ GetUnary:
         cmp bl, '+'
         je .Done
         not ax
+        cmp bl, '!'
+        jne .NotLNot
+        and ax, 1
+        jmp .Done
+.NotLNot:
         cmp bl, '-'
         jne .Done
         inc ax
@@ -1123,7 +1205,9 @@ GetExpr1:
         mov dx, cx ; DX = Operator
         mov cx, ax ; CX = RHS
         pop ax     ; AX = LHS
+
         call .Compute
+
         jmp GetExpr1
 .Compute:
         ; AX @= CX, where DL contains the operator (@)
@@ -1148,7 +1232,28 @@ GetExpr1:
         je .CBXor
         cmp dl, '|'
         je .CBOr
-        mov bx, MsgErrInternalE
+        cmp dl, '='
+        je .CEq
+        cmp dl, '!'
+        je .CNeq
+        cmp dl, '<'
+        je .CLt
+        cmp dl, '>'
+        je .CGt
+        cmp dl, OPER_LEQ
+        je .CLeq
+        cmp dl, OPER_GEQ
+        je .CGeq
+        call .CToBool
+        cmp dl, OPER_LAND
+        je .CBAnd
+        cmp dl, OPER_LXOR
+        je .CBXor
+        cmp dl, OPER_LOR
+        je .CBOr
+        mov ah, 2
+        int 0x21
+        mov bx, MsgErrInvalidOp
         jmp Error
 .CMul:
         xor dx, dx
@@ -1188,6 +1293,46 @@ GetExpr1:
 .CBOr:
         or ax, cx
         ret
+.CEq:
+        cmp ax, cx
+        je .COne
+        jmp .CZero
+.CNeq:
+        cmp ax, cx
+        jne .COne
+        jmp .CZero
+.CLeq:
+        cmp ax, cx
+        jbe .COne
+        jmp .CZero
+.CGeq:
+        cmp ax, cx
+        jae .COne
+        jmp .CZero
+.CLt:
+        cmp ax, cx
+        jb .COne
+        jmp .CZero
+.CGt:
+        cmp ax, cx
+        ja .COne
+        ;jmp .CZero
+.CZero:
+        xor ax, ax
+        ret
+.COne:
+        mov ax, 1
+        ret
+.CToBool:
+        and ax, ax
+        jz .CDoC
+        mov ax, 1
+.CDoC:
+        and cx, cx
+        jz .CTBDone
+        mov cx, 1
+.CTBDone:
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Operand Handling
@@ -1197,9 +1342,16 @@ GetExpr1:
 ; Returns carry clear on success (token handled).
 GetRegOrNumber:
         call GetToken
+        cmp byte [IsTokenNumber], 0
+        je .NotNumber
+        mov byte [OperandType], OP_LIT
+.RetOK:
+        clc
+        ret
+.NotNumber:
         ; Check if register
         cmp byte [TokenLen], 2
-        jne .CheckNumber
+        jne .NotRegOrNum
         mov ax, [UToken]
         mov bx, RegNames
         mov cl, R_INVALID
@@ -1210,25 +1362,18 @@ GetRegOrNumber:
         shr bx, 1
         mov [OperandValue], bx
         mov byte [OperandType], OP_REG
-        clc
-        ret
+        jmp .RetOK
 .NextReg:
         add bx, 2
         dec cl
         jnz .ChecReg
-        ; Fall through
-.CheckNumber:
-        cmp byte [IsTokenNumber], 0
-        jne .Number
+.NotRegOrNum:
         stc
-        ret
-.Number:
-        mov byte [OperandType], OP_LIT
-        clc
         ret
 
 ; Get operand to OperandType/OperandValue (and possibly CurrentFixup)
 GetOperand:
+        call NewExpr
         mov al, [CurrentChar]
         cmp al, '['
         jne .NotMem
@@ -1242,6 +1387,10 @@ GetOperand:
         mov byte [OperandType], OP_LIT
         ret
 .NotCharLit:
+        cmp al, '('
+        je .Expr
+        call IsUnaryOp
+        je .Expr
         call GetRegOrNumber
         jc .NotRegOrNumber
         cmp byte [OperandType], OP_LIT
@@ -1280,7 +1429,6 @@ GetOperand:
 .CheckNamedLit:
         call GetNamedLiteral
 .ContinueExpr:
-        call NewExpr
         mov bx, MAX_PREC
         mov ax, [OperandValue]
         call GetExpr1
@@ -1693,7 +1841,7 @@ RegisterFixup:
         mov cx, INVALID_ADDR
         cmp bx, cx
         jne .OK
-        mov bx, MsgErrInternalE
+        mov bx, MsgErrNoFixup
         jmp Error
 .OK:
         mov [CurrentFixup], cx
@@ -1957,6 +2105,89 @@ DirResX:
         ret
 .Overflow:
         mov bx, MsgErrMemOvrflow
+        jmp Error
+
+DirIf:
+        xor bh, bh
+        mov bl, [NumIfs]
+        cmp bl, IF_MAX
+        jb .NotMax
+        mov bx, MsgErrIfMax
+        jmp Error
+.NotMax:
+        push bx
+        call GetExpr
+        pop bx
+        and bl, bl
+        jz .NotDisabled
+        test byte [Ifs+bx-1], IF_ACTIVE
+        jnz .NotDisabled
+        ; In disabled block
+        mov byte [Ifs+bx], IF_WAS_ACTIVE
+        jmp short .Ret
+.NotDisabled:
+        xor cl, cl
+        and ax, ax
+        je .Store
+        mov cl, IF_ACTIVE|IF_WAS_ACTIVE
+.Store:
+        mov [Ifs+bx], cl
+.Ret:
+        inc bl
+        mov [NumIfs], bl
+        ret
+
+; Return current If-state in AL and pointer to it in BX
+GetCurrentIf:
+        xor bh, bh
+        mov bl, [NumIfs]
+        dec bl
+        jc .Bad
+        add bx, Ifs
+        mov al, [bx]
+        test al, IF_SEEN_ELSE
+        jnz .Bad
+        ret
+.Bad:
+        mov bx, MsgErrBadElsif
+        jmp Error
+
+DirElif:
+        call GetExpr
+        push ax
+        call GetCurrentIf
+        pop cx
+        test al, IF_WAS_ACTIVE
+        jnz .NotActive
+        and cx, cx
+        jz .NotActive
+        or al, IF_ACTIVE|IF_WAS_ACTIVE
+        jmp short .Ret
+.NotActive:
+        and al, ~IF_ACTIVE
+.Ret:
+        mov [bx], al
+        ret
+
+DirElse:
+        call GetCurrentIf
+        test al, IF_WAS_ACTIVE
+        jnz .WasActive
+        or al, IF_ACTIVE|IF_WAS_ACTIVE
+        jmp short .Ret
+.WasActive:
+        and al, ~IF_ACTIVE
+.Ret:
+        or al, IF_SEEN_ELSE
+        mov [bx], al
+        ret
+
+DirEndif:
+        dec byte [NumIfs]
+        jc .Err
+        ret
+.Err:
+        mov bx, MsgErrBadEndif
         jmp Error
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2839,7 +3070,7 @@ MsgErrNoSize:     db 'Size missing for memory operand', 0
 MsgErrDupEqu:     db 'Duplicate EQU', 0
 MsgErrEquMax:     db 'Too many EQUs', 0
 MsgErrOutMax:     db 'Output buffer full', 0
-MsgErrInternalE:  db 'No fixup to register?', 0
+MsgErrNoFixup:    db 'No fixup to register?', 0
 MsgErrMemOvrflow: db 'Address exceeds segment', 0
 MsgErrInvalidCPU: db 'Invalid/unsupported CPU', 0
 MsgErrNotRel8:    db 'Address out of 8-bit range', 0
@@ -2847,6 +3078,11 @@ MsgErrCpuLevel:   db 'Instruction not supported at this CPU level', 0
 MsgErrDBFixup:    db 'Fixup not possible with DB', 0
 MsgErrDivZero:    db 'Division by zero in literal expression', 0
 MsgErrLabelUnd:   db 'Label not defined', 0
+MsgErrInvalidOp:  db 'Invalid binary operator', 0
+MsgErrIfMax:      db 'Too many nested %if blocks', 0
+MsgErrBadElsif:   db 'Invalid use of %elif/%else', 0
+MsgErrBadEndif:   db '%endif outside %if block', 0
+MsgErrIfActive:   db 'Open %if block', 0
 MsgErrExpected:   db '? expected',0 ; NOTE! modified by Expect
 
 
@@ -2872,6 +3108,14 @@ DispatchList:
     dw DirORG
     db 'CPU',0,0,0,  0x00
     dw DirCPU
+    db '%IF',0,0,0,  0x00
+    dw DirIf
+    db '%ELIF',0,    0x00
+    dw DirElif
+    db '%ELSE',0,    0x00
+    dw DirElse
+    db '%ENDIF',     0x00
+    dw DirEndif
 
     ; MOV/XCHG/TEST
     db 'MOV',0,0,0,  0x00
@@ -3180,6 +3424,9 @@ NextFreeFixup:    resw 1 ; Points to next free fixup node (or INVALID_ADDR)
 
 EquSeg:           resw 1
 NumEqus:          resw 1
+
+Ifs:              resb IF_MAX
+NumIfs:           resb 1
 
 ;;; Output
 OutputSeg:        resw 1

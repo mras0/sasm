@@ -12,14 +12,19 @@ typedef short S2;
 #define TOKEN_MAX 16
 #define LABEL_MAX 200
 #define FIXUP_MAX 400
-
 #define EQU_MAX   100
 #define OUTPUT_MAX 0x2000
+#define IF_MAX    8 // Maximum nesting of %if directives
+
 #define INVALID_ADDR 0xFFFF
 #define NO_SIZE 0xFF // ExplicitSize when no size specified
 
 #define FIXUP_DISP16 0
 #define FIXUP_REL8   1
+
+#define IF_ACTIVE     1 // %if/%elif/%else block currently active
+#define IF_WAS_ACTIVE 2 // %if/%elif block was previously active
+#define IF_SEEN_ELSE  4 // %else block seen
 
 struct Label {
     char Name[TOKEN_MAX+1];
@@ -41,6 +46,11 @@ struct Equ {
     U2 Value;
 };
 
+struct If {
+    U1 State;
+    U2 Line;
+};
+
 FILE* InputFile;
 U2 CurrentLine;
 U2 NumNewLines;
@@ -59,9 +69,11 @@ U2 PendingZeros;
 struct Label Labels[LABEL_MAX];
 struct Fixup Fixups[FIXUP_MAX];
 struct Equ   Equs[EQU_MAX];
+struct If    Ifs[IF_MAX];
 U2 NumLabels;
 U2 FreeFixup;
 U2 NumEqus;
+U2 NumIfs;
 
 enum {
     OP_REG=0xc0,
@@ -249,7 +261,8 @@ static U2 GetNumberFromToken(void)
 static void GetToken(void)
 {
     TokenLen = 0;
-    while (CurrentChar == '.' || CurrentChar == '_' || CurrentChar == '$' || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
+    while (CurrentChar == '.' || CurrentChar == '_' || CurrentChar == '$' || CurrentChar == '%'
+        || IsDigit(CurrentChar) || IsAlpha(CurrentChar)) {
         if (TokenLen < TOKEN_MAX) {
             UTokenText[TokenLen] = ToUpper(CurrentChar);
             TokenText[TokenLen++] = CurrentChar;
@@ -564,8 +577,15 @@ static U2 GetPrimary(void)
     }
 }
 
-#define OPER_LSH 'l'
-#define OPER_RSH 'r'
+#define OPER_LSH ('<'|0x80)
+#define OPER_RSH ('>'|0x80)
+#define OPER_LEQ 'L'
+#define OPER_GEQ 'G'
+#define OPER_EQ  '='
+#define OPER_NEQ '!'
+#define OPER_LAND ('&'|0x80)
+#define OPER_LXOR ('^'|0x80)
+#define OPER_LOR  ('|'|0x80)
 #define MAX_PREC 0xFF
 
 static U2 GetOp(void)
@@ -585,11 +605,30 @@ static U2 GetOp(void)
         break;
     case '<': case '>':
         ReadNext();
-        if (CurrentChar != op) {
-            return 9<<8|op;
+        if (CurrentChar == op) {
+            op |= 0x80;
+            prec = 7;
+            break;
         }
-        op = op == '<' ? OPER_LSH : OPER_RSH;
-        prec = 7;
+        prec = 9;
+        if (CurrentChar != '=') {
+            goto NoNext;
+        }
+        op = op == '<' ? OPER_LEQ : OPER_GEQ;
+        break;
+    case '=':
+        ReadNext();
+        if (CurrentChar != '=') {
+            Error("Invalid operator");
+        }
+        prec = 10;
+        break;
+    case '!':
+        ReadNext();
+        if (CurrentChar != '=') {
+            Error("Invalid operator");
+        }
+        prec = 10;
         break;
     case '&':
         prec = 11;
@@ -603,14 +642,22 @@ static U2 GetOp(void)
     default:
         return 0;
     }
-    assert(prec);
     ReadNext();
+    if (op == '&' || op == '^' || op == '|') {
+        if (CurrentChar == op) {
+            ReadNext();
+            op |= 0x80;
+            prec += 3;
+        }
+    }
+NoNext:
+    assert(prec);
     return prec<<8|op;
 }
 
 static bool IsUnaryOp(void)
 {
-    return CurrentChar == '+' || CurrentChar == '-' || CurrentChar == '~';
+    return CurrentChar == '+' || CurrentChar == '-' || CurrentChar == '~' || CurrentChar == '!';
 }
 
 static U2 GetUnary(void)
@@ -624,6 +671,7 @@ static U2 GetUnary(void)
         case '+': return num;
         case '-': return -num;
         case '~': return ~num;
+        case '!': return !num;
         default:
             Error("Internaal error: Invalid unary op");
         }
@@ -643,11 +691,20 @@ static U2 Compute(U1 op, U2 lhs, U2 rhs) {
     case '-': return lhs - rhs;
     case OPER_LSH: return lhs << rhs;
     case OPER_RSH: return lhs << rhs;
+    case '<': return lhs < rhs;
+    case OPER_LEQ: return lhs <= rhs;
+    case OPER_GEQ: return lhs >= rhs;
+    case '>': return lhs > rhs;
+    case '=': return lhs == rhs;
+    case '!': return lhs != rhs;
     case '&': return lhs & rhs;
     case '^': return lhs ^ rhs;
     case '|': return lhs | rhs;
+    case OPER_LAND: return lhs && rhs;
+    case OPER_LXOR: return !!lhs ^ !!rhs;
+    case OPER_LOR: return lhs || rhs;
     default:
-        printf("%u %c %u\n", lhs, op, rhs);
+        printf("%u %c (0x%02X) %u\n", lhs, op, op, rhs);
         Error("Internal error. Operator not supported");
     }
 }
@@ -825,7 +882,12 @@ static void GetOperand(void)
     if (CurrentChar == '[') {
         GetOperandMem();
         return;
+    } else if (CurrentChar == '(' || IsUnaryOp()) {
+        OperandType = OP_LIT;
+        OperandValue = GetExpr();
+        return;
     }
+    NewExpr();
     if (TryGet('\'')) {
         OperandValue = GetCharLit();
         OperandType = OP_LIT;
@@ -853,7 +915,6 @@ static void GetOperand(void)
         }
     }
     assert(OperandType == OP_LIT);
-    NewExpr();
     OperandValue = GetExpr1(OperandValue, MAX_PREC);
 }
 
@@ -943,6 +1004,66 @@ static void DirectiveResx(U1 size)
     }
     CurrentAddress += count * size;
     PendingZeros += count * size;
+}
+
+static void DirectiveIf(U1 arg)
+{
+    (void)arg;
+    if (NumIfs == IF_MAX) {
+        Error("%if's nested too deep");
+    }
+    const bool InDisabledBlock = NumIfs && !(Ifs[NumIfs-1].State & IF_ACTIVE);
+    struct If* i = &Ifs[NumIfs++];
+    i->Line = CurrentLine;
+    i->State = GetExpr() ? IF_ACTIVE|IF_WAS_ACTIVE : 0;
+    if (InDisabledBlock) {
+        i->State = IF_WAS_ACTIVE;
+    }
+}
+
+static void DirectiveElif(U1 arg)
+{
+    (void)arg;
+    if (!NumIfs) {
+        Error("%elif outside %if block");
+    }
+    struct If* i = &Ifs[NumIfs-1];
+    const U2 val = GetExpr();
+    if (i->State & IF_SEEN_ELSE) {
+        Error("%elif invalid after %else");
+    }
+    if (val && !(i->State & IF_WAS_ACTIVE)) {
+        i->State = IF_ACTIVE|IF_WAS_ACTIVE;
+    } else {
+        i->State &= ~IF_ACTIVE;
+    }
+}
+
+static void DirectiveElse(U1 arg)
+{
+    (void)arg;
+    if (!NumIfs) {
+        Error("%else outside %if block");
+    }
+    struct If* i = &Ifs[NumIfs-1];
+    if (i->State & IF_SEEN_ELSE) {
+        Error("Multiple %else's not allowed");
+    }
+    if (!(i->State & IF_WAS_ACTIVE)) {
+        i->State = IF_ACTIVE|IF_WAS_ACTIVE;
+    } else {
+        i->State &= ~IF_ACTIVE;
+    }
+    i->State |= IF_SEEN_ELSE;
+}
+
+static void DirectiveEndif(U1 arg)
+{
+    (void)arg;
+    if (!NumIfs) {
+        Error("%endif outside %if block");
+    }
+    --NumIfs;
 }
 
 static void InstINT(U1 arg)
@@ -1605,6 +1726,10 @@ static const struct {
     { "RESB"   , &DirectiveResx   , 0x01 },
     { "RESW"   , &DirectiveResx   , 0x02 },
     { "CPU"    , &DirectiveCPU    , 0x00 },
+    { "%IF"    , &DirectiveIf     , 0x00 },
+    { "%ELIF"  , &DirectiveElif   , 0x00 },
+    { "%ELSE"  , &DirectiveElse   , 0x00 },
+    { "%ENDIF" , &DirectiveEndif  , 0x00 },
     { "REPNE"  , &OutputByte      , 0xF2 },
     { "REPE"   , &OutputByte      , 0xF3 },
     { "REP"    , &OutputByte      , 0xF3 },
@@ -1794,6 +1919,13 @@ static char* GetOutputFileName(const char* InputFileName)
     return OutputFileName;
 }
 
+void NextMainToken(void)
+{
+    CurrentLine += NumNewLines;
+    NumNewLines = 0;
+    GetToken();
+}
+
 int main(int argc, char* argv[])
 {
     if (argc < 2) {
@@ -1832,9 +1964,17 @@ int main(int argc, char* argv[])
     }
     ParserInit(InputFileName);
     for (;;) {
-        CurrentLine += NumNewLines;
-        NumNewLines = 0;
-        GetToken();
+        if (NumIfs && !(Ifs[NumIfs-1].State & IF_ACTIVE)) {
+            // Skip to next directive...
+            do {
+                while (CurrentChar && CurrentChar != '%') {
+                    MoveNext();
+                }
+                NextMainToken();
+            } while (TokenLen && strcmp(UTokenText, "%IF") && strcmp(UTokenText, "%ELSE") && strcmp(UTokenText, "%ELIF") && strcmp(UTokenText, "%ENDIF"));
+        } else {
+            NextMainToken();
+        }
         if (!TokenLen) {
             break;
         }
@@ -1843,6 +1983,12 @@ int main(int argc, char* argv[])
     // Make sure all labels have been defined
     while (NumLabels) {
         RetireLabel(0);
+    }
+    if (NumIfs) {
+        while (NumIfs--) {
+            printf("Line %u: %%if not terminated\n", Ifs[NumIfs].Line);
+        }
+        Error("Unterminated %if-block(s)");
     }
     ParserFini();
 #ifndef NDEBUG
