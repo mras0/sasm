@@ -508,7 +508,7 @@ CommandFromKey:
         je .Found ; End of list
         cmp al, dl
         je .Found
-        jmp .Next
+        jmp short .Next
 .CheckFull:
         cmp ax, dx
         je .Found
@@ -557,7 +557,7 @@ CommandFromKey:
 Quit:
         call RestoreVideoMode
         xor al, al
-        jmp Exit
+        jmp short Exit
 
 OutOfMemory:
         mov al, 0xff
@@ -1513,11 +1513,11 @@ DeleteCmd:
         dec word [DispLineIdx]
         mov [DispLine], si
         mov [DispLine+2], di
-        jmp .Done
+        jmp short .Done
 .NotFinal:
         mov [DispLine], ax
         mov [DispLine+2], dx
-        jmp .Done
+        jmp short .Done
 .CheckCursor:
         ; Lines were cut from somewhere other than the top
         ; Check if CursorRelY needs to be moved
@@ -1997,7 +1997,7 @@ SearchCmd:
         jne .Copy
 .Search:
         pop es
-        jmp SearchAgain
+        jmp short SearchAgain
 
 SearchFwdCmd:
         mov al, '/'
@@ -2010,12 +2010,12 @@ SearchBackCmd:
 SearchAgain:
         cmp byte [LastSearchDir], '/'
         je SearchFwd
-        jmp SearchBack
+        jmp short SearchBack
 
 RevSearch:
         cmp byte [LastSearchDir], '/'
         jne SearchFwd
-        jmp SearchBack
+        jmp short SearchBack
 
 SrchMatchFound:
         ; TODO: Place cursor in a nicer place..
@@ -2098,14 +2098,14 @@ LineMatches:
         cmp byte [si], 0
         je .Match
         ; Line ended before SearchBuffer - cannot match anymore
-        jmp .NoMatch
+        jmp short .NoMatch
 .NextChar:
         inc bx
         dec cx
         jnz .CheckMatch
 .NoMatch:
         stc
-        jmp .Done
+        jmp short .Done
 .Match:
         clc
 .Done:
@@ -2219,7 +2219,7 @@ InsertMode:
         and ax, ax
         jz .NoCount
         mov si, .MsgErrNoCount
-        jmp .ErrRetIn
+        jmp short .ErrRetIn
 .NoCount:
         ; Idea: Copy current line to buffer and link in (free old line of course)
         ; Then edit current line and copy in afterwards
@@ -2300,7 +2300,7 @@ InsertMode:
         cmp al, ' '
         jb .Unknown
         ; Normal character
-        jmp .InsertChar
+        jmp short .InsertChar
 .Unknown:
         ; Unknown key in insert mode
         push ax
@@ -2349,7 +2349,7 @@ InsertMode:
 .ShiftUpDone:
         mov [si], al
         inc word [CursorX]
-        jmp .UpdateRet
+        jmp short .UpdateRet
 .Backspace:
         mov al, [NextBackspace]
         cmp al, 1
@@ -2361,7 +2361,7 @@ InsertMode:
         jz .BSDelAI
         ; Delete tab of size AL
         xor ah, ah
-        jmp .BSDel
+        jmp short .BSDel
 .BSDelAI:
         ; Special case: last action inserted auto indent spaces
         ; Remove them (Note: CursorX should always be > 0 here)
@@ -2376,7 +2376,7 @@ InsertMode:
         add si, ax
         rep movsb
         pop es
-        jmp .UpdateRet
+        jmp short .UpdateRet
 .NormalBS:
         mov bx, [CursorX]
         and bx, bx
@@ -2779,7 +2779,7 @@ JoinLines:
         mov [DispLine+2], dx
 .NotDisp:
         mov byte [NeedUpdate], 1
-        jmp PlaceCursor
+        jmp short PlaceCursor
 .MsgErrJoinFail: db 'Cannot join at end of file', 0
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2915,7 +2915,7 @@ DrawLines:
         sub bx, cx
         ja .HScroll
         xor bx, bx
-        jmp .LineDone
+        jmp short .LineDone
 .HScroll:
         add si, cx
         add si, LINEH_SIZE

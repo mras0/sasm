@@ -118,7 +118,7 @@ RealStart:
         pop si
         jne .NextDE
         mov ax, [si+DIR_ENTRY_LCLUST]
-        jmp .FileFound
+        jmp short .FileFound
 .NextDE:
         add si, DIR_ENTRY_SIZE
         dec bx
@@ -130,7 +130,7 @@ RealStart:
         ; Failed to find file
         xor ax, ax
         mov si, MsgBootDskErr
-        jmp Error
+        jmp short Error
 
 .FileFound:
         mov si, FAT_SEG<<4

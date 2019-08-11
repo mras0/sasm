@@ -27,7 +27,7 @@ macro(SASM INPUT OUTPUT)
     set(OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/${OUTPUT}")
     add_custom_command(
         OUTPUT "${OUTPUT_FILE}"
-        COMMAND sasm -o "${OUTPUT_FILE}" "${CMAKE_CURRENT_SOURCE_DIR}/${INPUT}"
+        COMMAND sasm -Wshort -Wunused-label -o "${OUTPUT_FILE}" "${CMAKE_CURRENT_SOURCE_DIR}/${INPUT}"
         DEPENDS sasm "${CMAKE_CURRENT_SOURCE_DIR}/${INPUT}"
     )
     string(REPLACE "." "_" TARGET_NAME "${OUTPUT}")

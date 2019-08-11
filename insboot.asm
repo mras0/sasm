@@ -43,7 +43,7 @@ Start:
 .Done:
         xor al, al
         stosb
-        jmp .ArgsOK
+        jmp short .ArgsOK
 .InvalidArgs:
         mov dx, MsgErrArgs
         jmp Error
@@ -75,7 +75,7 @@ Start:
         int 0x13
         jnc .ReadOK
         mov dx, MsgErrRead
-        jmp Error
+        jmp short Error
 .ReadOK:
         ; Copy it to temp area
         mov di, BPB
@@ -98,7 +98,7 @@ Start:
         int 0x21
         jnc .OpenOK
         mov dx, MsgErrInOpen
-        jmp Error
+        jmp short Error
 .OpenOK:
         mov bx, ax
 
@@ -118,7 +118,7 @@ Start:
         popf
         jnc .FileReadOK
         mov dx, MsgErrInRead
-        jmp Error
+        jmp short Error
 .FileReadOK:
 
         ;
@@ -132,7 +132,7 @@ Start:
         je .OK
 .NotOK:
         mov dx, MsgErrBootSect
-        jmp Error
+        jmp short Error
 .OK:
 
         ;

@@ -21,6 +21,7 @@ typedef short S2;
 
 #define FIXUP_DISP16 0
 #define FIXUP_REL8   1
+#define FIXUP_REL16  2
 
 #define IF_ACTIVE     1 // %if/%elif/%else block currently active
 #define IF_WAS_ACTIVE 2 // %if/%elif block was previously active
@@ -74,6 +75,8 @@ U2 NumLabels;
 U2 FreeFixup;
 U2 NumEqus;
 U2 NumIfs;
+bool WarnUnusedLabel;
+bool WarnShort;
 
 enum {
     OP_REG=0xc0,
@@ -334,7 +337,9 @@ static void RetireLabel(U2 index)
     assert(index < NumLabels);
     //printf("Retiring %s\n", Labels[index].Name);
     if (!Labels[index].UsedLine) {
-        printf("Line %u: Warning label \"%s\" unused\n", Labels[index].Line, Labels[index].Name);
+        if (WarnUnusedLabel) {
+            printf("Line %u: Warning: Label \"%s\" unused\n", Labels[index].Line, Labels[index].Name);
+        }
         assert(Labels[index].Address != INVALID_ADDR);
     } else if (Labels[index].Address == INVALID_ADDR) {
         printf("Line %u: Label: \"%s\"\n", Labels[index].UsedLine, Labels[index].Name);
@@ -404,8 +409,11 @@ static void ResolveFixups(struct Label* l)
     for (U2 idx = l->Fixup; idx != INVALID_ADDR;) {
         struct Fixup* f = &Fixups[idx];
         assert(f->Address < OutputOffset);
-        if (f->Type == FIXUP_DISP16) {
+        if (f->Type == FIXUP_DISP16 || f->Type == FIXUP_REL16) {
             AddU2(&OutputBuffer[f->Address], l->Address);
+            if (WarnShort && f->Type == FIXUP_REL16 && IsShort(OutputOffset - (f->Address + 2))) {
+                printf("Line %u: Warning: Could be short jump\n", f->Line);
+            }
         } else {
             assert(f->Type == FIXUP_REL8);
             // Note: this only works because multiple ORG commands aren't allowed
@@ -1610,13 +1618,13 @@ static void InstPOP(U1 arg)
     }
 }
 
-static void HandleRel16(void)
+static void HandleRel16(bool CouldBeShort)
 {
     if (OperandType != OP_LIT) {
         Error("Expected literal");
     }
     if (CurrentFixup) {
-        RegisterFixup(FIXUP_DISP16);
+        RegisterFixup(CouldBeShort ? FIXUP_REL16 : FIXUP_DISP16);
     }
     OutputWord((U2)(OperandValue - (CurrentAddress + 2)));
 }
@@ -1634,7 +1642,7 @@ static void InstCALL(U1 arg)
         return;
     }
     OutputByte(0xE8);
-    HandleRel16();
+    HandleRel16(false);
 }
 
 static bool HandleShortRel(U1 inst, bool force)
@@ -1674,7 +1682,7 @@ static void InstJMP(U1 arg)
     (void)arg;
     if (!HandleShortRel(0xEB, false)) {
         OutputByte(0xE9);
-        HandleRel16();
+        HandleRel16(true);
     }
 }
 
@@ -1682,7 +1690,7 @@ static void InstJcc(U1 cc) {
     assert(cc < 16);
     if (!HandleShortRel(0x70|cc, CpuLevel < 3)) {
         OutputWord(0x800F | cc<<8);
-        HandleRel16();
+        HandleRel16(true);
     }
 }
 
@@ -1930,7 +1938,7 @@ int main(int argc, char* argv[])
 {
     if (argc < 2) {
     Usage:
-        fprintf(stderr, "Usage: %s input-file\n", argv[0]);
+        fprintf(stderr, "Usage: %s input-file [-Wshort] [-Wunused-label]\n", argv[0]);
         return 1;
     }
     const char* InputFileName = NULL;
@@ -1946,6 +1954,10 @@ int main(int argc, char* argv[])
                 OutputFileName = malloc(strlen(OName)+1);
                 if (!OutputFileName) Error("Out of memory");
                 strcpy(OutputFileName,OName);
+            } else if (!strcmp(a, "-Wunused-label")) {
+                WarnUnusedLabel = true;
+            } else if (!strcmp(a, "-Wshort")) {
+                WarnShort = true;
             } else {
                 fprintf(stderr, "Invalid argument \"%s\"\n", a);
                 return 1;

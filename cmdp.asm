@@ -196,7 +196,7 @@ HexDump:
         jb .Rep
         cmp al, 0x7f
         ja .Rep
-        jmp .Print
+        jmp short .Print
 .Rep:
         mov al, '.'
 .Print:
@@ -290,11 +290,11 @@ OpenOutput:
 
 CloseInput:
         mov bx, [InputFile]
-        jmp CloseFile
+        jmp short CloseFile
 
 CloseOutput:
         mov bx, [OutputFile]
-        jmp CloseFile
+        jmp short CloseFile
 
 CloseFile:
         mov ah, 0x3e
@@ -487,7 +487,7 @@ CommandDispatch:
         inc si ; undo 'unget' (we actually consumed the character)
 .ExtCopyDone:
         dec si
-        jmp .AppendNUL
+        jmp short .AppendNUL
 
 .AppendExt:
         ; Try batchfile with the name
@@ -630,11 +630,11 @@ CWaitKey:
 
 COpenInError:
         mov dx, MsgErrOpenIn
-        jmp CError
+        jmp short CError
 
 COpenOutError:
         mov dx, MsgErrOpenOut
-        jmp CError
+        jmp short CError
 
 CArgError:
         mov dx, MsgErrInvArgs
@@ -722,7 +722,7 @@ CmdDir:
         stosw
         mov ax, '*'
         stosw
-        jmp .Main
+        jmp short .Main
 
 .NotEmpty:
         ; '.EXT' means '*.EXT'
@@ -1155,7 +1155,7 @@ CmdType:
         popf
         pop bx
         jc .Done
-        jmp .NextChar
+        jmp short .NextChar
 .NotLF:
         inc bx
         cmp bx, 80

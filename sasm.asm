@@ -219,7 +219,7 @@ CopyFileName:
         inc si
         dec cl
         jnz .SkipS
-        jmp .Done
+        jmp short .Done
 .NotSpace:
         mov ch, 12
 .Copy:
@@ -293,7 +293,7 @@ Fini:
         cmp byte [NumIfs], 0
         je .IfsOK
         mov bx, MsgErrIfActive
-        jmp Error
+        jmp short Error
 
 .IfsOK:
         ; Check if there are undefined labels
@@ -308,7 +308,7 @@ Fini:
         call PrintLabel
         push cs
         mov bx, MsgErrLabelUnd
-        jmp Error
+        jmp short Error
 .Next:
         add bx, LABEL_SIZE
         dec cx
@@ -425,7 +425,7 @@ Dispatch:
         call TryConsume
         jc .NotLabel
         call DefineLabel
-        jmp .Done
+        jmp short .Done
 
 .NotLabel:
         mov si, DispatchList
@@ -467,7 +467,7 @@ Dispatch:
         jne .FixupUnhandled
         cmp word [CurrentLFixup], INVALID_ADDR
         jne .FixupUnhandled
-        jmp .Done
+        jmp short .Done
 .FixupUnhandled:
         mov bx, MsgErrFixupUnh
         jmp Error
@@ -937,19 +937,19 @@ GetToken:
         cmp al, 9
         ja .CheckSpecial
         call GetTokenNumber
-        jmp .HasNum
+        jmp short .HasNum
 .CheckSpecial:
         cmp word [Token], '$'
         jne .CheckSpecial2
         mov ax, [CurrentAddress]
-        jmp .HasNum
+        jmp short .HasNum
 .CheckSpecial2:
         cmp byte [TokenLen], 2
         jne .CheckEqu
         cmp word [Token], '$$'
         jne .CheckEqu
         mov ax, [SectionStart]
-        jmp .HasNum
+        jmp short .HasNum
 .CheckEqu:
         call FindEqu
         cmp bx, INVALID_ADDR
@@ -1043,7 +1043,7 @@ GetOp:
         je .LogOp
 .NoOp:
         xor ax, ax
-        jmp .RetNoRead
+        jmp short .RetNoRead
 .LtGt:
         push ax
         call ReadNext
@@ -1150,7 +1150,7 @@ GetUnary:
         cmp bl, '!'
         jne .NotLNot
         and ax, 1
-        jmp .Done
+        jmp short .Done
 .NotLNot:
         cmp bl, '-'
         jne .Done
@@ -1296,27 +1296,27 @@ GetExpr1:
 .CEq:
         cmp ax, cx
         je .COne
-        jmp .CZero
+        jmp short .CZero
 .CNeq:
         cmp ax, cx
         jne .COne
-        jmp .CZero
+        jmp short .CZero
 .CLeq:
         cmp ax, cx
         jbe .COne
-        jmp .CZero
+        jmp short .CZero
 .CGeq:
         cmp ax, cx
         jae .COne
-        jmp .CZero
+        jmp short .CZero
 .CLt:
         cmp ax, cx
         jb .COne
-        jmp .CZero
+        jmp short .CZero
 .CGt:
         cmp ax, cx
         ja .COne
-        ;jmp .CZero
+        ; Fall through
 .CZero:
         xor ax, ax
         ret
@@ -1511,7 +1511,7 @@ GetOperandMem:
         cmp al, R_ES
         jae .SegOverride
         call .CombineModrm
-        jmp .Next
+        jmp short .Next
 .SegOverride:
         ; Output segment override here even though it's a bit dirty
         sub al, R_ES
@@ -1531,10 +1531,10 @@ GetOperandMem:
         test si, 0x100
         jnz .Sub
         add di, [OperandValue]
-        jmp .Next
+        jmp short .Next
 .Sub:
         sub di, [OperandValue]
-        jmp .Next
+        jmp short .Next
 .Next:
         cmp byte [CurrentChar], '-'
         je .Main
@@ -1555,13 +1555,13 @@ GetOperandMem:
         cmp al, 0xff
         jne .NotDispOnly
         mov al, 6
-        jmp .Done
+        jmp short .Done
 .NotDispOnly:
         cmp word [CurrentFixup], INVALID_ADDR
         je .NoFixup
 .Disp16:
         or al, 0x80 ; Disp16
-        jmp .Done
+        jmp short .Done
 .NoFixup:
         and di, di
         jz .Done
@@ -2062,7 +2062,7 @@ DirDX:
         jz .Next
         xor al, al
         call OutputByte
-        jmp .Next
+        jmp short .Next
 .NotLit:
         call GetExpr
         push ax
@@ -2366,7 +2366,7 @@ InstMOV:
         cmp al, R_AL
         jne .MOVrm2
         mov al, 0xA0
-        jmp .Imm16
+        jmp short .Imm16
 .MOVrm2:
         cmp al, R_AX
         jne .MOVrm3
@@ -2764,7 +2764,7 @@ InstROT:
         cmp byte [OperandValue], 1
         jne .ROTmimm
         or al, 0xd0
-        jmp .ROTmrFinal
+        jmp short .ROTmrFinal
 .InvalidOp:
         jmp InvalidOperand
 .ROTmimm:

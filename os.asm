@@ -218,7 +218,7 @@ Main:
         and ax, ax
         jnz .LoadOK
         mov bx, MsgErrCmdNotF
-        jmp Fatal
+        jmp short Fatal
 .LoadOK:
         mov [CmdpSeg], ax
         ; Start command interpreter
@@ -271,12 +271,14 @@ PutString:
         inc bx
         jmp PutString
 
+%if 0
 ; Print word in AX
 PutHexWord:
         push ax
         mov al, ah
         call PutHexByte
         pop ax
+%endif
 PutHexByte:
         push ax
         shr al, 1
@@ -628,7 +630,7 @@ AddCluster:
         jb .Search
         ; None found - disk is full
         xor ax, ax
-        jmp .Ret
+        jmp short .Ret
 .Found:
         push cx
         mov ax, si
@@ -665,7 +667,7 @@ UpdateCluster:
         shl ax, 1
         and cl, 0x0F
         or al, cl
-        jmp .UCDone
+        jmp short .UCDone
 .Even:
         and ch, 0xF0
         or ah, ch
@@ -883,7 +885,7 @@ FindNextFile:
         jnz .Compare
 
         ; Match!
-        jmp .Done
+        jmp short .Done
 .NextEntry:
         add bx, DIR_ENTRY_SIZE
         jmp .DirLoop
@@ -967,7 +969,7 @@ DoFindFile:
         call CompressFName
 
         clc
-        jmp .Done
+        jmp short .Done
 .NotFound:
         stc
         mov ax, ERR_NO_FILES
@@ -1266,11 +1268,11 @@ WriteFile:
         pop ax
         jnc .WriteLoop
         mov ax, ERR_ACCESS_DENIE
-        jmp .Ret
+        jmp short .Ret
 .Done:
         mov ax, si ; All bytes written
         clc
-        jmp .Ret
+        jmp short .Ret
 .InvalidHandle:
         mov ax, ERR_INVALID_HAND
         stc
@@ -1517,7 +1519,7 @@ IRETC:
         mov bp, sp
         jc .C
         and byte [bp+6], 0xfe ; clear carry
-        jmp .Ret
+        jmp short .Ret
 .C:
         or byte [bp+6], 1 ; set carry
 .Ret:
@@ -1675,7 +1677,7 @@ Int21_3C:
         cmp bx, NOT_FOUND
         jne .Found
         call NewRootEntry
-        jmp .OpenFromDE
+        jmp short .OpenFromDE
 .Found:
         ; File found, truncate
         xor ax, ax
@@ -1729,7 +1731,7 @@ Int21_3D:
         jne .Found
         mov ax, ERR_FILE_NOT_FND
         stc
-        jmp .Out
+        jmp short .Out
 
 .Found:
         call OpenFileFromDE
@@ -1810,7 +1812,7 @@ Int21_41:
         jne .Found
         mov ax, ERR_FILE_NOT_FND
         stc
-        jmp .Ret
+        jmp short .Ret
 .Found:
         push es
         push bx
@@ -1893,7 +1895,7 @@ Int21_4B:
         jnz .LoadOK
         mov ax, ERR_FILE_NOT_FND ; Assume this is the cause...
         stc
-        jmp .Ret
+        jmp short .Ret
 .LoadOK:
         ; Copy command line (DS:SI from above)
         ; It's a one byte length byte and a CR terimanted
@@ -2042,7 +2044,7 @@ Int21_56:
         add sp, 6 ; pop 3 words
         mov ax, ERR_ACCESS_DENIE
         stc
-        jmp .Ret
+        jmp short .Ret
 .DestOK:
         ; Copy expanded filename to DTA
         mov cx, cs
@@ -2065,7 +2067,7 @@ Int21_56:
         jne .SourceOK
         mov ax, ERR_FILE_NOT_FND
         stc
-        jmp .Ret
+        jmp short .Ret
 .SourceOK:
         mov di, bx
         mov si, [cs:DTA+2]
