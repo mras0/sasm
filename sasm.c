@@ -1938,7 +1938,7 @@ int main(int argc, char* argv[])
 {
     if (argc < 2) {
     Usage:
-        fprintf(stderr, "Usage: %s input-file [-Wshort] [-Wunused-label]\n", argv[0]);
+        fprintf(stderr, "Usage: %s input-file [-o output] [-Wshort] [-Wunused-label]\n", argv[0]);
         return 1;
     }
     const char* InputFileName = NULL;

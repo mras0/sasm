@@ -140,13 +140,11 @@ PutCrLf:
         ret
 
 ; Print word in AX
-%if 0
 PutHexWord:
         push ax
         mov al, ah
         call PutHexByte
         pop ax
-%endif
 PutHexByte:
         push ax
         shr al, 1
@@ -836,13 +834,12 @@ CmdDiskCopy:
         mov dx, MsgErrDrive
         jmp CError
 .DriveOK:
-
         ;
         ; Read boot sector to Buffer
         ;
-
         xor dh, dh
         mov dl, al
+
         push ds
         pop es
         mov bx, Buffer
@@ -850,6 +847,9 @@ CmdDiskCopy:
         mov ax, 0x0201
         int 0x13
         jnc .ReadBootOK
+        call PutHexWord
+        mov al, ' '
+        call PutChar
         mov dx, MsgErrDiskRead
         jmp CError
 .ReadBootOK:
@@ -864,6 +864,7 @@ CmdDiskCopy:
         shr si, 1
         shr si, 1
         shr si, 1
+
         ; DI: Start segment
         ; SI: Number of sectors that can be stored
         ; BX: Remaining sectors
@@ -912,11 +913,15 @@ CmdDiskCopy:
         jbe .CntOK
         mov bx, ax
 .CntOK:
-        ; Limit to a track
+        %if 1
+        mov bx, 1
+        %else
+        ; Limit to a track (only later BIOSes)
         cmp bx, [Buffer+SEC_PER_TRACK]
         jbe .CntOK2
         mov bx, [Buffer+SEC_PER_TRACK]
 .CntOK2:
+        %endif
         push ax
         push bx
         push cx
@@ -1004,6 +1009,19 @@ CmdDiskCopy:
         xor bx, bx
         int 0x13
         jnc .RWOK
+        push dx
+        push cx
+        call PutHexWord
+        mov al, ' '
+        call PutChar
+        pop ax
+        call PutHexWord
+        mov al, ' '
+        call PutChar
+        pop ax
+        call PutHexWord
+        mov al, ' '
+        call PutChar
         mov dx, si
         jmp CError
 .RWOK:

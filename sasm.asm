@@ -61,7 +61,7 @@
         cpu 8086
         org 0x100
 
-STACK_SIZE       equ 4096       ; TODO: Figure out correct size..
+STACK_SIZE       equ 1024       ; TODO: Figure out correct size..
 TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer if increasing)
 INST_MAX         equ 6          ; Maximum length of directive/instruction (LOOPNE is longest)
 BUFFER_SIZE      equ 512        ; Size of input buffer
@@ -69,7 +69,7 @@ OUTPUT_MAX       equ 0x2000     ; Maximum output size
 LABEL_MAX        equ 200        ; Maximum number of labels
 FIXUP_MAX        equ 400        ; Maximum number of fixups
 EQU_MAX          equ 100        ; Maximum number of equates
-DISPATCH_SIZE    equ 9          ; Size of DispatchListEntry (INST_MAX + 3)
+DISPATCH_SIZE    equ INST_MAX+3 ; Size of DispatchListEntry
 LABEL_ADDR       equ 18         ; Offset of label address
 LABEL_FIXUP      equ 20         ; Offset of label fixup
 LABEL_SIZE       equ 22         ; Size of Label (TOKEN_MAX+2+2*sizeof(WORD))
@@ -77,12 +77,12 @@ FIXUP_ADDR       equ 0          ; Offset of fixup address (into the output buffe
 FIXUP_LINK       equ 2          ; Offset of fixup link pointer (INVALID_ADDR terminates list)
 FIXUP_TYPE       equ 4          ; Offset of fixup type (FIXUP_DISP16 or FIXUP_REL8)
 FIXUP_SIZE       equ 5          ; Size of Fixup
-EQU_SIZE         equ 20         ; Size of equate (TOKEN_MAX+2+sizeof(WORD))
 EQU_VAL          equ 18         ; Offset of value in equate
+EQU_SIZE         equ 20         ; Size of equate (TOKEN_MAX+2+sizeof(WORD))
 IF_MAX           equ 8          ; Max %if nesting depth
 
-HEX_ADJUST       equ 7          ; 'A'-'0'-10
 QUOTE_CHAR       equ 39         ; '\''
+HEX_ADJUST       equ  'A'-'0'-10
 INVALID_ADDR     equ 0xFFFF
 
 ; Value of Operand(L)Type:
@@ -92,27 +92,26 @@ OP_LIT          equ 0xC1
 
 ; Register indices (OperandValue when OperandType = OP_REG)
 ; Lower 3 bits matches index, bits 4&5 give class (r8, r16, sreg)
-R_AL             equ 0
-R_CL             equ 1
-R_DL             equ 2
-R_BL             equ 3
-R_AH             equ 4
-R_CH             equ 5
-R_DH             equ 6
-R_BH             equ 7
-R_AX             equ 8
-R_CX             equ 9
-R_DX             equ 10
-R_BX             equ 11
-R_SP             equ 12
-R_BP             equ 13
-R_SI             equ 14
-R_DI             equ 15
-R_ES             equ 16
-R_CS             equ 17
-R_SS             equ 18
-R_DS             equ 19
-R_INVALID        equ 21
+R_AL             equ 0x00
+R_CL             equ 0x01
+R_DL             equ 0x02
+R_BL             equ 0x03
+R_AH             equ 0x04
+R_CH             equ 0x05
+R_DH             equ 0x06
+R_BH             equ 0x07
+R_AX             equ 0x08
+R_CX             equ 0x09
+R_DX             equ 0x0a
+R_BX             equ 0x0b
+R_SP             equ 0x0c
+R_BP             equ 0x0d
+R_SI             equ 0x0e
+R_DI             equ 0x0f
+R_ES             equ 0x10
+R_CS             equ 0x11
+R_SS             equ 0x12
+R_DS             equ 0x13
 
 ; Condition Codes
 CC_O             equ 0x0
@@ -273,8 +272,7 @@ Init:
         mov bx, ax
         dec cx
         jnz .FixupInit
-        sub bx, FIXUP_SIZE
-        mov word [es:bx+FIXUP_LINK], INVALID_ADDR ; Terminate free list
+        mov word [es:bx+FIXUP_LINK-FIXUP_SIZE], INVALID_ADDR ; Terminate free list
 
         mov ax, EQU_MAX
         mov bx, EQU_SIZE
@@ -314,9 +312,7 @@ Fini:
         dec cx
         jnz .CheckLabels
 .Done:
-        call WriteOutput
-
-        ret
+        jmp WriteOutput
 
 NotImplemented:
         mov bx, MsgErrNotImpl
@@ -398,9 +394,9 @@ MainLoop:
         jmp MainLoop
 
 .Done:
-        cmp byte [CurrentChar], 0
-        je .Ret
         mov al, [CurrentChar]
+        and al, al
+        jz .Ret
         push ax
         call PutHexByte
         mov al, ' '
@@ -448,8 +444,7 @@ Dispatch:
         xor bx, bx
 .CLoop:
         mov al, [UToken+bx]
-        mov ah, [si+bx]
-        cmp al, ah
+        cmp al, [si+bx]
         jne .Next
         and al, al ; at NUL terminator?
         jz .Match
@@ -460,7 +455,7 @@ Dispatch:
 .Match:
         ; Found match, dispatch
         xor ah, ah
-        mov al, byte [si+INST_MAX]
+        mov al, [si+INST_MAX]
         mov bx, [si+INST_MAX+1]
         call bx
         cmp word [CurrentFixup], INVALID_ADDR
@@ -478,6 +473,7 @@ Dispatch:
         jb .Compare
 
 .CheckEQU:
+        ; Avoid clobbering Token
         mov al, 'E'
         call TryGetU
         jc .Invalid
@@ -494,7 +490,7 @@ Dispatch:
         ret
 .Invalid:
         mov bx, MsgErrUnknInst
-        call Error
+        jmp Error
 
 ; Allocate AX*BX bytes, returns segment in AX
 Malloc:
@@ -645,8 +641,7 @@ OutputByte:
         push cx
         push di
         push es
-        mov di, [OutputSeg]
-        mov es, di
+        mov es, [OutputSeg]
         mov di, [NumOutBytes]
         xor cx, cx
         xchg cx, [PendingZeros]
@@ -811,8 +806,7 @@ SkipWS:
 
 MoveNext:
         call ReadNext
-        call SkipWS
-        ret
+        jmp SkipWS
 
 ; Consume CurrentChar if it matches AL, move next and
 ; return carry clear. Carry is set ortherwise.
@@ -925,9 +919,9 @@ GetToken:
         jmp .Get
 .Done:
         xor al, al
-        mov byte [Token+di], al ; zero-terminate
-        mov byte [UToken+di], al ; zero-terminate
-        mov byte [IsTokenNumber], al
+        mov [Token+di], al ; zero-terminate
+        mov [UToken+di], al ; zero-terminate
+        mov [IsTokenNumber], al
         mov ax, di
         mov [TokenLen], al
         pop di
@@ -1153,7 +1147,7 @@ GetUnary:
         jmp short .Done
 .NotLNot:
         cmp bl, '-'
-        jne .Done
+        jne .Done ; AX holds value for '~'
         inc ax
 .Done:
         ret
@@ -1354,7 +1348,6 @@ GetRegOrNumber:
         jne .NotRegOrNum
         mov ax, [UToken]
         mov bx, RegNames
-        mov cl, R_INVALID
 .ChecReg:
         cmp ax, [bx]
         jne .NextReg
@@ -1414,7 +1407,7 @@ GetOperand:
         cmp bx, 'RD'
         jne .CheckShort
         mov byte [ExplicitSize], 2
-        jmp GetOperandMem
+        jmp short GetOperandMem
 .CheckShort:
         cmp byte [TokenLen], 5
         jne .CheckNamedLit
@@ -1438,8 +1431,7 @@ GetOperand:
 GetNamedLiteral:
         mov byte [OperandType], OP_LIT
         call FindOrMakeLabel
-        mov ax, [LabelSeg]
-        mov es, ax
+        mov es, [LabelSeg]
         mov ax, [es:bx+LABEL_ADDR]
         cmp ax, INVALID_ADDR
         je .NeedFixup
@@ -1465,8 +1457,7 @@ GetNamedLiteral:
         mov [es:bx+LABEL_FIXUP], ax ; Store fixup pointer
 
         ; Done with the label, switch to pointing to the fixups
-        mov bx, [FixupSeg]
-        mov es, bx
+        mov es, [FixupSeg]
         mov bx, ax ; es:bx points to the new fixup node
 
         ; Update free list
@@ -1659,14 +1650,12 @@ DefineLabel:
         cmp bx, INVALID_ADDR
         jne .KnownLabel
         call MakeLabel
-        mov ax, [LabelSeg]
-        mov es, ax
+        mov es, [LabelSeg]
         mov ax, [CurrentAddress]
         mov [es:bx+LABEL_ADDR], ax
         ret
 .KnownLabel:
-        mov ax, [LabelSeg]
-        mov es, ax
+        mov es, [LabelSeg]
         cmp word [es:bx+LABEL_ADDR], INVALID_ADDR
         je .NotDup
         mov bx, MsgErrDupLabel
@@ -1712,7 +1701,7 @@ DefineLabel:
         jmp .ResolveFixup
 .Done:
         mov es, dx
-        pop dx ; First firxup
+        pop dx ; First fixup
         cmp cx, INVALID_ADDR
         je .NoFixups
         mov bx, cx
@@ -1754,35 +1743,8 @@ PrintLabel:
         pop ax
         ret
 
-; Print all labels (registers preserved)
-PrintLabels:
-        push ds
-        push ax
-        push bx
-        push cx
-        push es
-        mov ax, [LabelSeg]
-        mov es, ax
-        xor bx, bx
-        mov cx, [NumLabels]
-        and cx, cx
-        jz .Done
-.L:
-        call PrintLabel
-        add bx, LABEL_SIZE
-        dec cx
-        jnz .L
-.Done:
-        pop dx
-        pop cx
-        pop bx
-        pop ax
-        pop es
-        ret
-
 RetireLocLabs:
-        mov ax, [LabelSeg]
-        mov es, ax
+        mov es, [LabelSeg]
         xor bx, bx
         mov cx, [NumLabels]
         and cx, cx
@@ -1795,7 +1757,6 @@ RetireLocLabs:
         cmp word [es:bx+LABEL_ADDR], INVALID_ADDR
         jne .NotInv
 .Inv:
-        call PrintLabels
         call PrintLabel
         mov bx, MsgErrUndefLab
         jmp Error
@@ -1845,8 +1806,7 @@ RegisterFixup:
         jmp Error
 .OK:
         mov [CurrentFixup], cx
-        mov cx, [FixupSeg]
-        mov es, cx
+        mov es, [FixupSeg]
         mov cx, [NumOutBytes]
         mov [es:bx+FIXUP_ADDR], cx
         mov [es:bx+FIXUP_TYPE], al
@@ -1860,8 +1820,7 @@ FindLabel:
         mov cx, [NumLabels]
         and cx, cx
         jz .NotFound
-        mov ax, [LabelSeg]
-        mov es, ax
+        mov es, [LabelSeg]
         xor bx, bx
 .Search:
         mov si, Token
@@ -1898,8 +1857,7 @@ MakeLabel:
         mov bx, LABEL_SIZE
         mul bx
         mov bx, ax
-        mov ax, [LabelSeg]
-        mov es, ax
+        mov es, [LabelSeg]
         mov ax, INVALID_ADDR
         mov [es:bx+LABEL_ADDR], ax
         mov [es:bx+LABEL_FIXUP], ax
@@ -1931,8 +1889,7 @@ FindOrMakeLabel:
 FindEqu:
         push si
         push di
-        mov ax, [EquSeg]
-        mov es, ax
+        mov es, [EquSeg]
         mov cx, [NumEqus]
         and cx, cx
         jz .NotFound
@@ -1941,13 +1898,10 @@ FindEqu:
         mov si, Token
         mov di, bx
 .Compare:
-        mov al, [si]
-        cmp [es:di], al
+        cmpsb
         jne .Next
-        and al, al
+        cmp byte [si-1], 0
         jz .Done
-        inc si
-        inc di
         jmp .Compare
 .Next:
         add bx, EQU_SIZE
@@ -2029,7 +1983,6 @@ DirCPU:
 DirDX:
         push si
         mov si, ax
-        cmp al, 1
 .Main:
         mov al, QUOTE_CHAR
         call TryGet
@@ -3391,7 +3344,7 @@ CurrentLine:      resw 1 ; Current line being processed
 NumNewLines:      resw 1 ; Number of newlines passed by ReadNext
 CurrentChar:      resb 1 ; Current input character (0 on EOF)
 GotNL:            resb 1 ; Passed NL since last reset of var?
-CurrentOp:        resw 2 ; Current operand in GetExpr (low byte op, high byte precedence)
+CurrentOp:        resw 1 ; Current operand in GetExpr (low byte op, high byte precedence)
 IsTokenNumber:    resb 1 ; Is The current token a number?
 TokenLen:         resb 1
 Token:            resb TOKEN_MAX

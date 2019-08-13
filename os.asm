@@ -10,6 +10,9 @@
         org 0x0500
 
 ; TODO: Should probably switch to O/S stack when processing syscalls
+; TODO: Always push all registers in the interrupt handler and modify
+;       AX/flags there (or wherever the return value goes) rather than
+;       doing for each syscall handler.
 
 SECTOR_SIZE      equ 512
 
@@ -255,8 +258,13 @@ PutCrLf:
 ; Preserves all normal registers
 PutChar:
         push ax
+        push bx
+        push bp ; Some BIOSes destroy BP when the screen scrolls
+        mov bx, 7
         mov ah, 0x0e
         int 0x10
+        pop bp
+        pop bx
         pop ax
         ret
 
@@ -1958,6 +1966,7 @@ Int21_4E:
         push dx
         push si
         push di
+        push bp
         push ds
         push es
 
@@ -1984,6 +1993,7 @@ Int21_4E:
 
         pop es
         pop ds
+        pop bp
         pop di
         pop si
         pop dx
@@ -1998,6 +2008,9 @@ Int21_4F:
         push bx
         push cx
         push dx
+        push si
+        push di
+        push bp
         push ds
         push es
 
@@ -2011,6 +2024,9 @@ Int21_4F:
 
         pop es
         pop ds
+        pop bp
+        pop di
+        pop si
         pop dx
         pop cx
         pop bx

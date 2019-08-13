@@ -215,6 +215,7 @@ PutString:
         ret
 .Pr:
         mov ah, 0x0e
+        mov bx, 7
         int 0x10
         jmp .L
 
