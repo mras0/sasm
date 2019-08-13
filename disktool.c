@@ -171,6 +171,7 @@ void hexdump(const void* buffer, U2 size)
 
 void AllocFAT(void)
 {
+    assert(!FAT);
     FAT = malloc(DiskBPB.SectorsPerFat * DiskBPB.BytesPerSector);
     if (!FAT) {
         Error("Could not alloc FAT");
@@ -513,8 +514,6 @@ U1* ReadFile(const char* FileName, U4* size)
 
 void UpdateBootLoader(const char* BootFileName)
 {
-    MountDisk();
-
     U4 size;
     U1* data = ReadFile(BootFileName, &size);
     if (size != 512) {
