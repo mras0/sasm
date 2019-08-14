@@ -20,7 +20,12 @@ enum {
 enum {
     OTYPE_IMM8  = R_DS+1,
     OTYPE_IMM16,
+    OTYPE_REL8,
     OTYPE_REL16,
+    OTYPE_RM8,    // r/m part of MODRM
+    OTYPE_RM16,
+    OTYPE_R8,     // /r of ModRM
+    OTYPE_R16,
 
     OTYPE_NONE = 0xFF
 };
@@ -39,6 +44,7 @@ static const char RegNames[][3] = {
 #define PREFIX_DS 0x20
 
 #define OTYPE_IS_REG(ot) ((U2)(ot) <= R_DS)
+#define OTYPE_HAS_MODRM(ot) ((U2)(ot) >= OTYPE_RM8 && (U2)(ot) <= OTYPE_R16)
 
 #define OP_TEXT_MAX 16
 
@@ -50,9 +56,11 @@ static union {
     U1 I8;
     U2 I16;
 } Immediate;
+static U1 ModRM;
 
 static char Op1Text[OP_TEXT_MAX];
 static char Op2Text[OP_TEXT_MAX];
+static char RMText[OP_TEXT_MAX];
 
 #define READ_U1(offset) ((U1)((U4)(offset) < (U4)FileSize ? File[offset] : 0))
 #define READ_U2(offset) ((U2)(READ_U1((offset)+1)<<8|READ_U1(offset)))
@@ -93,37 +101,145 @@ static void ReadFile(const char* FileName)
 static void GetOp(char* Str, U1 op)
 {
     if (op == OTYPE_NONE) {
+        return;
     } else if (OTYPE_IS_REG(op)) {
         strcpy(Str, RegNames[op]);
-    } else if (op == OTYPE_IMM8) {
+        return;
+    }
+    switch (op) {
+    case OTYPE_IMM8:
         snprintf(Str, OP_TEXT_MAX, "0x%02X", Immediate.I8);
-    } else if (op == OTYPE_IMM16) {
+        break;
+    case OTYPE_IMM16:
         snprintf(Str, OP_TEXT_MAX, "0x%04X", Immediate.I16);
-    } else if (op == OTYPE_REL16) {
-        snprintf(Str, OP_TEXT_MAX, "0x%04X", CurrentAddress+Immediate.I16);
-    } else {
+        break;
+    case OTYPE_REL8:
+        snprintf(Str, OP_TEXT_MAX, "0x%04X", (U2)(CurrentAddress+(S1)Immediate.I8));
+        break;
+    case OTYPE_REL16:
+        snprintf(Str, OP_TEXT_MAX, "0x%04X", (U2)(CurrentAddress+Immediate.I16));
+        break;
+    case OTYPE_RM8:
+    case OTYPE_RM16:
+        strcpy(Str, RMText);
+        break;
+    case OTYPE_R8:
+        strcpy(Str, RegNames[R_AL + (ModRM&7)]);
+        break;
+    case OTYPE_R16:
+        strcpy(Str, RegNames[R_AX + (ModRM&7)]);
+        break;
+    default:
         Error("Unimplemented Optype: %02X\n", op);
     }
 }
 
+#define N_ADC    "ADC"
+#define N_ADD    "ADD"
+#define N_AND    "AND"
 #define N_CALL   "CALL"
+#define N_CMP    "CMP"
+#define N_CMPSB  "CMPSB"
+#define N_CMPSW  "CMPSW"
 #define N_DEC    "DEC"
 #define N_INC    "INC"
 #define N_INT    "INT"
 #define N_INT3   "INT3"
+#define N_LODSB  "LODSB"
+#define N_LODSW  "LODSW"
 #define N_MOV    "MOV"
+#define N_MOVSB  "MOVSB"
+#define N_MOVSW  "MOVSW"
+#define N_OR     "OR"
+#define N_POP    "POP"
 #define N_POPA   "POPA"
+#define N_PUSH   "PUSH"
 #define N_PUSHA  "PUSHA"
+#define N_RET    "RET"
+#define N_SBB    "SBB"
+#define N_SCASB  "SCASB"
+#define N_SCASW  "SCASW"
+#define N_STOSB  "STOSB"
+#define N_STOSW  "STOSW"
+#define N_SUB    "SUB"
+#define N_XOR    "XOR"
+#define N_JMP    "JMP"
+#define N_JO     "JO"
+#define N_JNO    "JNO"
+#define N_JC     "JC"
+#define N_JNC    "JNC"
+#define N_JZ     "JZ"
+#define N_JNZ    "JNZ"
+#define N_JNA    "JNA"
+#define N_JA     "JA"
+#define N_JS     "JS"
+#define N_JNS    "JNS"
+#define N_JPE    "JPE"
+#define N_JPO    "JPO"
+#define N_JL     "JL"
+#define N_JNL    "JNL"
+#define N_JNG    "JNG"
+#define N_JG     "JG"
 
-static const struct InstructionInfo {
+struct InstructionInfo {
     const char* name;
     U1 op1;
     U1 op2;
-} Instructions[256] = {
+};
+
+static const struct InstructionInfo Instructions[256] = {
     // 0x00
+    [0x00] = { N_ADD    , OTYPE_RM8   , OTYPE_R8    },
+    [0x01] = { N_ADD    , OTYPE_RM16  , OTYPE_R16   },
+    [0x02] = { N_ADD    , OTYPE_R8    , OTYPE_RM8   },
+    [0x03] = { N_ADD    , OTYPE_R16   , OTYPE_RM16  },
+    [0x04] = { N_ADD    , R_AL        , OTYPE_IMM8  },
+    [0x05] = { N_ADD    , R_AX        , OTYPE_IMM16 },
+    [0x08] = { N_OR     , OTYPE_RM8   , OTYPE_R8    },
+    [0x09] = { N_OR     , OTYPE_RM16  , OTYPE_R16   },
+    [0x0A] = { N_OR     , OTYPE_R8    , OTYPE_RM8   },
+    [0x0B] = { N_OR     , OTYPE_R16   , OTYPE_RM16  },
+    [0x0C] = { N_OR     , R_AL        , OTYPE_IMM8  },
+    [0x0D] = { N_OR     , R_AX        , OTYPE_IMM16 },
     // 0x10
+    [0x10] = { N_ADC    , OTYPE_RM8   , OTYPE_R8    },
+    [0x11] = { N_ADC    , OTYPE_RM16  , OTYPE_R16   },
+    [0x12] = { N_ADC    , OTYPE_R8    , OTYPE_RM8   },
+    [0x13] = { N_ADC    , OTYPE_R16   , OTYPE_RM16  },
+    [0x14] = { N_ADC    , R_AL        , OTYPE_IMM8  },
+    [0x15] = { N_ADC    , R_AX        , OTYPE_IMM16 },
+    [0x18] = { N_SBB    , OTYPE_RM8   , OTYPE_R8    },
+    [0x19] = { N_SBB    , OTYPE_RM16  , OTYPE_R16   },
+    [0x1A] = { N_SBB    , OTYPE_R8    , OTYPE_RM8   },
+    [0x1B] = { N_SBB    , OTYPE_R16   , OTYPE_RM16  },
+    [0x1C] = { N_SBB    , R_AL        , OTYPE_IMM8  },
+    [0x1D] = { N_SBB    , R_AX        , OTYPE_IMM16 },
     // 0x20
+    [0x20] = { N_AND    , OTYPE_RM8   , OTYPE_R8    },
+    [0x21] = { N_AND    , OTYPE_RM16  , OTYPE_R16   },
+    [0x22] = { N_AND    , OTYPE_R8    , OTYPE_RM8   },
+    [0x23] = { N_AND    , OTYPE_R16   , OTYPE_RM16  },
+    [0x24] = { N_AND    , R_AL        , OTYPE_IMM8  },
+    [0x25] = { N_AND    , R_AX        , OTYPE_IMM16 },
+    [0x28] = { N_SUB    , OTYPE_RM8   , OTYPE_R8    },
+    [0x29] = { N_SUB    , OTYPE_RM16  , OTYPE_R16   },
+    [0x2A] = { N_SUB    , OTYPE_R8    , OTYPE_RM8   },
+    [0x2B] = { N_SUB    , OTYPE_R16   , OTYPE_RM16  },
+    [0x2C] = { N_SUB    , R_AL        , OTYPE_IMM8  },
+    [0x2D] = { N_SUB    , R_AX        , OTYPE_IMM16 },
     // 0x30
+    [0x30] = { N_XOR    , OTYPE_RM8   , OTYPE_R8    },
+    [0x31] = { N_XOR    , OTYPE_RM16  , OTYPE_R16   },
+    [0x32] = { N_XOR    , OTYPE_R8    , OTYPE_RM8   },
+    [0x33] = { N_XOR    , OTYPE_R16   , OTYPE_RM16  },
+    [0x34] = { N_XOR    , R_AL        , OTYPE_IMM8  },
+    [0x35] = { N_XOR    , R_AX        , OTYPE_IMM16 },
+    [0x38] = { N_CMP    , OTYPE_RM8   , OTYPE_R8    },
+    [0x39] = { N_CMP    , OTYPE_RM16  , OTYPE_R16   },
+    [0x3A] = { N_CMP    , OTYPE_R8    , OTYPE_RM8   },
+    [0x3B] = { N_CMP    , OTYPE_R16   , OTYPE_RM16  },
+    [0x3C] = { N_CMP    , R_AL        , OTYPE_IMM8  },
+    [0x3D] = { N_CMP    , R_AX        , OTYPE_IMM16 },
     // 0x40
     [0x40] = { N_INC    , R_AX        , OTYPE_NONE  },
     [0x41] = { N_INC    , R_CX        , OTYPE_NONE  },
@@ -142,13 +258,40 @@ static const struct InstructionInfo {
     [0x4E] = { N_DEC    , R_SI        , OTYPE_NONE  },
     [0x4F] = { N_DEC    , R_DI        , OTYPE_NONE  },
     // 0x50
+    [0x50] = { N_PUSH   , R_AX        , OTYPE_NONE  },
+    [0x51] = { N_PUSH   , R_CX        , OTYPE_NONE  },
+    [0x52] = { N_PUSH   , R_DX        , OTYPE_NONE  },
+    [0x53] = { N_PUSH   , R_BX        , OTYPE_NONE  },
+    [0x54] = { N_PUSH   , R_SP        , OTYPE_NONE  },
+    [0x55] = { N_PUSH   , R_BP        , OTYPE_NONE  },
+    [0x56] = { N_PUSH   , R_SI        , OTYPE_NONE  },
+    [0x57] = { N_PUSH   , R_DI        , OTYPE_NONE  },
+    [0x58] = { N_POP    , R_AX        , OTYPE_NONE  },
+    [0x59] = { N_POP    , R_CX        , OTYPE_NONE  },
+    [0x5A] = { N_POP    , R_DX        , OTYPE_NONE  },
+    [0x5B] = { N_POP    , R_BX        , OTYPE_NONE  },
+    [0x5C] = { N_POP    , R_SP        , OTYPE_NONE  },
+    [0x5D] = { N_POP    , R_BP        , OTYPE_NONE  },
+    [0x5E] = { N_POP    , R_SI        , OTYPE_NONE  },
+    [0x5F] = { N_POP    , R_DI        , OTYPE_NONE  },
     // 0x60
     [0x60] = { N_PUSHA  , OTYPE_NONE  , OTYPE_NONE  },
     [0x61] = { N_POPA   , OTYPE_NONE  , OTYPE_NONE  },
     // 0x70
     // 0x80
+    [0x88] = { N_MOV    , OTYPE_RM8   , OTYPE_R8  },
     // 0x90
     // 0xA0
+    [0xA4] = { N_MOVSB  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xA5] = { N_MOVSW  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xA6] = { N_CMPSB  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xA7] = { N_CMPSW  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xAA] = { N_STOSB  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xAB] = { N_STOSW  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xAC] = { N_LODSB  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xAD] = { N_LODSW  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xAE] = { N_SCASB  , OTYPE_NONE  , OTYPE_NONE  },
+    [0xAF] = { N_SCASW  , OTYPE_NONE  , OTYPE_NONE  },
     // 0xB0
     [0xB0] = { N_MOV    , R_AL        , OTYPE_IMM8  },
     [0xB1] = { N_MOV    , R_CL        , OTYPE_IMM8  },
@@ -167,15 +310,36 @@ static const struct InstructionInfo {
     [0xBE] = { N_MOV    , R_SI        , OTYPE_IMM16 },
     [0xBF] = { N_MOV    , R_DI        , OTYPE_IMM16 },
     // 0xC0
+    [0xC3] = { N_RET    , OTYPE_NONE  , OTYPE_NONE  },
     [0xCC] = { N_INT3   , OTYPE_NONE  , OTYPE_NONE  },
     [0xCD] = { N_INT    , OTYPE_IMM8  , OTYPE_NONE  },
     // 0xD0
     // 0xE0
-    [0xE8] ={ N_CALL    , OTYPE_REL16 , OTYPE_NONE  },
+    [0xE8] = { N_CALL    , OTYPE_REL16 , OTYPE_NONE  },
+    [0xEB] = { N_JMP     , OTYPE_REL8  , OTYPE_NONE  },
     // 0xF0
 };
 
-U2 Decode(U2 offset)
+static const struct InstructionInfo Instructions0F[256] = {
+    [0x80] = { N_JO      , OTYPE_REL16 , OTYPE_NONE  },
+    [0x81] = { N_JNO     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x82] = { N_JC      , OTYPE_REL16 , OTYPE_NONE  },
+    [0x83] = { N_JNC     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x84] = { N_JZ      , OTYPE_REL16 , OTYPE_NONE  },
+    [0x85] = { N_JNZ     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x86] = { N_JNA     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x87] = { N_JA      , OTYPE_REL16 , OTYPE_NONE  },
+    [0x88] = { N_JS      , OTYPE_REL16 , OTYPE_NONE  },
+    [0x89] = { N_JNS     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x8a] = { N_JPE     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x8b] = { N_JPO     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x8c] = { N_JL      , OTYPE_REL16 , OTYPE_NONE  },
+    [0x8d] = { N_JNL     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x8e] = { N_JNG     , OTYPE_REL16 , OTYPE_NONE  },
+    [0x8f] = { N_JG      , OTYPE_REL16 , OTYPE_NONE  },
+};
+
+U1 Decode(U2 offset)
 {
     const U2 start = offset;
     Prefixes = 0;
@@ -194,16 +358,38 @@ U2 Decode(U2 offset)
 
     U1 inst = READ_U1(offset);
     ++offset;
+    struct InstructionInfo* II;
     if (inst == 0x0F) {
-        Error("Two byte instructions not supported. Next byte: %02X", READ_U1(offset));
+        inst = READ_U1(offset);
+        ++offset;
+        II = &Instructions0F[inst];
+        if (!II->name) {
+            Error("Instruction not implemented: 0F %02X\n", inst);
+        }
+    } else {
+        II = &Instructions[inst];
+        if (!II->name) {
+            Error("Instruction not implemented: %02X\n", inst);
+        }
     }
 
-    const struct InstructionInfo* II = &Instructions[inst];
-    if (!II->name) {
-        Error("Instruction not implemented: %02X\n", inst);
+    if (OTYPE_HAS_MODRM(II->op1) || OTYPE_HAS_MODRM(II->op2)) {
+        ModRM = READ_U1(offset);
+        ++offset;
+
+        if ((ModRM & 0xC0) == 0xC0) {
+            const U1 rm = OTYPE_HAS_MODRM(II->op1) && (II->op1 == OTYPE_RM8 || II->op1 == OTYPE_RM16) ? II->op1 : II->op2;
+            strcpy(RMText, RegNames[((ModRM>>3)&7) + (rm == OTYPE_RM8 ? R_AL : R_AX)]);
+        } else if ((ModRM & 0xC7) == 6) {
+            snprintf(RMText, OP_TEXT_MAX, "0x%04X", READ_U2(offset));
+            offset += 2;
+        } else {
+            Error("Not implemented: ModRM %02X", ModRM);
+        }
     }
 
-    if (II->op1 == OTYPE_IMM8 || II->op2 == OTYPE_IMM8) {
+    if (II->op1 == OTYPE_IMM8 || II->op2 == OTYPE_IMM8
+        || II->op1 == OTYPE_REL8 || II->op2 == OTYPE_REL8) {
         Immediate.I8 = READ_U1(offset);
         ++offset;
     } else if (II->op1 == OTYPE_IMM16 || II->op2 == OTYPE_IMM16
@@ -217,13 +403,17 @@ U2 Decode(U2 offset)
     }
 
     for (U2 i = start; i < offset; ++i) {
-        printf("%02X ", READ_U1(i));
+        printf("%02X", READ_U1(i));
     }
 
-    const U1 InstMaxBytes = 6;
-    assert(offset-start < InstMaxBytes);
-    for (U2 i = InstMaxBytes-(offset-start); i--; ) {
-        printf("   ");
+    const U1 InstMaxLen = 8;
+    const U2 InstLen = offset-start;
+    assert(InstLen < InstMaxLen);
+
+    CurrentAddress += InstLen; // Increment before resolving Rel8/Rel16
+
+    for (U2 i = InstLen; i < InstMaxLen; ++i) {
+        printf("  ");
     }
 
     if (II->op1 != OTYPE_NONE) {
@@ -242,16 +432,17 @@ U2 Decode(U2 offset)
     }
     printf("\n");
 
-    return offset;
+    return (U1)InstLen;
 }
 
 int main(void)
 {
-    ReadFile("../tests/t01.ref");
+    ReadFile("../tests/t04.ref");
     CurrentAddress = 0x0100;
     for (U2 offset = 0; offset < FileSize;) {
-        printf("%04X ", CurrentAddress+offset);
-        offset = Decode(offset);
+        printf("%04X ", CurrentAddress);
+        const U1 len = Decode(offset);
+        offset += len;
     }
     free(File);
 }
