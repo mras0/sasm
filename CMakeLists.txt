@@ -22,6 +22,7 @@ endif()
 
 add_executable(sasm sasm.c)
 add_executable(disktool disktool.c)
+add_executable(disasm disasm.c)
 
 macro(SASM INPUT OUTPUT)
     set(OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/${OUTPUT}")
