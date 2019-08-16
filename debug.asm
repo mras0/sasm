@@ -181,6 +181,9 @@ Disasm:
 .PadDone:
         mov dx, [InstInfo]
         ; TODO: Handle instruction name missing...
+        push dx
+        call PutRemPrefixes
+        pop dx
         call PutString
         mov al, [InstInfo+2]
         cmp al, OTYPE_NONE
@@ -201,7 +204,9 @@ Disasm:
         ret
 
 GetPrefixes:
+        mov byte [Prefixes], 0
         mov si, [CodeOff]
+.GPs:
         mov al, [es:si]
         mov ah, PREFIX_LOCK
         cmp al, 0xF0
@@ -224,19 +229,28 @@ GetPrefixes:
         mov ah, PREFIX_CS
         cmp al, 0x3E
         je .Next
+        mov [CodeOff], si
         ret
 .Next:
         or byte [Prefixes], ah
-        inc word [CodeOff]
-        jmp GetPrefixes
+        inc si
+        jmp .GPs
 
-; Get instruction byte to al (and increment CodeOff)
+; Get instruction byte to AL (and increment CodeOff)
 GetIByte:
         push si
         mov si, [CodeOff]
         mov al, [es:si]
         inc word [CodeOff]
         pop si
+        ret
+
+; Get word to AX (using GetIByte)
+GetIWord:
+        call GetIByte
+        mov ah, al
+        call GetIByte
+        xchg al, ah
         ret
 
 GetInstruction:
@@ -347,6 +361,7 @@ GetRM:
         jmp Fatal
 .MsgMoff: db 'OTYPE_MOFF not implemented in GetRM$'
 .ModRM:
+        mov di, RMText
         mov bl, [ModRM]
         mov ch, bl
         mov cl, 6
@@ -366,23 +381,48 @@ GetRM:
         add bl, cl
         add bx, bx
         mov ax, [RegNames+bx]
-        mov [RMText], ax
-        mov byte [RMText+2], '$'
+        mov [di], ax
+        mov byte [di+2], '$'
         ret
 .NotReg:
+        mov byte [es:di], '['
+        inc di
+        ; TODO: Segment override
         mov bh, bl
         and bh, 0xC7
         cmp bh, 6
-        je .RMNotImpl ; raw disp16
-        mov dx, .XXX
-        jmp Fatal
-        .XXX: db 'XXX$'
-.RMNotImpl:
+        jne .NotRawDisp16
+        call GetIWord
+        call .CvtRMWord
+        mov byte [es:di], ']'
+        mov byte [es:di+1], '$'
+        ret
+.NotRawDisp16:
         mov al, [ModRM]
         call PutHexByte
         mov dx, .MsgX
         jmp Fatal
 .MsgX: db ' <- handle this ModRM byte$'
+.CvtRMWord:
+        mov word [es:di], '0x'
+        add di, 2
+        mov cl, 4
+        mov ch, 4
+.Cvt:
+        rol ax, cl
+        push ax
+        and al, 0x0f
+        add al, '0'
+        cmp al, '9'
+        jbe .CvtStore
+        add al, 7
+.CvtStore:
+        mov [es:di], al
+        inc di
+        pop ax
+        dec ch
+        jnz .Cvt
+        ret
 
 Put2Chars:
         call PutChar
@@ -460,291 +500,332 @@ PutOp:
         mov dx, RMText
         jmp PutString
 
+PutRemPrefixes:
+        mov al, [Prefixes]
+        and al, al
+        jz .Done
+.Handle:
+        test al, PREFIX_LOCK
+        jz .P1
+        mov dx, N_LOCK
+        call .PutWSpace
+.P1:
+        test al, PREFIX_F2
+        jz .P2
+        mov dx, N_REPNZ
+        call .PutWSpace
+.P2:
+        test al, PREFIX_F3
+        jz .P3
+        mov dx, N_REPZ
+        mov bl, [InstBytes]
+        cmp bl, 0xA6 ; CMPSB
+        je .PutRepz
+        cmp bl, 0xA7 ; CMPSW
+        je .PutRepz
+        cmp bl, 0xAE ; SCASB
+        je .PutRepz
+        cmp bl, 0xAF ; SCASW
+        je .PutRepz
+        mov dx, N_REP
+.PutRepz:
+        call .PutWSpace
+.P3:
+        and al, ~(PREFIX_LOCK|PREFIX_F2|PREFIX_F3)
+        jz .Done
+        call PutHexByte
+        mov dx, .MsgTODO
+        jmp Fatal
+.Done:
+        ret
+.MsgTODO: db ' <- Handle this Preifx in PutRemPrefixes$'
+.PutWSpace:
+        call PutString
+        jmp PutSpace
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-RegNames:
-    dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
-    dw 'AX', 'CX', 'DX', 'BX', 'SP', 'BP', 'SI', 'DI'
-    dw 'ES', 'CS', 'SS', 'DS'
-
 MainTab:
-        ; 00
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 10
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 20
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw N_SUB            , OTYPE_RM16  | OTYPE_R16   << 8
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 30
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 40
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 50
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 60
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 70
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 80
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; 90
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; A0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; B0
-        dw N_MOV            , OTYPE_AL    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_CL    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_DL    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_BL    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_AH    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_CH    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_DH    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_BH    | OTYPE_IMM8  << 8
-        dw N_MOV            , OTYPE_AX    | OTYPE_IMM16 << 8
-        dw N_MOV            , OTYPE_CX    | OTYPE_IMM16 << 8
-        dw N_MOV            , OTYPE_DX    | OTYPE_IMM16 << 8
-        dw N_MOV            , OTYPE_BX    | OTYPE_IMM16 << 8
-        dw N_MOV            , OTYPE_SP    | OTYPE_IMM16 << 8
-        dw N_MOV            , OTYPE_BP    | OTYPE_IMM16 << 8
-        dw N_MOV            , OTYPE_SI    | OTYPE_IMM16 << 8
-        dw N_MOV            , OTYPE_DI    | OTYPE_IMM16 << 8
-        ; C0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; D0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; E0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        ; F0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
-        dw                0 , 0
+    ; 0x00
+    dw N_ADD    , OTYPE_RM8    | OTYPE_R8    << 8 ; x0
+    dw N_ADD    , OTYPE_RM16   | OTYPE_R16   << 8 ; x1
+    dw N_ADD    , OTYPE_R8     | OTYPE_RM8   << 8 ; x2
+    dw N_ADD    , OTYPE_R16    | OTYPE_RM16  << 8 ; x3
+    dw N_ADD    , OTYPE_AL     | OTYPE_IMM8  << 8 ; x4
+    dw N_ADD    , OTYPE_AX     | OTYPE_IMM16 << 8 ; x5
+    dw N_PUSH   , OTYPE_ES     | OTYPE_NONE  << 8 ; x6
+    dw N_POP    , OTYPE_ES     | OTYPE_NONE  << 8 ; x7
+    dw N_OR     , OTYPE_RM8    | OTYPE_R8    << 8 ; x8
+    dw N_OR     , OTYPE_RM16   | OTYPE_R16   << 8 ; x9
+    dw N_OR     , OTYPE_R8     | OTYPE_RM8   << 8 ; xA
+    dw N_OR     , OTYPE_R16    | OTYPE_RM16  << 8 ; xB
+    dw N_OR     , OTYPE_AL     | OTYPE_IMM8  << 8 ; xC
+    dw N_OR     , OTYPE_AX     | OTYPE_IMM16 << 8 ; xD
+    dw N_PUSH   , OTYPE_CS     | OTYPE_NONE  << 8 ; xE
+    dw 0        , 0 ; 0x0F -> Two byte instruction  xF
+    ; 0x10
+    dw N_ADC    , OTYPE_RM8    | OTYPE_R8    << 8 ; x0
+    dw N_ADC    , OTYPE_RM16   | OTYPE_R16   << 8 ; x1
+    dw N_ADC    , OTYPE_R8     | OTYPE_RM8   << 8 ; x2
+    dw N_ADC    , OTYPE_R16    | OTYPE_RM16  << 8 ; x3
+    dw N_ADC    , OTYPE_AL     | OTYPE_IMM8  << 8 ; x4
+    dw N_ADC    , OTYPE_AX     | OTYPE_IMM16 << 8 ; x5
+    dw N_PUSH   , OTYPE_SS     | OTYPE_NONE  << 8 ; x6
+    dw N_POP    , OTYPE_SS     | OTYPE_NONE  << 8 ; x7
+    dw N_SBB    , OTYPE_RM8    | OTYPE_R8    << 8 ; x8
+    dw N_SBB    , OTYPE_RM16   | OTYPE_R16   << 8 ; x9
+    dw N_SBB    , OTYPE_R8     | OTYPE_RM8   << 8 ; xA
+    dw N_SBB    , OTYPE_R16    | OTYPE_RM16  << 8 ; xB
+    dw N_SBB    , OTYPE_AL     | OTYPE_IMM8  << 8 ; xC
+    dw N_SBB    , OTYPE_AX     | OTYPE_IMM16 << 8 ; xD
+    dw N_PUSH   , OTYPE_DS     | OTYPE_NONE  << 8 ; xE
+    dw N_POP    , OTYPE_DS     | OTYPE_NONE  << 8 ; xF
+    ; 0x20
+    dw N_AND    , OTYPE_RM8    | OTYPE_R8    << 8 ; x0
+    dw N_AND    , OTYPE_RM16   | OTYPE_R16   << 8 ; x1
+    dw N_AND    , OTYPE_R8     | OTYPE_RM8   << 8 ; x2
+    dw N_AND    , OTYPE_R16    | OTYPE_RM16  << 8 ; x3
+    dw N_AND    , OTYPE_AL     | OTYPE_IMM8  << 8 ; x4
+    dw N_AND    , OTYPE_AX     | OTYPE_IMM16 << 8 ; x5
+    dw 0        , 0 ; PREFIX_ES                     x6
+    dw N_DAA    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x7
+    dw N_SUB    , OTYPE_RM8    | OTYPE_R8    << 8 ; x8
+    dw N_SUB    , OTYPE_RM16   | OTYPE_R16   << 8 ; x9
+    dw N_SUB    , OTYPE_R8     | OTYPE_RM8   << 8 ; xA
+    dw N_SUB    , OTYPE_R16    | OTYPE_RM16  << 8 ; xB
+    dw N_SUB    , OTYPE_AL     | OTYPE_IMM8  << 8 ; xC
+    dw N_SUB    , OTYPE_AX     | OTYPE_IMM16 << 8 ; xD
+    dw 0        , 0 ; PREFIX_CS                   ; xE
+    dw N_DAS    , OTYPE_NONE   | OTYPE_NONE  << 8 ; xF
+    ; 0x30
+    dw N_XOR    , OTYPE_RM8    | OTYPE_R8    << 8 ; x0
+    dw N_XOR    , OTYPE_RM16   | OTYPE_R16   << 8 ; x1
+    dw N_XOR    , OTYPE_R8     | OTYPE_RM8   << 8 ; x2
+    dw N_XOR    , OTYPE_R16    | OTYPE_RM16  << 8 ; x3
+    dw N_XOR    , OTYPE_AL     | OTYPE_IMM8  << 8 ; x4
+    dw N_XOR    , OTYPE_AX     | OTYPE_IMM16 << 8 ; x5
+    dw 0        , 0 ; PREFIX_SS                   ; x6
+    dw N_AAA    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x7
+    dw N_CMP    , OTYPE_RM8    | OTYPE_R8    << 8 ; x8
+    dw N_CMP    , OTYPE_RM16   | OTYPE_R16   << 8 ; x9
+    dw N_CMP    , OTYPE_R8     | OTYPE_RM8   << 8 ; xA
+    dw N_CMP    , OTYPE_R16    | OTYPE_RM16  << 8 ; xB
+    dw N_CMP    , OTYPE_AL     | OTYPE_IMM8  << 8 ; xC
+    dw N_CMP    , OTYPE_AX     | OTYPE_IMM16 << 8 ; xD
+    dw 0        , 0 ; PREFIX_DS                   ; xE
+    dw N_AAS    , OTYPE_NONE   | OTYPE_NONE  << 8 ; xF
+    ; 0x40
+    dw N_INC    , OTYPE_AX     | OTYPE_NONE  << 8 ; x0
+    dw N_INC    , OTYPE_CX     | OTYPE_NONE  << 8 ; x1
+    dw N_INC    , OTYPE_DX     | OTYPE_NONE  << 8 ; x2
+    dw N_INC    , OTYPE_BX     | OTYPE_NONE  << 8 ; x3
+    dw N_INC    , OTYPE_SP     | OTYPE_NONE  << 8 ; x4
+    dw N_INC    , OTYPE_BP     | OTYPE_NONE  << 8 ; x5
+    dw N_INC    , OTYPE_SI     | OTYPE_NONE  << 8 ; x6
+    dw N_INC    , OTYPE_DI     | OTYPE_NONE  << 8 ; x7
+    dw N_DEC    , OTYPE_AX     | OTYPE_NONE  << 8 ; x8
+    dw N_DEC    , OTYPE_CX     | OTYPE_NONE  << 8 ; x9
+    dw N_DEC    , OTYPE_DX     | OTYPE_NONE  << 8 ; xA
+    dw N_DEC    , OTYPE_BX     | OTYPE_NONE  << 8 ; xB
+    dw N_DEC    , OTYPE_SP     | OTYPE_NONE  << 8 ; xC
+    dw N_DEC    , OTYPE_BP     | OTYPE_NONE  << 8 ; xD
+    dw N_DEC    , OTYPE_SI     | OTYPE_NONE  << 8 ; xE
+    dw N_DEC    , OTYPE_DI     | OTYPE_NONE  << 8 ; xF
+    ; 0x50
+    dw N_PUSH   , OTYPE_AX     | OTYPE_NONE  << 8 ; x0
+    dw N_PUSH   , OTYPE_CX     | OTYPE_NONE  << 8 ; x1
+    dw N_PUSH   , OTYPE_DX     | OTYPE_NONE  << 8 ; x2
+    dw N_PUSH   , OTYPE_BX     | OTYPE_NONE  << 8 ; x3
+    dw N_PUSH   , OTYPE_SP     | OTYPE_NONE  << 8 ; x4
+    dw N_PUSH   , OTYPE_BP     | OTYPE_NONE  << 8 ; x5
+    dw N_PUSH   , OTYPE_SI     | OTYPE_NONE  << 8 ; x6
+    dw N_PUSH   , OTYPE_DI     | OTYPE_NONE  << 8 ; x7
+    dw N_POP    , OTYPE_AX     | OTYPE_NONE  << 8 ; x8
+    dw N_POP    , OTYPE_CX     | OTYPE_NONE  << 8 ; x9
+    dw N_POP    , OTYPE_DX     | OTYPE_NONE  << 8 ; xA
+    dw N_POP    , OTYPE_BX     | OTYPE_NONE  << 8 ; xB
+    dw N_POP    , OTYPE_SP     | OTYPE_NONE  << 8 ; xC
+    dw N_POP    , OTYPE_BP     | OTYPE_NONE  << 8 ; xD
+    dw N_POP    , OTYPE_SI     | OTYPE_NONE  << 8 ; xE
+    dw N_POP    , OTYPE_DI     | OTYPE_NONE  << 8 ; xF
+    ; 0x60
+    dw N_PUSHA  , OTYPE_NONE   | OTYPE_NONE  << 8 ; x0
+    dw N_POPA   , OTYPE_NONE   | OTYPE_NONE  << 8 ; x1
+    dw 0        , 0                               ; x2
+    dw 0        , 0                               ; x3
+    dw 0        , 0                               ; x4
+    dw 0        , 0                               ; x5
+    dw 0        , 0                               ; x6
+    dw 0        , 0                               ; x7
+    dw N_PUSH   , OTYPE_IMM16  | OTYPE_NONE  << 8 ; x8
+    dw 0        , 0                               ; x9
+    dw N_PUSH   , OTYPE_IMM8   | OTYPE_NONE  << 8 ; xA
+    dw 0        , 0                               ; xB
+    dw N_INSB   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xC
+    dw N_INSW   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xD
+    dw N_OUTSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xE
+    dw N_OUTSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xF
+    ; 0x70
+    dw N_JO     , OTYPE_REL8   | OTYPE_NONE  << 8 ; x0
+    dw N_JNO    , OTYPE_REL8   | OTYPE_NONE  << 8 ; x1
+    dw N_JC     , OTYPE_REL8   | OTYPE_NONE  << 8 ; x2
+    dw N_JNC    , OTYPE_REL8   | OTYPE_NONE  << 8 ; x3
+    dw N_JZ     , OTYPE_REL8   | OTYPE_NONE  << 8 ; x4
+    dw N_JNZ    , OTYPE_REL8   | OTYPE_NONE  << 8 ; x5
+    dw N_JNA    , OTYPE_REL8   | OTYPE_NONE  << 8 ; x6
+    dw N_JA     , OTYPE_REL8   | OTYPE_NONE  << 8 ; x7
+    dw N_JS     , OTYPE_REL8   | OTYPE_NONE  << 8 ; x8
+    dw N_JNS    , OTYPE_REL8   | OTYPE_NONE  << 8 ; x9
+    dw N_JPE    , OTYPE_REL8   | OTYPE_NONE  << 8 ; xA
+    dw N_JPO    , OTYPE_REL8   | OTYPE_NONE  << 8 ; xB
+    dw N_JL     , OTYPE_REL8   | OTYPE_NONE  << 8 ; xC
+    dw N_JNL    , OTYPE_REL8   | OTYPE_NONE  << 8 ; xD
+    dw N_JNG    , OTYPE_REL8   | OTYPE_NONE  << 8 ; xE
+    dw N_JG     , OTYPE_REL8   | OTYPE_NONE  << 8 ; xF
+    ; 0x80
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x0
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x1
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x2
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x3
+    dw N_TEST   , OTYPE_RM8    | OTYPE_R8    << 8 ; x4
+    dw N_TEST   , OTYPE_RM16   | OTYPE_R16   << 8 ; x5
+    dw N_XCHG   , OTYPE_R8     | OTYPE_RM8   << 8 ; x6
+    dw N_XCHG   , OTYPE_R16    | OTYPE_RM16  << 8 ; x7
+    dw N_MOV    , OTYPE_RM8    | OTYPE_R8    << 8 ; x8
+    dw N_MOV    , OTYPE_RM16   | OTYPE_R16   << 8 ; x9
+    dw N_MOV    , OTYPE_R8     | OTYPE_RM8   << 8 ; xA
+    dw N_MOV    , OTYPE_R16    | OTYPE_RM16  << 8 ; xB
+    dw N_MOV    , OTYPE_RM16   | OTYPE_SREG  << 8 ; xC
+    dw N_LEA    , OTYPE_R16    | OTYPE_RM16  << 8 ; xD
+    dw N_MOV    , OTYPE_SREG   | OTYPE_RM16  << 8 ; xE
+    dw 0        , 0                               ; xF
+    ; 0x90
+    dw N_NOP    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x0
+    dw N_XCHG   , OTYPE_CX     | OTYPE_AX    << 8 ; x1
+    dw N_XCHG   , OTYPE_DX     | OTYPE_AX    << 8 ; x2
+    dw N_XCHG   , OTYPE_BX     | OTYPE_AX    << 8 ; x3
+    dw N_XCHG   , OTYPE_SP     | OTYPE_AX    << 8 ; x4
+    dw N_XCHG   , OTYPE_BP     | OTYPE_AX    << 8 ; x5
+    dw N_XCHG   , OTYPE_SI     | OTYPE_AX    << 8 ; x6
+    dw N_XCHG   , OTYPE_DI     | OTYPE_AX    << 8 ; x7
+    dw N_CBW    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x8
+    dw N_CWD    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x9
+    dw 0        , 0                               ; xA
+    dw 0        , 0                               ; xB
+    dw N_PUSHF  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xC
+    dw N_POPF   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xD
+    dw N_SAHF   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xE
+    dw N_LAHF   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xF
+    ; 0xA0
+    dw N_MOV    , OTYPE_AL     | OTYPE_MOFF  << 8 ; x0
+    dw N_MOV    , OTYPE_AX     | OTYPE_MOFF  << 8 ; x1
+    dw N_MOV    , OTYPE_MOFF   | OTYPE_AL    << 8 ; x2
+    dw N_MOV    , OTYPE_MOFF   | OTYPE_AX    << 8 ; x3
+    dw N_MOVSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; x4
+    dw N_MOVSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; x5
+    dw N_CMPSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; x6
+    dw N_CMPSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; x7
+    dw 0        , 0                               ; x8
+    dw 0        , 0                               ; x9
+    dw N_STOSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xA
+    dw N_STOSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xB
+    dw N_LODSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xC
+    dw N_LODSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xD
+    dw N_SCASB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xE
+    dw N_SCASW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; xF
+    ; 0xB0
+    dw N_MOV    , OTYPE_AL     | OTYPE_IMM8  << 8 ; x0
+    dw N_MOV    , OTYPE_CL     | OTYPE_IMM8  << 8 ; x1
+    dw N_MOV    , OTYPE_DL     | OTYPE_IMM8  << 8 ; x2
+    dw N_MOV    , OTYPE_BL     | OTYPE_IMM8  << 8 ; x3
+    dw N_MOV    , OTYPE_AH     | OTYPE_IMM8  << 8 ; x4
+    dw N_MOV    , OTYPE_CH     | OTYPE_IMM8  << 8 ; x5
+    dw N_MOV    , OTYPE_DH     | OTYPE_IMM8  << 8 ; x6
+    dw N_MOV    , OTYPE_BH     | OTYPE_IMM8  << 8 ; x7
+    dw N_MOV    , OTYPE_AX     | OTYPE_IMM16 << 8 ; x8
+    dw N_MOV    , OTYPE_CX     | OTYPE_IMM16 << 8 ; x9
+    dw N_MOV    , OTYPE_DX     | OTYPE_IMM16 << 8 ; xA
+    dw N_MOV    , OTYPE_BX     | OTYPE_IMM16 << 8 ; xB
+    dw N_MOV    , OTYPE_SP     | OTYPE_IMM16 << 8 ; xC
+    dw N_MOV    , OTYPE_BP     | OTYPE_IMM16 << 8 ; xD
+    dw N_MOV    , OTYPE_SI     | OTYPE_IMM16 << 8 ; xE
+    dw N_MOV    , OTYPE_DI     | OTYPE_IMM16 << 8 ; xF
+    ; 0xC0
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x0
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x1
+    dw N_RET    , OTYPE_IMM16  | OTYPE_NONE  << 8 ; x2
+    dw N_RET    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x3
+    dw N_LES    , OTYPE_R16    | OTYPE_RM16  << 8 ; x4
+    dw N_LDS    , OTYPE_R16    | OTYPE_RM16  << 8 ; x5
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x6
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x7
+    dw N_RETF   , OTYPE_IMM16  | OTYPE_NONE  << 8 ; xA
+    dw N_RETF   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xB
+    dw N_INT3   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xC
+    dw N_INT    , OTYPE_IMM8   | OTYPE_NONE  << 8 ; xD
+    dw N_INTO   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xE
+    dw N_IRET   , OTYPE_NONE   | OTYPE_NONE  << 8 ; xF
+    ; 0xD0
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x0
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x1
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x2
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x3
+    dw N_AAM    , OTYPE_IMM8   | OTYPE_NONE  << 8 ; x4
+    dw N_AAD    , OTYPE_IMM8   | OTYPE_NONE  << 8 ; x5
+    dw 0        , 0                               ; x6
+    dw N_XLATB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; x7
+    dw 0        , 0                               ; x8
+    dw 0        , 0                               ; x9
+    dw 0        , 0                               ; xA
+    dw 0        , 0                               ; xB
+    dw 0        , 0                               ; xC
+    dw 0        , 0                               ; xD
+    dw 0        , 0                               ; xE
+    dw 0        , 0                               ; xF
+    ; 0xE0
+    dw N_LOOPNE , OTYPE_REL8   | OTYPE_NONE  << 8 ; x0
+    dw N_LOOPE  , OTYPE_REL8   | OTYPE_NONE  << 8 ; x1
+    dw N_LOOP   , OTYPE_REL8   | OTYPE_NONE  << 8 ; x2
+    dw N_JCXZ   , OTYPE_REL8   | OTYPE_NONE  << 8 ; x3
+    dw N_IN     , OTYPE_AL     | OTYPE_IMM8  << 8 ; x4
+    dw N_IN     , OTYPE_AX     | OTYPE_IMM8  << 8 ; x5
+    dw N_OUT    , OTYPE_IMM8   | OTYPE_AL    << 8 ; x6
+    dw N_OUT    , OTYPE_IMM8   | OTYPE_AX    << 8 ; x7
+    dw N_CALL   , OTYPE_REL16  | OTYPE_NONE  << 8 ; x8
+    dw N_JMP    , OTYPE_REL16  | OTYPE_NONE  << 8 ; x9
+    dw 0        , 0                               ; xA
+    dw N_JMP    , OTYPE_REL8   | OTYPE_NONE  << 8 ; xB
+    dw N_IN     , OTYPE_AL     | OTYPE_DX    << 8 ; xC
+    dw N_IN     , OTYPE_AX     | OTYPE_DX    << 8 ; xD
+    dw N_OUT    , OTYPE_DX     | OTYPE_AL    << 8 ; xE
+    dw N_OUT    , OTYPE_DX     | OTYPE_AX    << 8 ; xF
+    ; 0xF0
+    dw 0        , 0 ; LOCK                        ; x0
+    dw 0        , 0                               ; x1
+    dw 0        , 0 ; REPNE/REP                   ; x2
+    dw 0        , 0 ; REPE                        ; x3
+    dw N_HLT    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x4
+    dw N_CMC    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x5
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x6
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; x7
+    dw N_CLC    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x8
+    dw N_STC    , OTYPE_NONE   | OTYPE_NONE  << 8 ; x9
+    dw N_CLI    , OTYPE_NONE   | OTYPE_NONE  << 8 ; xA
+    dw N_STI    , OTYPE_NONE   | OTYPE_NONE  << 8 ; xB
+    dw N_CLD    , OTYPE_NONE   | OTYPE_NONE  << 8 ; xC
+    dw N_STD    , OTYPE_NONE   | OTYPE_NONE  << 8 ; xD
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; xE
+    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; xF
 
+N_LOCK:   db 'LOCK$'
 N_REP:    db 'REP$'
 N_REPZ:   db 'REPZ$'
 N_REPNZ:  db 'REPNZ$'
+R_ES:     db 'ES$'
+R_CS:     db 'CS$'
+R_SS:     db 'CS$'
+R_DS:     db 'DS$'
 
 N_AAA:    db 'AAA$'
 N_AAM:    db 'AAM$'
@@ -850,6 +931,11 @@ N_JL:     db 'JL$'
 N_JNL:    db 'JNL$'
 N_JNG:    db 'JNG$'
 N_JG:     db 'JG$'
+
+RegNames:
+    dw 'AL', 'CL', 'DL', 'BL', 'AH', 'CH', 'DH', 'BH'
+    dw 'AX', 'CX', 'DX', 'BX', 'SP', 'BP', 'SI', 'DI'
+    dw 'ES', 'CS', 'SS', 'DS'
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
