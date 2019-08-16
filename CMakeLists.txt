@@ -41,6 +41,7 @@ SASM(os.asm os.sys)
 SASM(cmdp.asm cmdp.com)
 SASM(uvi.asm uvi.com)
 SASM(insboot.asm insboot.com)
+SASM(debug.asm debug.com)
 
 set(DISK_IMG "${CMAKE_CURRENT_BINARY_DIR}/disk.img")
 
@@ -112,6 +113,12 @@ if (DOSBOX)
         COMMAND ${DOSBOX} sasm.com
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sasm.com"
+    )
+    add_custom_target(
+        test_debug
+        COMMAND ${DOSBOX} debug.com
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/debug.com"
     )
 endif()
 
