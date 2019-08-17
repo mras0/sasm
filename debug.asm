@@ -137,34 +137,8 @@ Start:
         ; Print prompt
         mov al, '-'
         call PutChar
-        ; Read command line
-        mov bx, CmdBuffer
-        mov word [bx], 0x7F
-        mov dx, bx
-        mov ah, 0x0a
-        int 0x21
-        call PutCrLf
-
-        mov si, CmdBuffer+2
-        ; Convert to upper case
-        xor ch, ch
-        mov cl, [si-1]
-        and cl, cl
-        jz .CmdLoop
-        xor bx, bx
-.ToUpper:
-        mov al, [si+bx]
-        cmp al, 'a'
-        jb .Next
-        cmp al, 'z'
-        ja .Next
-        and al, 0xDF
-        mov [si+bx], al
-.Next:
-        inc bx
-        cmp bl, cl
-        jne .ToUpper
-
+        call ReadCommand
+        jc .CmdLoop ; Blank line
         call CommandDispatch
         jmp .CmdLoop
 
@@ -243,18 +217,59 @@ Fatal:
         mov ax, 0x4CFF
         int 0x21
 
+; Read line to CmdBuffer, returns SI pointing to first non-blank char
+; Returns carry clear if non-empty
+ReadCommand:
+        ; Read command line
+        mov bx, CmdBuffer
+        mov word [bx], 0x7F
+        mov dx, bx
+        mov ah, 0x0a
+        int 0x21
+        call PutCrLf
+
+        mov si, CmdBuffer+2
+        ; Convert to upper case
+        xor ch, ch
+        mov cl, [si-1]
+        and cl, cl
+        jz .Blank
+        xor bx, bx
+.ToUpper:
+        mov al, [si+bx]
+        cmp al, 'a'
+        jb .Next
+        cmp al, 'z'
+        ja .Next
+        and al, 0xDF
+        mov [si+bx], al
+.Next:
+        inc bx
+        cmp bl, cl
+        jne .ToUpper
+        call CSkipSpaces
+        cmp byte [si], ' '
+        jbe .Blank
+        clc
+        ret
+.Blank:
+        stc
+        ret
+
 ; SI=Command line
 CommandDispatch:
-        call CSkipSpaces
         lodsb
         push ax
         call CSkipSpaces
         pop ax
+        cmp al, 'R'
+        je .CmdR
         cmp al, 'U'
         je .CmdU
         cmp al, 'Q'
         je .CmdQ
-        jmp InvalidCommmand
+        jmp short InvalidCommmand
+.CmdR:  jmp short Regs
 .CmdU:  jmp Unassemble
 .CmdQ: ; Q(uit)
         mov ax, 0x4c00
@@ -310,6 +325,170 @@ CGetNum:
         mov ax, dx
         clc
         ret
+
+; R(egister) [register]
+Regs:
+        cmp byte [si], ' '
+        ja .Edit
+        jmp .Show
+.Edit:
+        lodsw
+        cmp ax, 'F'|0x0D<<8
+        je .EditFlags
+        cmp byte [si], ' '
+        jbe .LenOK
+.Bad:
+        jmp InvalidCommmand
+.EditFlags:
+        call .PutFlags
+        call PutSpace
+        mov al, '-'
+        call PutChar
+        call ReadCommand
+        jc .Done
+.GetF:
+        lodsw
+        cmp byte [si], ' '
+        ja .Bad
+        mov dx, 1<<11
+        mov bx, .Flags
+.FindF:
+        cmp [bx], ax
+        jne .NotSet
+        or [Prog_F], dx
+        jmp short .NextF
+.NotSet:
+        cmp [bx+2], ax
+        jne .NotClr
+        not dx
+        and [Prog_F], dx
+        jmp short .NextF
+.NotClr:
+        shr dx, 1
+        add bx, 4
+        jnz .FindF
+        jmp short .Bad
+.NextF:
+        call CSkipSpaces
+        cmp byte [si], ' '
+        ja .GetF
+        jmp short .Done
+.LenOK:
+        mov si, .RegList
+        mov cx, 8+5 ; Scan both lists
+.MatchReg:
+        cmp [si], ax
+        je .FoundReg
+        add si, 4
+        dec cx
+        jnz .MatchReg
+        jmp InvalidCommmand
+.FoundReg:
+        mov bp, [si+2]
+        call PutChar
+        mov al, ah
+        call PutChar
+        call PutSpace
+        mov ax, [bp]
+        call PutHexWord
+        call PutCrLf
+        mov al, ':'
+        call PutChar
+        call ReadCommand
+        jc .Done
+        call CGetNum
+        jc .Done
+        mov [bp], ax
+.Done:
+        ret
+.Show:
+        mov si, .RegList
+        mov cx, 8
+        call .PutRegList
+        call PutCrLf
+        mov si, .RegList2
+        mov cx, 5
+        call .PutRegList
+        call PutSpace
+        call .PutFlags
+        call PutCrLf
+        mov dx, [Prog_CS]
+        mov ax, [Prog_IP]
+        mov es, dx
+        mov [DisOff], ax
+        call PutHexDword
+        call PutSpace
+        call Disasm
+        call PutCrLf
+        ret
+.PutFlags:
+        mov si, .Flags
+        mov dx, [Prog_F]
+        mov ax, 1<<11
+.DoFlags:
+        mov bx, [si]
+        and bx, bx
+        jz .SkipFlag
+        test dx, ax
+        jnz .PrintFlag
+        mov bx, [si+2]
+.PrintFlag:
+        push ax
+        mov al, bl
+        call PutChar
+        mov al, bh
+        call PutChar
+        call PutSpace
+        pop ax
+.SkipFlag:
+        add si, 4
+        shr ax, 1
+        jnz .DoFlags
+        ret
+.PutRegList:
+        lodsw
+        call PutChar
+        mov al, ah
+        call PutChar
+        mov al, '='
+        call PutChar
+        lodsw
+        mov bx, ax
+        mov ax, [bx]
+        call PutHexWord
+        call PutSpace
+        call PutSpace
+        dec cx
+        jnz .PutRegList
+        ret
+.RegList:
+        dw 'AX', Prog_AX
+        dw 'BX', Prog_BX
+        dw 'CX', Prog_CX
+        dw 'DX', Prog_DX
+        dw 'SP', Prog_SP
+        dw 'BP', Prog_BP
+        dw 'SI', Prog_SI
+        dw 'DI', Prog_DI
+.RegList2: ; Must follow .RegList!
+        dw 'DS', Prog_DS
+        dw 'ES', Prog_ES
+        dw 'SS', Prog_SS
+        dw 'CS', Prog_CS
+        dw 'IP', Prog_IP
+.Flags:
+        dw 'OV', 'NV' ; bit 11 Overflow
+        dw 'DN', 'UP' ; bit 10 Direction
+        dw 'EI', 'DI' ; bit 9  Interrupt
+        dw  0  , 0    ; bit 8  Trap
+        dw 'NG', 'PL' ; bit 7  Sign
+        dw 'ZR', 'NZ' ; bit 6  Zero
+        dw  0  , 0    ; bit 5  Reserved
+        dw 'AC', 'NA' ; bit 4  Adjust
+        dw 0   , 0    ; bit 3  Reserved
+        dw 'PE', 'PO' ; bit 2  Parity
+        dw 0   , 0    ; bit 1  Reserved
+        dw 'CY', 'NC' ; bit 0  Carry
 
 ; U(nassemble) [range]
 Unassemble:

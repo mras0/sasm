@@ -11,7 +11,7 @@ typedef short S2;
 
 #define TOKEN_MAX 16
 #define LABEL_MAX 200
-#define FIXUP_MAX 400
+#define FIXUP_MAX 500
 #define EQU_MAX   100
 #define OUTPUT_MAX 0x2000
 #define IF_MAX    8 // Maximum nesting of %if directives
