@@ -11,6 +11,8 @@
         org 0x100
         cpu 8086
 
+STACK_SIZE  equ 512
+
 PREFIX_LOCK equ 0x01
 PREFIX_F2   equ 0x02 ; REPNE/REPNZ
 PREFIX_F3   equ 0x04 ; REPE/REPZ
@@ -57,28 +59,103 @@ OTYPE_MASK_IMM   equ 0x20
 OTYPE_MASK_MODRM equ 0x40
 
 Start:
+        ; Clear BSS
         mov di, BssStart
         mov cx, ProgramEnd
         sub cx, di
         xor ax, ax
         rep stosb
 
-        mov [CodeSeg], cs
-        mov word [CodeOff], 0x100
+        cli
+        mov bx, ProgramEnd
+        add bx, 15
+        and bx, 0xFFF0
+        add bx, STACK_SIZE
+        mov sp, bx
+        mov cl, 4
+        shr bx, cl
+        mov ax, ds
+        add bx, ax
+        mov [FirstFreeSeg], bx
+        sti
+        ; Free remaining memory
+        mov ah, 0x4a
+        int 0x21
 
-        mov es, [CodeSeg]
+        xor bx, bx
+        mov bl, [0x80]
+        and bl, bl
+        jz .Usage
+        mov si, 0x81
+        mov byte [si+bx], 0 ; Change CR to NUL
+.SkipSpace:
+        lodsb
+        and al, al
+        jnz .CheckSpace
+.Usage:
+        mov dx, MsgErrUsage
+        jmp Fatal
+.CheckSpace:
+        cmp al, ' '
+        je .SkipSpace
+        dec si
+        mov dx, si
+        ; Open file
+        mov ax, 0x3D00
+        int 0x21
+        jnc .OpenOK
+        mov dx, MsgErrFileOpen
+        jmp Fatal
+.OpenOK:
+        mov bx, ax
+        push ds
+        mov ds, [FirstFreeSeg]
+        mov dx, 0x100
+        mov cx, 0xFF00
+        mov ah, 0x3F
+        int 0x21
+        pop ds
+        pushf
+        push ax
+        ; Close file
+        mov ah, 0x3E
+        int 0x21
+        pop ax
+        popf
+        jnc .ReadOK
+        call PutHexWord
+        call PutSpace
+        mov dx, MsgErrFileRead
+        jmp Fatal
+.ReadOK:
+        mov [FileSize], ax
+
+        mov es, [FirstFreeSeg]
+        mov word [CodeOff], 0x100
+        xor bp, bp
 .D:
         mov ax, [CodeOff]
-        cmp ax, ProgramEnd
+        mov bx, ax
+        sub bx, 0x100
+        cmp bx, [FileSize]
         jae .Done
 
         mov dx, es
         call PutHexDword
         call PutSpace
         call Disasm
+        inc bp
+        cmp bp, 24
+        jne .D
+        xor bp, bp
+        xor ax, ax
+        int 0x16
+        cmp al, 3
+        je .Done
         jmp .D
 .Done:
-        ret
+        mov ax, 0x4c00
+        int 0x21
 
 PutChar:
         push ax
@@ -180,7 +257,12 @@ Disasm:
         jnz .Pad
 .PadDone:
         mov dx, [InstInfo]
-        ; TODO: Handle instruction name missing...
+        and dx, dx
+        jnz .Normal
+        mov dx, N_UNKNOWN
+        call PutString
+        jmp short .Done
+.Normal:
         push dx
         call PutRemPrefixes
         pop dx
@@ -264,32 +346,50 @@ GetInstruction:
         ;
         call GetIByte
         mov [InstBytes], al
-        mov si, MainTab
         cmp al, 0x0F
         jne .OneByte
         call GetIByte
         mov [InstBytes+1], al
-        call PutHexByte
-        mov dx, .MsgErrNI
-        jmp Fatal
-.MsgErrNI:   db ' after 0F Not implemented in GetInstruction$'
+        ; For now, don't bother with complete table for 0F XX
+        cmp al, 0x80
+        jb .NotJcc
+        cmp al, 0x8F
+        ja .NotJcc
+        ; 0F 8x -> 7x with operand changed
+        xor bh, bh
+        mov bl, al
+        sub bl, 0x10
+        shl bx, 1
+        shl bx, 1
+        mov bx, [MainTab+bx]
+        mov ax, OTYPE_REL16 | OTYPE_NONE<<8
+        jmp short .CheckKnown
+.NotJcc:
+        ; MOVZX/MOVSX?
+        mov bx, N_MOVZX
+        cmp al, 0xB6
+        je .MovXX
+        mov bx, N_MOVSX
+        cmp al, 0xBE
+        je .MovXX
+        xor bx, bx
+        jmp short .CheckKnown
+.MovXX:
+        mov ax, OTYPE_R16 | OTYPE_RM8<<8
+        jmp short .CheckKnown
 .OneByte:
         xor bx, bx
         mov bl, al
         shl bx, 1
         shl bx, 1
-        mov ax, [si+bx+2] ; AX = args
-        mov bx, [si+bx]
+        mov ax, [MainTab+bx+2] ; AX = args
+        mov bx, [MainTab+bx]
+.CheckKnown:
         mov [InstInfo], bx
         mov [InstInfo+2], ax
         and bx, bx
         jnz .Known
-        mov al, [InstBytes]
-        call PutHexByte
-        call PutSpace
-        mov dx, .MsgErrNI2
-        jmp Fatal
-.MsgErrNI2:   db ' Not implemented in GetInstruction$'
+        ret
 .Known:
         ;
         ; Handle ModRM
@@ -420,7 +520,7 @@ GetRM:
         mov bh, PREFIX_DS
         test bl, bh
         jnz .DoSO
-        jmp .SODone
+        jmp short .SODone
 .DoSO:
         not bh
         and [Prefixes], bh
@@ -531,7 +631,7 @@ PutOp:
         je .Rel
         cmp al, OTYPE_REL16
         je .Rel
-        jmp .RM
+        jmp short .RM
 .Rel:
         add bx, [CodeOff]
 .Imm:
@@ -575,7 +675,6 @@ PutRemPrefixes:
         mov al, [Prefixes]
         and al, al
         jz .Done
-.Handle:
         test al, PREFIX_LOCK
         jz .P1
         mov dx, N_LOCK
@@ -604,16 +703,30 @@ PutRemPrefixes:
 .P3:
         and al, ~(PREFIX_LOCK|PREFIX_F2|PREFIX_F3)
         jz .Done
-        call PutHexByte
-        mov dx, .MsgTODO
-        jmp Fatal
+        test al, PREFIX_ES
+        jz .NoES
+        mov dx, N_ES
+        call .PutWSpace
+.NoES:
+        test al, PREFIX_CS
+        jz .NoCS
+        mov dx, N_CS
+        call .PutWSpace
+.NoCS:
+        test al, PREFIX_SS
+        jz .NoSS
+        mov dx, N_SS
+        call .PutWSpace
+.NoSS:
+        test al, PREFIX_DS
+        jz .Done
+        mov dx, N_DS
+        call .PutWSpace
 .Done:
         ret
-.MsgTODO: db ' <- Handle this Preifx in PutRemPrefixes$'
 .PutWSpace:
         call PutString
         jmp PutSpace
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -755,10 +868,10 @@ MainTab:
     dw N_JNG    , OTYPE_REL8   | OTYPE_NONE  << 8 ; 7E
     dw N_JG     , OTYPE_REL8   | OTYPE_NONE  << 8 ; 7F
     ; 0x80
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; 80
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; 81
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; 82
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; 83
+    dw Tab_80   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; 80
+    dw Tab_81   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; 81
+    dw Tab_80   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; 82
+    dw Tab_83   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; 83
     dw N_TEST   , OTYPE_RM8    | OTYPE_R8    << 8 ; 84
     dw N_TEST   , OTYPE_RM16   | OTYPE_R16   << 8 ; 85
     dw N_XCHG   , OTYPE_R8     | OTYPE_RM8   << 8 ; 86
@@ -823,8 +936,8 @@ MainTab:
     dw N_MOV    , OTYPE_SI     | OTYPE_IMM16 << 8 ; BE
     dw N_MOV    , OTYPE_DI     | OTYPE_IMM16 << 8 ; BF
     ; 0xC0
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; C0
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; C1
+    dw Tab_C0   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; C0
+    dw Tab_C1   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; C1
     dw N_RET    , OTYPE_IMM16  | OTYPE_NONE  << 8 ; C2
     dw N_RET    , OTYPE_NONE   | OTYPE_NONE  << 8 ; C3
     dw N_LES    , OTYPE_R16    | OTYPE_RM16  << 8 ; C4
@@ -841,9 +954,9 @@ MainTab:
     dw N_IRET   , OTYPE_NONE   | OTYPE_NONE  << 8 ; CF
     ; 0xD0
     dw Tab_D0   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; D0
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; D1
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; D2
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; D3
+    dw Tab_D1   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; D1
+    dw Tab_D2   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; D2
+    dw Tab_D3   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; D3
     dw N_AAM    , OTYPE_IMM8   | OTYPE_NONE  << 8 ; D4
     dw N_AAD    , OTYPE_IMM8   | OTYPE_NONE  << 8 ; D5
     dw 0        , 0                               ; D6
@@ -880,16 +993,66 @@ MainTab:
     dw 0        , 0 ; REPE                        ; F3
     dw N_HLT    , OTYPE_NONE   | OTYPE_NONE  << 8 ; F4
     dw N_CMC    , OTYPE_NONE   | OTYPE_NONE  << 8 ; F5
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; F6
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; F7
+    dw Tab_F6   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; F6
+    dw Tab_F7   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; F7
     dw N_CLC    , OTYPE_NONE   | OTYPE_NONE  << 8 ; F8
     dw N_STC    , OTYPE_NONE   | OTYPE_NONE  << 8 ; F9
     dw N_CLI    , OTYPE_NONE   | OTYPE_NONE  << 8 ; FA
     dw N_STI    , OTYPE_NONE   | OTYPE_NONE  << 8 ; FB
     dw N_CLD    , OTYPE_NONE   | OTYPE_NONE  << 8 ; FC
     dw N_STD    , OTYPE_NONE   | OTYPE_NONE  << 8 ; FD
-    dw 0,0;dw ??, OTYPE_RTAB   | OTYPE_NONE  << 8 ; FE
+    dw Tab_FE   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; FE
     dw Tab_FF   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; FF
+
+Tab_80:
+    dw N_ADD    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /0
+    dw N_OR     , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /1
+    dw N_ADC    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /2
+    dw N_SBB    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /3
+    dw N_AND    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /4
+    dw N_SUB    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /5
+    dw N_XOR    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /6
+    dw N_CMP    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /7
+
+Tab_81:
+    dw N_ADD    , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /0
+    dw N_OR     , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /1
+    dw N_ADC    , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /2
+    dw N_SBB    , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /3
+    dw N_AND    , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /4
+    dw N_SUB    , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /5
+    dw N_XOR    , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /6
+    dw N_CMP    , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /7
+
+Tab_83:
+    dw N_ADD    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /0
+    dw N_OR     , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /1
+    dw N_ADC    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /2
+    dw N_SBB    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /3
+    dw N_AND    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /4
+    dw N_SUB    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /5
+    dw N_XOR    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /6
+    dw N_CMP    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /7
+
+Tab_C0:
+    dw N_ROL    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /0
+    dw N_ROR    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /1
+    dw N_RCL    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /2
+    dw N_RCR    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /3
+    dw N_SHL    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /4
+    dw N_SHR    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /5
+    dw N_SHL    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /6
+    dw N_SAR    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /7
+
+Tab_C1:
+    dw N_ROL    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /0
+    dw N_ROR    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /1
+    dw N_RCL    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /2
+    dw N_RCR    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /3
+    dw N_SHL    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /4
+    dw N_SHR    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /5
+    dw N_SHL    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /6
+    dw N_SAR    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /7
 
 Tab_C6:
     dw N_MOV    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /0
@@ -920,6 +1083,66 @@ Tab_D0:
     dw N_SHL    , OTYPE_RM8    | OTYPE_1     << 8 ; /6
     dw N_SAR    , OTYPE_RM8    | OTYPE_1     << 8 ; /7
 
+Tab_D1:
+    dw N_ROL    , OTYPE_RM16   | OTYPE_1     << 8 ; /0
+    dw N_ROR    , OTYPE_RM16   | OTYPE_1     << 8 ; /1
+    dw N_RCL    , OTYPE_RM16   | OTYPE_1     << 8 ; /2
+    dw N_RCR    , OTYPE_RM16   | OTYPE_1     << 8 ; /3
+    dw N_SHL    , OTYPE_RM16   | OTYPE_1     << 8 ; /4
+    dw N_SHR    , OTYPE_RM16   | OTYPE_1     << 8 ; /5
+    dw N_SHL    , OTYPE_RM16   | OTYPE_1     << 8 ; /6
+    dw N_SAR    , OTYPE_RM16   | OTYPE_1     << 8 ; /7
+
+Tab_D2:
+    dw N_ROL    , OTYPE_RM8    | OTYPE_CL    << 8 ; /0
+    dw N_ROR    , OTYPE_RM8    | OTYPE_CL    << 8 ; /1
+    dw N_RCL    , OTYPE_RM8    | OTYPE_CL    << 8 ; /2
+    dw N_RCR    , OTYPE_RM8    | OTYPE_CL    << 8 ; /3
+    dw N_SHL    , OTYPE_RM8    | OTYPE_CL    << 8 ; /4
+    dw N_SHR    , OTYPE_RM8    | OTYPE_CL    << 8 ; /5
+    dw N_SHL    , OTYPE_RM8    | OTYPE_CL    << 8 ; /6
+    dw N_SAR    , OTYPE_RM8    | OTYPE_CL    << 8 ; /7
+
+Tab_D3:
+    dw N_ROL    , OTYPE_RM16   | OTYPE_CL    << 8 ; /0
+    dw N_ROR    , OTYPE_RM16   | OTYPE_CL    << 8 ; /1
+    dw N_RCL    , OTYPE_RM16   | OTYPE_CL    << 8 ; /2
+    dw N_RCR    , OTYPE_RM16   | OTYPE_CL    << 8 ; /3
+    dw N_SHL    , OTYPE_RM16   | OTYPE_CL    << 8 ; /4
+    dw N_SHR    , OTYPE_RM16   | OTYPE_CL    << 8 ; /5
+    dw N_SHL    , OTYPE_RM16   | OTYPE_CL    << 8 ; /6
+    dw N_SAR    , OTYPE_RM16   | OTYPE_CL    << 8 ; /7
+
+Tab_F6:
+    dw N_TEST   , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /0
+    dw N_TEST   , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /1
+    dw N_NOT    , OTYPE_RM8    | OTYPE_NONE  << 8 ; /2
+    dw N_NEG    , OTYPE_RM8    | OTYPE_NONE  << 8 ; /3
+    dw N_MUL    , OTYPE_RM8    | OTYPE_NONE  << 8 ; /4
+    dw N_IMUL   , OTYPE_RM8    | OTYPE_NONE  << 8 ; /5
+    dw N_DIV    , OTYPE_RM8    | OTYPE_NONE  << 8 ; /6
+    dw N_IDIV   , OTYPE_RM8    | OTYPE_NONE  << 8 ; /7
+
+Tab_F7:
+    dw N_TEST   , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /0
+    dw N_TEST   , OTYPE_RM16   | OTYPE_IMM16 << 8 ; /1
+    dw N_NOT    , OTYPE_RM16   | OTYPE_NONE  << 8 ; /2
+    dw N_NEG    , OTYPE_RM16   | OTYPE_NONE  << 8 ; /3
+    dw N_MUL    , OTYPE_RM16   | OTYPE_NONE  << 8 ; /4
+    dw N_IMUL   , OTYPE_RM16   | OTYPE_NONE  << 8 ; /5
+    dw N_DIV    , OTYPE_RM16   | OTYPE_NONE  << 8 ; /6
+    dw N_IDIV   , OTYPE_RM16   | OTYPE_NONE  << 8 ; /7
+
+Tab_FE:
+    dw N_INC    , OTYPE_RM8    | OTYPE_NONE  << 8 ; /0
+    dw N_DEC    , OTYPE_RM8    | OTYPE_NONE  << 8 ; /1
+    dw 0        , 0                               ; /2
+    dw 0        , 0                               ; /3
+    dw 0        , 0                               ; /4
+    dw 0        , 0                               ; /5
+    dw 0        , 0                               ; /6
+    dw 0        , 0                               ; /7
+
 Tab_FF:
     dw N_INC    , OTYPE_RM16   | OTYPE_NONE  << 8 ; /0
     dw N_DEC    , OTYPE_RM16   | OTYPE_NONE  << 8 ; /1
@@ -930,15 +1153,16 @@ Tab_FF:
     dw N_PUSH   , OTYPE_RM16   | OTYPE_NONE  << 8 ; /6
     dw 0        , 0                               ; /7
 
+N_UNKNOWN: db 'UNKNOWN$'
 
 N_LOCK:   db 'LOCK$'
 N_REP:    db 'REP$'
 N_REPZ:   db 'REPZ$'
 N_REPNZ:  db 'REPNZ$'
-R_ES:     db 'ES$'
-R_CS:     db 'CS$'
-R_SS:     db 'CS$'
-R_DS:     db 'DS$'
+N_ES:     db 'ES$'
+N_CS:     db 'CS$'
+N_SS:     db 'SS$'
+N_DS:     db 'DS$'
 
 N_AAA:    db 'AAA$'
 N_AAM:    db 'AAM$'
@@ -1061,11 +1285,16 @@ MN_7: db 'BX$'
 MemNames:
     dw MN_0, MN_1, MN_2, MN_3, MN_4, MN_5, MN_6, MN_7
 
+MsgErrUsage:     db 'Usage: DEBUG program$'
+MsgErrFileOpen:  db 'Error opening file$'
+MsgErrFileRead:  db 'Error reading from file$'
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 BssStart:
 
-CodeSeg:         resw 1
+FirstFreeSeg:    resw 1
+FileSize:        resw 1
 CodeOff:         resw 1
 Prefixes:        resb 1
 InstInfo:        resw 2

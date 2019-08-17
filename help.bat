@@ -12,5 +12,6 @@ echo   TYPE file (print file to screen with pause, CTRL+C to break)
 echo.
 echo Utilities:
 echo   SASM     Simple assembler
+echo   DEBUG    Bare bones debugger
 echo   UVI      Basic editor with VI-like keybindings
 echo   INSBOOT  Installs bootloader from file to current drive

@@ -60,6 +60,7 @@ add_custom_command(
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/insboot.asm"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/debug.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/uvi.asm"
     COMMAND disktool "${DISK_IMG}" list
     DEPENDS
@@ -75,6 +76,7 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/cmdp.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/insboot.asm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/debug.asm"
         "${CMAKE_CURRENT_SOURCE_DIR}/uvi.asm"
     )
 

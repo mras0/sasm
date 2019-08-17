@@ -6,6 +6,7 @@ sasm.com boot.asm boot.bin
 sasm.com os.asm os.sys
 sasm.com cmdp.asm cmdp.com
 sasm.com insboot.asm insboot.com
+sasm.com debug.asm debug.com
 sasm.com uvi.asm uvi.com
 echo About to install bootloader. Don't try this on real hardware!
 pause
