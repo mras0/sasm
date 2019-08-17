@@ -114,30 +114,41 @@ Start:
 
         mov es, bx
         mov word [CodeOff], 0x100
-        xor bp, bp
-.D:
-        mov ax, [CodeOff]
-        mov bx, ax
-        sub bx, 0x100
-        cmp bx, 0x20;[FileSize]
-        jae .Done
 
-        mov dx, es
-        call PutHexDword
-        call PutSpace
-        call Disasm
-        inc bp
-        cmp bp, 24
-        jne .D
-        xor bp, bp
-        xor ax, ax
-        int 0x16
-        cmp al, 3
-        je .Done
-        jmp .D
-.Done:
-        mov ax, 0x4c00
+.CmdLoop:
+        ; Print prompt
+        mov al, '-'
+        call PutChar
+        ; Read command line
+        mov bx, CmdBuffer
+        mov word [bx], 0x7F
+        mov dx, bx
+        mov ah, 0x0a
         int 0x21
+        call PutCrLf
+
+        mov si, CmdBuffer+2
+        ; Convert to upper case
+        xor ch, ch
+        mov cl, [si-1]
+        and cl, cl
+        jz .CmdLoop
+        xor bx, bx
+.ToUpper:
+        mov al, [si+bx]
+        cmp al, 'a'
+        jb .Next
+        cmp al, 'z'
+        ja .Next
+        and al, 0xDF
+        mov [si+bx], al
+.Next:
+        inc bx
+        cmp bl, cl
+        jne .ToUpper
+
+        call CommandDispatch
+        jmp .CmdLoop
 
 PutChar:
         push ax
@@ -213,6 +224,90 @@ Fatal:
         call PutString
         mov ax, 0x4CFF
         int 0x21
+
+; SI=Command line
+CommandDispatch:
+        call CSkipSpaces
+        lodsb
+        push ax
+        call CSkipSpaces
+        pop ax
+        cmp al, 'U'
+        je .CmdU
+        cmp al, 'Q'
+        je .CmdQ
+        mov dx, MsgErrInvCmd
+        call PutString
+        call PutCrLf
+        ret
+.CmdU:  jmp Unassemble
+.CmdQ: ; Q(uit)
+        mov ax, 0x4c00
+        int 0x21
+
+CSkipSpaces:
+        lodsb
+        cmp al, 0x0D
+        je .Done
+        cmp al, ' '
+        jbe CSkipSpaces
+.Done:
+        dec si
+        ret
+
+; Get number from command line to DX
+; returns carry clear on success
+CGetNum:
+        cmp byte [si], ' '
+        ja .NotEmpty
+        stc
+        ret
+.NotEmpty:
+        xor dx, dx
+        mov cl, 4
+.L:
+        lodsb
+        cmp al, ' '
+        jbe .Done
+        shl dx, cl
+        sub al, '0'
+        cmp al, 9
+        jbe .D
+        sub al, 7
+.D:
+        or dl, al
+        jmp .L
+.Done:
+        dec si
+        mov ax, dx
+        clc
+        ret
+
+; U(nassemble) [range]
+Unassemble:
+        mov bp, [CodeOff]
+        add bp, 0x20
+        call CGetNum
+        jc .U
+        mov [CodeOff], ax
+        mov bp, ax
+        add bp, 0x20
+        call CSkipSpaces
+        call CGetNum
+        jc .U
+        mov bp, ax
+.U:
+        ; Unassemble from CodeOff..BP
+        mov ax, [CodeOff]
+        cmp ax, bp
+        jae .Done
+        mov dx, [CodeSeg]
+        call PutHexDword
+        call PutSpace
+        call Disasm
+        jmp .U
+.Done:
+        ret
 
 Disasm:
         mov ax, [CodeOff]
@@ -1269,6 +1364,7 @@ MemNames:
 
 MsgErrUsage:     db 'Usage: DEBUG program$'
 MsgErrLoad:      db 'Could not load program$'
+MsgErrInvCmd:    db 'Invalid Command$'
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -1288,5 +1384,7 @@ ParameterBlock:  resw 1 ; Segment of environment to copy (0 = use caller's)
 PB_ArgPtr:       resw 2 ; Pointer to arguments
                  resw 2 ; Pointer to first FCB
                  resw 2 ; Pointer second first FCB
+
+CmdBuffer:       resb 2+0x7F
 
 ProgramEnd: ; Keep last
