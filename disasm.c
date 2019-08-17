@@ -338,6 +338,14 @@ static const struct InstructionInfo Instructions_C1[8] = {
     [0x07] = { N_SAR    , OTYPE_RM16  , OTYPE_IMM8  },
 };
 
+static const struct InstructionInfo Instructions_C6[8] = {
+    [0x00] = { N_MOV    , OTYPE_RM8   , OTYPE_IMM8  },
+};
+
+static const struct InstructionInfo Instructions_C7[8] = {
+    [0x00] = { N_MOV    , OTYPE_RM16  , OTYPE_IMM16 },
+};
+
 static const struct InstructionInfo Instructions_D0[8] = {
     [0x00] = { N_ROL    , OTYPE_RM8   , OTYPE_1     },
     [0x01] = { N_ROR    , OTYPE_RM8   , OTYPE_1     },
@@ -380,14 +388,6 @@ static const struct InstructionInfo Instructions_D3[8] = {
     [0x05] = { N_SHR    , OTYPE_RM16  , R_CL        },
     [0x06] = { N_SHL    , OTYPE_RM16  , R_CL        },
     [0x07] = { N_SAR    , OTYPE_RM16  , R_CL        },
-};
-
-static const struct InstructionInfo Instructions_C6[8] = {
-    [0x00] = { N_MOV    , OTYPE_RM8   , OTYPE_IMM8  },
-};
-
-static const struct InstructionInfo Instructions_C7[8] = {
-    [0x00] = { N_MOV    , OTYPE_RM16  , OTYPE_IMM16 },
 };
 
 static const struct InstructionInfo Instructions_F6[8] = {
@@ -490,6 +490,7 @@ static const struct InstructionInfo Instructions[256] = {
     [0x3A] = { N_CMP    , OTYPE_R8    , OTYPE_RM8   },
     [0x3B] = { N_CMP    , OTYPE_R16   , OTYPE_RM16  },
     [0x3C] = { N_CMP    , R_AL        , OTYPE_IMM8  },
+
     [0x3D] = { N_CMP    , R_AX        , OTYPE_IMM16 },
     [0x3F] = { N_AAS    , OTYPE_NONE  , OTYPE_NONE  },
     // 0x40
