@@ -515,6 +515,11 @@ LoadProgram:
         mov bx, [MaxSeg]
         mov word [es:2], bx     ; Segment of first byte beyond memory allocated by program
         mov byte [es:0x80], 0   ; No command line arguments
+
+        ; Point DTA at PSP:80h
+        mov [DTA+2], ax
+        mov word [DTA], 0x80
+
         ; Return with segment in ax
         ret
 
@@ -523,10 +528,6 @@ StartProgram:
         cli
         mov bx, cs
         mov ds, bx
-
-        ; Point DTA at PSP:80h
-        mov [DTA+2], ax
-        mov word [DTA], 0x80
 
         ; Push current program segment
         push ax
@@ -539,8 +540,7 @@ StartProgram:
         push bx
         ; Save stack pointer
         mov [LastProcStack], sp
-        mov sp, ss
-        mov [LastProcStack+2], sp
+        mov [LastProcStack+2], ss
         ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
         mov ss, ax
         mov ds, ax
@@ -553,7 +553,7 @@ StartProgram:
         mov di, sp
         mov bp, 0x0900
         push bx ; So a local return will execute the INT 20 instruction at [cs:0]
-        mov ax, 2
+        mov ax, 0x0202 ; Interrupts enabled
         push ax ; Push flags
         xor ax, ax
         push dx
@@ -1909,6 +1909,7 @@ Int21_4B:
         pop si ; Command line offset
         and ax, ax
         jnz .LoadOK
+        add sp, 2 ; Discard AX from stack
         mov ax, ERR_FILE_NOT_FND ; Assume this is the cause...
         stc
         jmp short .Ret

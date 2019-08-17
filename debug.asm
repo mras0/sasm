@@ -11,49 +11,50 @@
         org 0x100
         cpu 8086
 
-STACK_SIZE  equ 512
+STACK_SIZE       equ 512
+DEFAULT_DIS_SIZE equ 0x21 ; Slightly more than 32 bytes
 
-PREFIX_LOCK equ 0x01
-PREFIX_F2   equ 0x02 ; REPNE/REPNZ
-PREFIX_F3   equ 0x04 ; REPE/REPZ
-PREFIX_ES   equ 0x08
-PREFIX_CS   equ 0x10
-PREFIX_SS   equ 0x20
-PREFIX_DS   equ 0x40
+PREFIX_LOCK      equ 0x01
+PREFIX_F2        equ 0x02 ; REPNE/REPNZ
+PREFIX_F3        equ 0x04 ; REPE/REPZ
+PREFIX_ES        equ 0x08
+PREFIX_CS        equ 0x10
+PREFIX_SS        equ 0x20
+PREFIX_DS        equ 0x40
 
-OTYPE_AL    equ 0x00
-OTYPE_CL    equ 0x01
-OTYPE_DL    equ 0x02
-OTYPE_BL    equ 0x03
-OTYPE_AH    equ 0x04
-OTYPE_CH    equ 0x05
-OTYPE_DH    equ 0x06
-OTYPE_BH    equ 0x07
-OTYPE_AX    equ 0x08
-OTYPE_CX    equ 0x09
-OTYPE_DX    equ 0x0A
-OTYPE_BX    equ 0x0B
-OTYPE_SP    equ 0x0C
-OTYPE_BP    equ 0x0D
-OTYPE_SI    equ 0x0E
-OTYPE_DI    equ 0x0F
-OTYPE_ES    equ 0x10
-OTYPE_CS    equ 0x11
-OTYPE_SS    equ 0x12
-OTYPE_DS    equ 0x13
-OTYPE_1     equ 0x14 ; Constant 1
-OTYPE_IMM8  equ 0x20
-OTYPE_IMM16 equ 0x21
-OTYPE_REL8  equ 0x22
-OTYPE_REL16 equ 0x23
-OTYPE_RM8   equ 0x40 ; r/m part of ModRM
-OTYPE_RM16  equ 0x41
-OTYPE_R8    equ 0x42 ; /r part of ModRM
-OTYPE_R16   equ 0x43
-OTYPE_SREG  equ 0x44
-OTYPE_RTAB  equ 0x45 ; /r selects opcode from table
-OTYPE_MOFF  equ 0x80
-OTYPE_NONE  equ 0xFF
+OTYPE_AL         equ 0x00
+OTYPE_CL         equ 0x01
+OTYPE_DL         equ 0x02
+OTYPE_BL         equ 0x03
+OTYPE_AH         equ 0x04
+OTYPE_CH         equ 0x05
+OTYPE_DH         equ 0x06
+OTYPE_BH         equ 0x07
+OTYPE_AX         equ 0x08
+OTYPE_CX         equ 0x09
+OTYPE_DX         equ 0x0A
+OTYPE_BX         equ 0x0B
+OTYPE_SP         equ 0x0C
+OTYPE_BP         equ 0x0D
+OTYPE_SI         equ 0x0E
+OTYPE_DI         equ 0x0F
+OTYPE_ES         equ 0x10
+OTYPE_CS         equ 0x11
+OTYPE_SS         equ 0x12
+OTYPE_DS         equ 0x13
+OTYPE_1          equ 0x14 ; Constant 1
+OTYPE_IMM8       equ 0x20
+OTYPE_IMM16      equ 0x21
+OTYPE_REL8       equ 0x22
+OTYPE_REL16      equ 0x23
+OTYPE_RM8        equ 0x40 ; r/m part of ModRM
+OTYPE_RM16       equ 0x41
+OTYPE_R8         equ 0x42 ; /r part of ModRM
+OTYPE_R16        equ 0x43
+OTYPE_SREG       equ 0x44
+OTYPE_RTAB       equ 0x45 ; /r selects opcode from table
+OTYPE_MOFF       equ 0x80
+OTYPE_NONE       equ 0xFF
 
 OTYPE_MASK_IMM   equ 0x20
 OTYPE_MASK_MODRM equ 0x40
@@ -81,6 +82,7 @@ Start:
         mov ah, 0x4a
         int 0x21
 
+        ; TODO: Pass command line to loaded program
         xor bx, bx
         mov bl, [0x80]
         and bl, bl
@@ -112,8 +114,24 @@ Start:
         int 0x21
         mov [CodeSeg], bx
 
-        mov es, bx
-        mov word [CodeOff], 0x100
+        ; Initialize program registers
+        mov ax, 0x100
+        mov [DisOff], ax
+        mov [Prog_SI], ax ; SI=0x0100
+        mov [Prog_DX], bx ; DX=CS
+        mov [Prog_IP], ax ; IP=0x0100
+        mov [Prog_ES], bx ; ES=CS
+        mov [Prog_CS], bx
+        mov [Prog_SS], bx ; SS=CS
+        mov [Prog_DS], bx ; DS=CS
+        xor ax, ax
+        mov [Prog_AX], ax ; AX=0x0000
+        mov [Prog_BX], ax ; BX=0x0000 (TODO: DOS DEBUG.COM stores file size in BX:CX)
+        mov word [Prog_CX], 0x00FF ; CX=0x00FF
+        mov ax, 0xFFFE
+        mov [Prog_DI], ax ; DI=SP
+        mov [Prog_SP], ax ; SP=0xFFFE
+        mov word [Prog_F], 0x0202 ; Interrupts enabled
 
 .CmdLoop:
         ; Print prompt
@@ -236,14 +254,17 @@ CommandDispatch:
         je .CmdU
         cmp al, 'Q'
         je .CmdQ
-        mov dx, MsgErrInvCmd
-        call PutString
-        call PutCrLf
-        ret
+        jmp InvalidCommmand
 .CmdU:  jmp Unassemble
 .CmdQ: ; Q(uit)
         mov ax, 0x4c00
         int 0x21
+
+InvalidCommmand:
+        mov dx, MsgErrInvCmd
+        call PutString
+        call PutCrLf
+        ret
 
 CSkipSpaces:
         lodsb
@@ -267,8 +288,15 @@ CGetNum:
         mov cl, 4
 .L:
         lodsb
-        cmp al, ' '
-        jbe .Done
+        cmp al, '0'
+        jb .Done
+        cmp al, '9'
+        jbe .OK
+        cmp al, 'A'
+        jb .Done
+        cmp al, 'F'
+        ja .Done
+.OK:
         shl dx, cl
         sub al, '0'
         cmp al, 9
@@ -285,23 +313,32 @@ CGetNum:
 
 ; U(nassemble) [range]
 Unassemble:
-        mov bp, [CodeOff]
-        add bp, 0x20
+        mov es, [Prog_CS]
+        mov bp, [DisOff]
+        add bp, DEFAULT_DIS_SIZE
         call CGetNum
         jc .U
-        mov [CodeOff], ax
+        cmp byte [si], ':'
+        jne .WasOffset
+        inc si
+        mov es, ax
+        call CGetNum
+        jnc .WasOffset
+        jmp InvalidCommmand
+.WasOffset:
+        mov [DisOff], ax
         mov bp, ax
-        add bp, 0x20
+        add bp, DEFAULT_DIS_SIZE
         call CSkipSpaces
         call CGetNum
         jc .U
         mov bp, ax
 .U:
-        ; Unassemble from CodeOff..BP
-        mov ax, [CodeOff]
+        ; Unassemble from DisOff..BP
+        mov ax, [DisOff]
         cmp ax, bp
         jae .Done
-        mov dx, [CodeSeg]
+        mov dx, es
         call PutHexDword
         call PutSpace
         call Disasm
@@ -310,11 +347,11 @@ Unassemble:
         ret
 
 Disasm:
-        mov ax, [CodeOff]
+        mov ax, [DisOff]
         push ax
         call GetInstruction
         pop si ; SI = Instruction start
-        mov cx, [CodeOff]
+        mov cx, [DisOff]
         sub cx, si
         push cx
 .PrintHex:
@@ -364,7 +401,7 @@ Disasm:
 
 GetPrefixes:
         mov byte [Prefixes], 0
-        mov si, [CodeOff]
+        mov si, [DisOff]
 .GPs:
         mov al, [es:si]
         mov ah, PREFIX_LOCK
@@ -388,19 +425,19 @@ GetPrefixes:
         mov ah, PREFIX_CS
         cmp al, 0x3E
         je .Next
-        mov [CodeOff], si
+        mov [DisOff], si
         ret
 .Next:
         or byte [Prefixes], ah
         inc si
         jmp .GPs
 
-; Get instruction byte to AL (and increment CodeOff)
+; Get instruction byte to AL (and increment DisOff)
 GetIByte:
         push si
-        mov si, [CodeOff]
+        mov si, [DisOff]
         mov al, [es:si]
-        inc word [CodeOff]
+        inc word [DisOff]
         pop si
         ret
 
@@ -710,7 +747,7 @@ PutOp:
         je .Rel
         jmp short .RM
 .Rel:
-        add bx, [CodeOff]
+        add bx, [DisOff]
 .Imm:
         mov ax, bx
         jmp PutImm
@@ -1370,8 +1407,27 @@ MsgErrInvCmd:    db 'Invalid Command$'
 
 BssStart:
 
-CodeSeg:         resw 1
-CodeOff:         resw 1
+; Loaded program state
+
+CodeSeg:         resw 1 ; PSP segment of lodaded program
+Prog_AX:         resw 1
+Prog_CX:         resw 1
+Prog_DX:         resw 1
+Prog_BX:         resw 1
+Prog_SP:         resw 1
+Prog_BP:         resw 1
+Prog_SI:         resw 1
+Prog_DI:         resw 1
+Prog_ES:         resw 1
+Prog_CS:         resw 1
+Prog_SS:         resw 1
+Prog_DS:         resw 1
+Prog_IP:         resw 1
+Prog_F:          resw 1
+
+; Disassembler State
+
+DisOff:          resw 1
 Prefixes:        resb 1
 InstInfo:        resw 2
 InstBytes:       resb 2
@@ -1380,10 +1436,14 @@ ModRM:           resb 1
 Immediate:       resw 1
 RMText:          resb 30
 
-ParameterBlock:  resw 1 ; Segment of environment to copy (0 = use caller's)
-PB_ArgPtr:       resw 2 ; Pointer to arguments
-                 resw 2 ; Pointer to first FCB
-                 resw 2 ; Pointer second first FCB
+; Command handling state
+
+ParameterBlock:  resw 1 ; 0x00 WORD  Segment of environment to copy (0 = use caller's)
+PB_ArgPtr:       resw 2 ; 0x02 DWORD Pointer to arguments
+                 resw 2 ; 0x06 DWORD Pointer to first FCB
+                 resw 2 ; 0x0A DWORD Pointer second first FCB
+                 resw 2 ; 0x0E DWORD Initial child SS:SP
+                 resw 2 ; 0x12 DWORD Initial child CS:IP
 
 CmdBuffer:       resb 2+0x7F
 
