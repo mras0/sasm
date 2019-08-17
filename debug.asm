@@ -73,6 +73,7 @@ Start:
         and bx, 0xFFF0
         add bx, STACK_SIZE
         mov sp, bx
+        mov [DbgSP], sp
         mov cl, 4
         shr bx, cl
         mov ax, ds
@@ -81,6 +82,22 @@ Start:
         ; Free remaining memory
         mov ah, 0x4a
         int 0x21
+
+        ; Install single step handler
+        mov ax, SingleStep
+        mov dx, cs
+        mov bl, 1
+        call SetIntVec
+        mov [OldInt1], ax
+        mov [OldInt1+2], dx
+
+        ; Install terminatation handler
+        ; Called when the program exits
+        ; Note: Must be installed before loading program
+        mov ax, TerminateHandler
+        mov dx, cs
+        mov bl, 0x22
+        call SetIntVec
 
         ; TODO: Pass command line to loaded program
         xor bx, bx
@@ -132,6 +149,8 @@ Start:
         mov [Prog_DI], ax ; DI=SP
         mov [Prog_SP], ax ; SP=0xFFFE
         mov word [Prog_F], 0x0202 ; Interrupts enabled
+
+CommandLoop:
 
 .CmdLoop:
         ; Print prompt
@@ -214,8 +233,75 @@ Fatal:
         push cs
         pop ds
         call PutString
-        mov ax, 0x4CFF
+        mov al, 0xFF
+Exit:
+        push ax
+        ; Restore old Int1 handler
+        mov dx, [OldInt1]
+        mov ax, [OldInt1+2]
+        mov bl, 1
+        call SetIntVec
+        pop ax
+        mov ah, 0x4C
         int 0x21
+
+; Set interrupt vector BL to DX:AX, return old vector in DX:AX
+SetIntVec:
+        xor bh, bh
+        shl bx, 1
+        shl bx, 1
+        xor cx, cx
+        mov es, cx
+        xchg ax, [es:bx]
+        xchg dx, [es:bx+2]
+        ret
+
+TerminateHandler:
+        cli
+        mov ax, cs
+        mov ds, ax
+        mov ss, ax
+        mov sp, [DbgSP]
+        sti
+        mov dx, MsgProgramExit
+        call PutString
+        mov ah, 0x4d
+        int 0x21
+        push ax
+        call PutHexWord
+        call PutCrLf
+        pop ax
+        jmp Exit ; Exit for now..
+
+SingleStep:
+        cld
+        mov [cs:Prog_DS], ds
+        push cs
+        pop ds
+        mov [Prog_SS], ss
+        mov [Prog_SP], sp
+        mov [Prog_AX], ax
+        mov [Prog_CX], cx
+        mov [Prog_DX], dx
+        mov [Prog_BX], bx
+        mov [Prog_BP], bp
+        mov [Prog_SI], si
+        mov [Prog_DI], di
+        mov [Prog_ES], es
+        pop ax
+        mov [Prog_IP], ax
+        pop ax
+        mov [Prog_CS], ax
+        pop ax
+        and ah, 0xFE ; Clear trap flag
+        mov [Prog_F], ax
+        mov ax, cs
+        mov ss, ax
+        mov sp, [DbgSP]
+        sti
+        mov si, EmptyArgs
+        call Regs
+        jmp CommandLoop
 
 ; Read line to CmdBuffer, returns SI pointing to first non-blank char
 ; Returns carry clear if non-empty
@@ -262,18 +348,24 @@ CommandDispatch:
         push ax
         call CSkipSpaces
         pop ax
+        cmp al, 'G'
+        je .CmdG
         cmp al, 'R'
         je .CmdR
+        cmp al, 'T'
+        je .CmdT
         cmp al, 'U'
         je .CmdU
         cmp al, 'Q'
         je .CmdQ
         jmp short InvalidCommmand
-.CmdR:  jmp short Regs
+.CmdG:  jmp Go
+.CmdR:  jmp Regs
+.CmdT:  jmp Trace
 .CmdU:  jmp Unassemble
 .CmdQ: ; Q(uit)
-        mov ax, 0x4c00
-        int 0x21
+        xor al, al
+        jmp Exit
 
 InvalidCommmand:
         mov dx, MsgErrInvCmd
@@ -325,6 +417,49 @@ CGetNum:
         mov ax, dx
         clc
         ret
+
+Trace:
+        cmp byte [si], ' '
+        ja .ArgError
+        or byte [Prog_F+1], 1 ; Set trap flag
+        jmp StartProgram
+.ArgError:
+        mov dx, .Msg
+        call PutString
+        call PutCrLf
+        ret
+.Msg: db 'Arguments to T not implemented$'
+
+Go:
+        cmp byte [si], ' '
+        jbe StartProgram
+        mov dx, .Msg
+        call PutString
+        call PutCrLf
+        ret
+.Msg: db 'Arguments to G not implemented$'
+
+StartProgram:
+        cli
+        ; Switch to program stack and build IRET frame
+        mov ss, [Prog_SS]
+        mov sp, [Prog_SP]
+        mov ax, [Prog_F]
+        push ax ; Flags
+        mov ax, [Prog_CS]
+        push ax ; CS
+        mov ax, [Prog_IP]
+        push ax ; IP
+        mov es, [Prog_ES]
+        mov ax, [Prog_AX]
+        mov cx, [Prog_CX]
+        mov dx, [Prog_DX]
+        mov bx, [Prog_BX]
+        mov bp, [Prog_BP]
+        mov si, [Prog_SI]
+        mov di, [Prog_DI]
+        mov ds, [Prog_DS] ; DS last
+        iret
 
 ; R(egister) [register]
 Regs:
@@ -1578,6 +1713,10 @@ MN_7: db 'BX$'
 MemNames:
     dw MN_0, MN_1, MN_2, MN_3, MN_4, MN_5, MN_6, MN_7
 
+EmptyArgs: db 0x0D
+
+MsgProgramExit:  db 'Program exited with error code $'
+
 MsgErrUsage:     db 'Usage: DEBUG program$'
 MsgErrLoad:      db 'Could not load program$'
 MsgErrInvCmd:    db 'Invalid Command$'
@@ -1586,8 +1725,10 @@ MsgErrInvCmd:    db 'Invalid Command$'
 
 BssStart:
 
-; Loaded program state
+; Loaded program/debugger state
 
+OldInt1:         resw 2
+DbgSP:           resw 1 ; Debugger stack pointer when program running
 CodeSeg:         resw 1 ; PSP segment of lodaded program
 Prog_AX:         resw 1
 Prog_CX:         resw 1

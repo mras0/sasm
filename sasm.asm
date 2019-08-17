@@ -66,7 +66,7 @@ TOKEN_MAX        equ 16         ; Maximum length of token (adjust token buffer i
 INST_MAX         equ 6          ; Maximum length of directive/instruction (LOOPNE is longest)
 BUFFER_SIZE      equ 512        ; Size of input buffer
 OUTPUT_MAX       equ 0x2000     ; Maximum output size
-LABEL_MAX        equ 200        ; Maximum number of labels
+LABEL_MAX        equ 300        ; Maximum number of labels
 FIXUP_MAX        equ 500        ; Maximum number of fixups
 EQU_MAX          equ 100        ; Maximum number of equates
 DISPATCH_SIZE    equ INST_MAX+3 ; Size of DispatchListEntry

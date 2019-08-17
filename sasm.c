@@ -10,7 +10,7 @@ typedef unsigned short U2;
 typedef short S2;
 
 #define TOKEN_MAX 16
-#define LABEL_MAX 200
+#define LABEL_MAX 300
 #define FIXUP_MAX 500
 #define EQU_MAX   100
 #define OUTPUT_MAX 0x2000
