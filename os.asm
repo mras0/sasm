@@ -1514,6 +1514,8 @@ Int21Dispatch:
         dw Int21_4F
         db  0x56
         dw Int21_56
+        db  0x62
+        dw Int21_62
 .DispatchListEnd:
 
 ; IRET with carry flag
@@ -1868,14 +1870,18 @@ Int21_4A:
 .MsgNotImpl: db 'FIXME in Int21_4A', 0
 
 ; Int 21/AH=4Bh Exec
-; AL    Type of load (0 = load and execute)
+; AL    Type of load (0 = load and execute, 1 = load but do not execute)
 ; DS:DX Program name
 ; ES:BX Parameter block (mostly ignored for now)
 ;       Far pointer at [es:bx+2] points to command line arguments
 Int21_4B:
-        cmp al, 0
-        jne .NotImpl
+        cmp al, 1
+        jbe .ArgOK
+        mov al, ERR_FUNC_INV
+        stc
+        jmp IRETC
 
+.ArgOK:
         push bx
         push cx
         push dx
@@ -1884,6 +1890,8 @@ Int21_4B:
         push bp
         push ds
         push es
+
+        push ax
 
         ; Push command line
         mov ax, [es:bx+2]
@@ -1919,10 +1927,13 @@ Int21_4B:
         xor ch, ch
         inc cl
         rep movsb
-
         mov byte [es:di], 0x0D ; Make sure the string is always CR terminated
+        pop bx
+        and bl, bl
+        jnz .RetOK ; Only load requested
         call StartProgram
         mov word [cs:LastProcSeg], 0 ; TODO handle this better
+.RetOK:
         ; Leave return code in AL
         clc
 .Ret:
@@ -1935,10 +1946,6 @@ Int21_4B:
         pop cx
         pop bx
         jmp IRETC
-.NotImpl:
-        mov bx, .MsgNotImpl
-        jmp Fatal
-.MsgNotImpl: db 'TODO: Not implemented: Int21_4B', 0
 
 ; Int 21/AH=4Ch Terminate with return code
 ; AL    Return code
@@ -2101,6 +2108,12 @@ Int21_56:
         pop bx
         jmp IRETC
 
+
+; Int 21/AH=56h Get current PSP address
+; Returns BX=segment of current process (maybe loaded by Int21/AX=4B01h)
+Int21_62:
+        mov bx, [cs:LastProcSeg]
+        iret
 
 Int20Dispatch:
         ; INT 20 is the same as INT 21/AX=4C00h

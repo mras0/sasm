@@ -76,7 +76,6 @@ Start:
         shr bx, cl
         mov ax, ds
         add bx, ax
-        mov [FirstFreeSeg], bx
         sti
         ; Free remaining memory
         mov ah, 0x4a
@@ -100,44 +99,27 @@ Start:
         je .SkipSpace
         dec si
         mov dx, si
-        ; Open file
-        mov ax, 0x3D00
+        mov bx, ParameterBlock
+        mov ax, 0x4B01
         int 0x21
-        jnc .OpenOK
-        mov dx, MsgErrFileOpen
-        jmp Fatal
-.OpenOK:
-        mov bx, ax
-        push ds
-        mov ds, [FirstFreeSeg]
-        mov dx, 0x100
-        mov cx, 0xFF00
-        mov ah, 0x3F
-        int 0x21
-        pop ds
-        pushf
-        push ax
-        ; Close file
-        mov ah, 0x3E
-        int 0x21
-        pop ax
-        popf
-        jnc .ReadOK
+        jnc .LoadOK
         call PutHexWord
-        call PutSpace
-        mov dx, MsgErrFileRead
+        mov dx, MsgErrLoad
         jmp Fatal
-.ReadOK:
-        mov [FileSize], ax
+.LoadOK:
+        ; Get current PSP address
+        mov ah, 0x62
+        int 0x21
+        mov [CodeSeg], bx
 
-        mov es, [FirstFreeSeg]
+        mov es, bx
         mov word [CodeOff], 0x100
         xor bp, bp
 .D:
         mov ax, [CodeOff]
         mov bx, ax
         sub bx, 0x100
-        cmp bx, [FileSize]
+        cmp bx, 0x20;[FileSize]
         jae .Done
 
         mov dx, es
@@ -1286,15 +1268,13 @@ MemNames:
     dw MN_0, MN_1, MN_2, MN_3, MN_4, MN_5, MN_6, MN_7
 
 MsgErrUsage:     db 'Usage: DEBUG program$'
-MsgErrFileOpen:  db 'Error opening file$'
-MsgErrFileRead:  db 'Error reading from file$'
+MsgErrLoad:      db 'Could not load program$'
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 BssStart:
 
-FirstFreeSeg:    resw 1
-FileSize:        resw 1
+CodeSeg:         resw 1
 CodeOff:         resw 1
 Prefixes:        resb 1
 InstInfo:        resw 2
@@ -1303,5 +1283,10 @@ HasModRM:        resb 1
 ModRM:           resb 1
 Immediate:       resw 1
 RMText:          resb 30
+
+ParameterBlock:  resw 1 ; Segment of environment to copy (0 = use caller's)
+PB_ArgPtr:       resw 2 ; Pointer to arguments
+                 resw 2 ; Pointer to first FCB
+                 resw 2 ; Pointer second first FCB
 
 ProgramEnd: ; Keep last
