@@ -14,6 +14,12 @@
 STACK_SIZE       equ 512
 DEFAULT_DIS_SIZE equ 0x20 ; Note: ranges are inclusive, so atleast this many bytes are unassembled
 
+BP_OFF           equ 0  ; WORD Breakpoint offset
+BP_SEG           equ 2  ; WORD Breakpoint segment
+BP_OLDVAL        equ 4  ; BYTE Previous byte at breakpoint position
+BP_SIZE          equ 5  ; Size of break point structure
+BP_MAX           equ 10 ; Maximum number of breakpoints
+
 PREFIX_LOCK      equ 0x01
 PREFIX_F2        equ 0x02 ; REPNE/REPNZ
 PREFIX_F3        equ 0x04 ; REPE/REPZ
@@ -90,6 +96,13 @@ Start:
         call SetIntVec
         mov [OldInt1], ax
         mov [OldInt1+2], dx
+        ; And breakpoint handler
+        mov ax, Breakpoint
+        mov dx, cs
+        mov bl, 3
+        call SetIntVec
+        mov [OldInt3], ax
+        mov [OldInt3+2], dx
 
         ; TODO: Pass command line to loaded program
         xor bx, bx
@@ -148,14 +161,18 @@ Start:
         mov word [Prog_F], 0x0202 ; Interrupts enabled
 
 CommandLoop:
-.CmdLoop:
+        xor ax, ax
+        mov [TraceCount], ax
+        mov [ProceedCount], ax
+        mov [BPCount], al
+
         ; Print prompt
         mov al, '-'
         call PutChar
         call ReadCommand
-        jc .CmdLoop ; Blank line
+        jc CommandLoop ; Blank line
         call CommandDispatch
-        jmp .CmdLoop
+        jmp CommandLoop
 
 PutChar:
         push ax
@@ -269,7 +286,14 @@ TerminateHandler:
         pop ax
         jmp Exit ; Exit for now..
 
+Breakpoint:
+        mov byte [cs:LastCause], 3
+        jmp IntCommon
+
 SingleStep:
+        mov byte [cs:LastCause], 1
+        ; Fall through
+IntCommon:
         cld
         mov [cs:Prog_DS], ds
         push cs
@@ -296,17 +320,56 @@ SingleStep:
         mov sp, [DbgSP]
         sti
 
+        ; Remove all breakpoints
+        ; And adjust CS/IP if caused by breakpoint
+        call RemBreakpoints
+
         ; Print registers/next instruction
         mov si, EmptyArgs
         call Regs
 
+        ; Are we doing Proceed with a count?
+        cmp word [ProceedCount], 0
+        je .CheckTrace
+        dec word [ProceedCount]
+        jmp StartProceed
+.CheckTrace:
         ; Is trace with count in progress?
         cmp word [TraceCount], 0
-        jne .Again
-        jmp CommandLoop
-.Again:
+        je .Done
         dec word [TraceCount]
         jmp StartTrace
+.Done:
+        jmp CommandLoop
+
+RemBreakpoints:
+        xor ch, ch
+        mov cl, [BPCount]
+        and cl, cl
+        jz .Done
+        mov si, BreakPoints
+        mov dx, [Prog_IP]
+.L:
+        mov di, [si+BP_OFF]
+        mov es, [si+BP_SEG]
+        mov al, [si+BP_OLDVAL]
+        stosb
+        and ch, ch
+        jnz .N ; Already found breakpoint
+        cmp di, dx
+        jne .N
+        mov ax, es
+        cmp ax, [Prog_CS]
+        jne .N
+        dec word [Prog_IP]
+        inc ch
+.N:
+        add si, BP_SIZE
+        dec cl
+        jnz .L
+        mov [BPCount], cl
+.Done:
+        ret
 
 ; Read line to CmdBuffer, returns SI pointing to first non-blank char
 ; Returns carry clear if non-empty
@@ -355,6 +418,8 @@ CommandDispatch:
         pop ax
         cmp al, 'G'
         je .CmdG
+        cmp al, 'P'
+        je .CmdP
         cmp al, 'R'
         je .CmdR
         cmp al, 'T'
@@ -365,6 +430,7 @@ CommandDispatch:
         je .CmdQ
         jmp short InvalidCommmand
 .CmdG:  jmp Go
+.CmdP:  jmp Proceed
 .CmdR:  jmp Regs
 .CmdT:  jmp Trace
 .CmdU:  jmp Unassemble
@@ -463,14 +529,13 @@ CGetStartAddress:
         jnc .OK
         jmp InvalidCommmand
 .OK:
-        call CSkipSpaces
         mov [Prog_CS], dx
         mov [Prog_IP], ax
+        call CSkipSpaces
         ret
 
 ; T(race) [=address] [number]
 Trace:
-        mov word [TraceCount], 0
         call CGetStartAddress
         call CGetNum
         jc StartTrace
@@ -482,7 +547,61 @@ Trace:
         mov [TraceCount], ax
 StartTrace:
         or byte [Prog_F+1], 1 ; Set trap flag
-        jmp short StartProgram
+        jmp StartProgram
+
+; P(roceed) [=address] [number]
+; Steps over call/int/repeated string instructions
+Proceed:
+        call CGetStartAddress
+        call CGetNum
+        jc StartProceed
+        and ax, ax
+        jnz .CntOK
+        jmp InvalidCommmand
+.CntOK:
+        dec ax
+        mov [ProceedCount], ax
+StartProceed:
+        mov ax, [DisOff]
+        push ax
+        mov ax, [Prog_IP]
+        mov [DisOff], ax
+        mov es, [Prog_CS]
+        call GetInstruction
+        pop di
+        xchg di, [DisOff] ; Restore old DisOff
+        ; DI = One past current instruction
+        mov al, [InstBytes]
+        cmp al, 0xCD ; Int
+        je .BP
+        test byte [Prefixes], PREFIX_F2|PREFIX_F3 ; Repeated instruction?
+        jnz .BP
+        cmp al, 0xE8 ; CALL rel16
+        je .BP
+        cmp al, 0x9A ; CALLF ptr16:16
+        je .BP
+        ; TODO: INT1/INT3/INTO...
+        cmp al, 0xFF
+        jne .NoBP
+        mov ah, [ModRM]
+        mov cl, 3
+        shr ah, cl
+        and ah, 7
+        cmp ah, 2 ; CALL r/m16
+        je .BP
+        cmp ah, 3 ; CALLF m16:16
+        je .BP
+.NoBP:
+        jmp StartTrace
+.BP:
+        mov byte [BPCount], 1
+        mov al, 0xCC
+        xchg al, [es:di]
+        mov [BreakPoints+BP_OFF], di
+        mov [BreakPoints+BP_SEG], es
+        mov [BreakPoints+BP_OLDVAL], al
+        jmp StartProgram
+
 
 ; G(o) [=address] [breakpoints...]
 Go:
@@ -1779,9 +1898,15 @@ BssStart:
 ; Loaded program/debugger state
 
 OldInt1:         resw 2
+OldInt3:         resw 2
 DbgSP:           resw 1 ; Debugger stack pointer when program running
 CodeSeg:         resw 1 ; PSP segment of lodaded program
 TraceCount:      resw 1
+ProceedCount:    resw 1
+BPCount:         resb 1 ; Number of active breakpoints
+BreakPoints:     resb BP_SIZE * BP_MAX
+LastCause:       resb 1
+
 Prog_AX:         resw 1
 Prog_CX:         resw 1
 Prog_DX:         resw 1
