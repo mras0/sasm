@@ -5,8 +5,10 @@
 ;; See LICENSE.md for details                    ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
-;; While disassembling ES holds the code segment
+;; Tries to support roughly what old-school debug.com
+;; for DOS does.
 ;;
+;; The disassembly functions assumes ES points to DisSeg
 
         org 0x100
         cpu 8086
@@ -141,9 +143,12 @@ Start:
         mov word [es:0x0a], TerminateHandler
         mov [es:0x0c], cs
 
-        ; Initialize program registers
+        ; Initialize program registers etc.
         mov ax, 0x100
         mov [DisOff], ax
+        mov [DisSeg], bx
+        mov [DumpOff], ax
+        mov [DumpSeg], bx
         mov [Prog_SI], ax ; SI=0x0100
         mov [Prog_DX], bx ; DX=CS
         mov [Prog_IP], ax ; IP=0x0100
@@ -288,7 +293,7 @@ TerminateHandler:
 
 Breakpoint:
         mov byte [cs:LastCause], 3
-        jmp IntCommon
+        jmp short IntCommon
 
 SingleStep:
         mov byte [cs:LastCause], 1
@@ -417,8 +422,12 @@ CommandDispatch:
         push ax
         call CSkipSpaces
         pop ax
+        cmp al, 'D'
+        je .CmdD
         cmp al, 'G'
         je .CmdG
+        cmp al, 'H'
+        je .CmdH
         cmp al, 'P'
         je .CmdP
         cmp al, 'R'
@@ -430,7 +439,9 @@ CommandDispatch:
         cmp al, 'Q'
         je .CmdQ
         jmp short InvalidCommmand
+.CmdD:  jmp Dump
 .CmdG:  jmp Go
+.CmdH:  jmp Hex
 .CmdP:  jmp Proceed
 .CmdR:  jmp Regs
 .CmdT:  jmp Trace
@@ -511,22 +522,22 @@ CGetAddress:
         cmp al, 'C'
         jne .NotCS
         mov ax, [Prog_CS]
-        jmp .GetOffset
+        jmp short .GetOffset
 .NotCS:
         cmp al, 'D'
         jne .NotDS
         mov ax, [Prog_DS]
-        jmp .GetOffset
+        jmp short .GetOffset
 .NotDS:
         cmp al, 'E'
         jne .NotES
         mov ax, [Prog_ES]
-        jmp .GetOffset
+        jmp short .GetOffset
 .NotES:
         cmp al, 'S'
         jne .Invalid
         mov ax, [Prog_SS]
-        jmp .GetOffset
+        jmp short .GetOffset
 .NotReg:
         call CGetNum
         jc .Done
@@ -559,6 +570,124 @@ CGetStartAddress:
         call CSkipSpaces
         ret
 
+; H(ex) value value
+Hex:
+        call CGetNum
+        jc .Err
+        push ax
+        call CSkipSpaces
+        call CGetNum
+        pop dx
+        jc .Err
+        mov bx, dx
+        sub bx, ax
+        add ax, dx
+        call PutHexWord
+        call PutSpace
+        mov ax, bx
+        call PutHexWord
+        jmp PutCrLf
+.Err:
+        jmp InvalidCommmand
+
+; (hex)D(ump) [range] / [address] [length]
+Dump:
+        mov bp, 0x80 ; Default length
+        call CGetAddress
+        jc .DoDump
+        mov [DumpSeg], dx
+        mov [DumpOff], ax
+        call CSkipSpaces
+        mov al, [si]
+        cmp al, ' '
+        jbe .DoDump
+        cmp al, 'L'
+        jne .CheckRange
+        inc si
+        call CGetNum
+        jc .Err
+        and ax, ax
+        jc .Err
+        mov bp, ax
+        jmp short .DoDump
+.Err:
+        jmp InvalidCommmand
+.CheckRange:
+        call CGetNum
+        jc .DoDump
+        mov bp, ax
+        inc bp ; Range is inclusive
+        sub bp, [DumpOff]
+        jc .Err
+.DoDump:
+        mov dx, [DumpSeg]
+        mov es, dx
+        mov ax, [DumpOff]
+        add [DumpOff], bp
+        push ax
+        and al, 0xF0
+        call PutHexDword
+        call PutSpace
+        pop si
+        mov di, DumpBuf
+        mov word [di+16], 0x0D|0x0A<<8
+        mov byte [di+18], '$'
+        mov cx, si
+        call .Align
+.Main:
+        mov al, [es:si]
+        mov [di], al
+        cmp al, ' '
+        jae .PutDone
+        mov byte [di], '.'
+.PutDone:
+        inc di
+        call PutHexByte
+        mov bx, si
+        and bl, 0x0f
+        mov al, ' '
+        cmp bl, 7
+        jne .PrintSep
+        mov al, '-' ; Hypen between position 8 and 9
+.PrintSep:
+        call PutChar
+        inc si
+        dec bp
+        jz .Done
+        test si, 0x0f
+        jnz .Main
+        call PutSpace
+        mov dx, DumpBuf
+        call PutString
+        mov di, DumpBuf
+        mov dx, es
+        mov ax, si
+        call PutHexDword
+        call PutSpace
+        jmp .Main
+.Done:
+        mov cx, si
+        and cl, 0x0f
+        jz .NoEndAlign
+        neg cl
+        call .Align
+.NoEndAlign:
+        mov dx, DumpBuf
+        jmp PutString
+.Align:
+        and cl, 0x0f
+        jz .AlignDone
+.DoAlign:
+        call PutSpace
+        call PutSpace
+        call PutSpace
+        mov byte [di], ' '
+        inc di
+        dec cl
+        jnz .DoAlign
+.AlignDone:
+        ret
+
 ; T(race) [=address] [number]
 Trace:
         call CGetStartAddress
@@ -587,15 +716,11 @@ Proceed:
         dec ax
         mov [ProceedCount], ax
 StartProceed:
-        mov ax, [DisOff]
-        push ax
         mov ax, [Prog_IP]
         mov [DisOff], ax
         mov es, [Prog_CS]
         call GetInstruction
-        pop di
-        xchg di, [DisOff] ; Restore old DisOff
-        ; DI = One past current instruction
+        mov di, [DisOff] ; Get byte past instruction
         mov al, [InstBytes]
         cmp al, 0xCD ; Int
         je .BP
@@ -625,7 +750,7 @@ StartProceed:
         mov [BreakPoints+BP_OFF], di
         mov [BreakPoints+BP_SEG], es
         mov [BreakPoints+BP_OLDVAL], al
-        jmp StartProgram
+        jmp short StartProgram
 
 
 ; G(o) [=address] [breakpoints...]
@@ -763,7 +888,7 @@ Regs:
         call PutCrLf
         mov dx, [Prog_CS]
         mov ax, [Prog_IP]
-        mov es, dx
+        mov [DisSeg], dx
         mov [DisOff], ax
         call PutHexDword
         call PutSpace
@@ -843,12 +968,11 @@ Regs:
 Unassemble:
         call CGetAddress
         jnc .HasAddr
-        mov es, [Prog_CS]
         mov bp, [DisOff]
         add bp, DEFAULT_DIS_SIZE
         jmp short .U
 .HasAddr:
-        mov es, dx
+        mov [DisSeg], dx
         mov [DisOff], ax
         add ax, DEFAULT_DIS_SIZE
         mov bp, ax
@@ -857,11 +981,11 @@ Unassemble:
         jc .U
         mov bp, ax
 .U:
-        ; Unassemble from ES:DisOff..ES:BP (inclusive)
+        ; Unassemble from DisSeg:DisOff..DisSeg:BP (inclusive)
         mov ax, [DisOff]
         cmp ax, bp
         ja .Done
-        mov dx, es
+        mov dx, [DisSeg]
         call PutHexDword
         call PutSpace
         call Disasm
@@ -870,6 +994,7 @@ Unassemble:
         ret
 
 Disasm:
+        mov es, [DisSeg]
         mov ax, [DisOff]
         push ax
         call GetInstruction
@@ -1944,7 +2069,7 @@ TraceCount:      resw 1
 ProceedCount:    resw 1
 BPCount:         resb 1 ; Number of active breakpoints
 BreakPoints:     resb BP_SIZE * BP_MAX
-LastCause:       resb 1
+LastCause:       resb 1 ; Last interrupt (1 or 3)
 
 Prog_AX:         resw 1
 Prog_CX:         resw 1
@@ -1961,8 +2086,13 @@ Prog_DS:         resw 1
 Prog_IP:         resw 1
 Prog_F:          resw 1
 
+; Addresses for hexdump
+DumpOff:        resw 1
+DumpSeg:        resw 1
+
 ; Disassembler State
 
+DisSeg:          resw 1
 DisOff:          resw 1
 Prefixes:        resb 1
 InstInfo:        resw 2
@@ -1970,6 +2100,7 @@ InstBytes:       resb 2
 HasModRM:        resb 1
 ModRM:           resb 1
 Immediate:       resw 1
+DumpBuf: ; Abuse same buffer for hexdump
 RMText:          resb 30
 
 ; Command handling state
