@@ -606,9 +606,13 @@ Hex:
 
 ; (hex)D(ump) [range] / [address] [length]
 Dump:
-        mov bp, 0x80 ; Default length
+        mov bp, [DumpOff]
+        neg bp
+        and bp, 0x0F
+        add bp, 0x80 ; Default length (round up to get paragraph aligned)
         call CGetAddress
         jc .DoDump
+.GotAddr:
         mov [DumpSeg], dx
         mov [DumpOff], ax
         call CSkipSpaces
@@ -644,17 +648,11 @@ Dump:
         call PutSpace
         pop si
         mov di, DumpBuf
-        mov word [di+16], 0x0D|0x0A<<8
-        mov byte [di+18], '$'
         mov cx, si
         call .Align
 .Main:
         mov al, [es:si]
         mov [di], al
-        cmp al, ' '
-        jae .PutDone
-        mov byte [di], '.'
-.PutDone:
         inc di
         call PutHexByte
         mov bx, si
@@ -671,8 +669,7 @@ Dump:
         test si, 0x0f
         jnz .Main
         call PutSpace
-        mov dx, DumpBuf
-        call PutString
+        call .PutDumpBuf
         mov di, DumpBuf
         mov dx, es
         mov ax, si
@@ -686,8 +683,8 @@ Dump:
         neg cl
         call .Align
 .NoEndAlign:
-        mov dx, DumpBuf
-        jmp PutString
+        call PutSpace
+        jmp short .PutDumpBuf
 .Align:
         and cl, 0x0f
         jz .AlignDone
@@ -701,6 +698,20 @@ Dump:
         jnz .DoAlign
 .AlignDone:
         ret
+.PutDumpBuf:
+        mov di, DumpBuf
+        mov cl, 16
+.Pr:
+        mov al, [di]
+        cmp al, ' '
+        jae .Pr2
+        mov al, '.'
+.Pr2:
+        call PutChar
+        inc di
+        dec cl
+        jnz .Pr
+        jmp PutCrLf
 
 ; T(race) [=address] [number]
 Trace:
