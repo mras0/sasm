@@ -322,6 +322,7 @@ IntCommon:
 
         ; Remove all breakpoints
         ; And adjust CS/IP if caused by breakpoint
+        xor ch, ch
         call RemBreakpoints
 
         ; Print registers/next instruction
@@ -342,8 +343,8 @@ IntCommon:
 .Done:
         jmp CommandLoop
 
+; CH=0 = Adjust CS/IP if matching BP found
 RemBreakpoints:
-        xor ch, ch
         mov cl, [BPCount]
         and cl, cl
         jz .Done
@@ -503,12 +504,35 @@ CGetNum:
 ; Get address from command line to DX:AX
 ; returns carry clear on success
 CGetAddress:
+        cmp word [si+1], 'S:'
+        jne .NotReg
+        lodsb
+        inc si ; Point to ':'
+        cmp al, 'C'
+        jne .NotCS
+        mov ax, [Prog_CS]
+        jmp .GetOffset
+.NotCS:
+        cmp al, 'D'
+        jne .NotDS
+        mov ax, [Prog_DS]
+        jmp .GetOffset
+.NotDS:
+        cmp al, 'E'
+        jne .NotES
+        mov ax, [Prog_ES]
+        jmp .GetOffset
+.NotES:
+        cmp al, 'S'
+        jne .Invalid
+        mov ax, [Prog_SS]
+        jmp .GetOffset
+.NotReg:
         call CGetNum
         jc .Done
         cmp byte [si], ':'
         je .GetOffset
         mov dx, [Prog_CS] ; No segment means use current CS
-.OK:
         clc
 .Done:
         ret
@@ -516,7 +540,8 @@ CGetAddress:
         inc si
         mov dx, ax
         call CGetNum
-        jnc .OK
+        jnc .Done
+.Invalid:
         jmp InvalidCommmand
 
 CGetStartAddress:
@@ -606,13 +631,27 @@ StartProceed:
 ; G(o) [=address] [breakpoints...]
 Go:
         call CGetStartAddress
-        cmp byte [si], ' '
-        jbe StartProgram
-        mov dx, .Msg
-        call PutString
-        call PutCrLf
-        ret
-.Msg: db 'Breakpoints not implemented$'
+        mov bp, BreakPoints
+.GetBP:
+        call CGetAddress
+        jc StartProgram
+        cmp bp, BreakPoints+BP_MAX*BP_SIZE
+        jb .OK
+        mov ch, 1 ; Don't adjust CS/IP
+        call RemBreakpoints ; Remove any breakpoints
+        jmp InvalidCommmand ; Too many breakpoints
+.OK:
+        mov [bp+BP_OFF], ax
+        mov [bp+BP_SEG], dx
+        mov es, dx
+        mov di, ax
+        mov al, 0xCC
+        xchg [es:di], al
+        mov [bp+BP_OLDVAL], al
+        inc byte [BPCount]
+        add bp, BP_SIZE
+        call CSkipSpaces
+        jmp .GetBP
 
 StartProgram:
         cli

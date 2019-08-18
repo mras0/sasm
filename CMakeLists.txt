@@ -55,6 +55,7 @@ add_custom_command(
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/autoexec.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/help.bat"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/strap.bat"
+    COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.md"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/sasm.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/boot.asm"
     COMMAND disktool "${DISK_IMG}" put    "${CMAKE_CURRENT_SOURCE_DIR}/os.asm"
