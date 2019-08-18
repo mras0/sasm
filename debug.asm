@@ -12,7 +12,7 @@
         cpu 8086
 
 STACK_SIZE       equ 512
-DEFAULT_DIS_SIZE equ 0x21 ; Slightly more than 32 bytes
+DEFAULT_DIS_SIZE equ 0x20 ; Note: ranges are inclusive, so atleast this many bytes are unassembled
 
 PREFIX_LOCK      equ 0x01
 PREFIX_F2        equ 0x02 ; REPNE/REPNZ
@@ -148,7 +148,6 @@ Start:
         mov word [Prog_F], 0x0202 ; Interrupts enabled
 
 CommandLoop:
-
 .CmdLoop:
         ; Print prompt
         mov al, '-'
@@ -276,7 +275,6 @@ SingleStep:
         push cs
         pop ds
         mov [Prog_SS], ss
-        mov [Prog_SP], sp
         mov [Prog_AX], ax
         mov [Prog_CX], cx
         mov [Prog_DX], dx
@@ -292,13 +290,23 @@ SingleStep:
         pop ax
         and ah, 0xFE ; Clear trap flag
         mov [Prog_F], ax
+        mov [Prog_SP], sp ; We'll push flags/cs/ip again
         mov ax, cs
         mov ss, ax
         mov sp, [DbgSP]
         sti
+
+        ; Print registers/next instruction
         mov si, EmptyArgs
         call Regs
+
+        ; Is trace with count in progress?
+        cmp word [TraceCount], 0
+        jne .Again
         jmp CommandLoop
+.Again:
+        dec word [TraceCount]
+        jmp StartTrace
 
 ; Read line to CmdBuffer, returns SI pointing to first non-blank char
 ; Returns carry clear if non-empty
@@ -368,7 +376,8 @@ InvalidCommmand:
         mov dx, MsgErrInvCmd
         call PutString
         call PutCrLf
-        ret
+        mov sp, [DbgSP] ; Long jump..
+        jmp CommandLoop
 
 CSkipSpaces:
         lodsb
@@ -380,15 +389,18 @@ CSkipSpaces:
         dec si
         ret
 
-; Get number from command line to DX
-; returns carry clear on success
+; Get number from command line (and update SI) to AX
+; Returns carry clear on success
 CGetNum:
         cmp byte [si], ' '
         ja .NotEmpty
         stc
         ret
 .NotEmpty:
+        push cx
+        push dx
         xor dx, dx
+        xor ch, ch
         mov cl, 4
 .L:
         lodsb
@@ -408,33 +420,80 @@ CGetNum:
         sub al, 7
 .D:
         or dl, al
+        inc ch
         jmp .L
 .Done:
+        and ch, ch
+        jnz .CntOK
+        jmp InvalidCommmand
+.CntOK:
         dec si
         mov ax, dx
+        pop dx
+        pop cx
         clc
         ret
 
-Trace:
-        cmp byte [si], ' '
-        ja .ArgError
-        or byte [Prog_F+1], 1 ; Set trap flag
-        jmp StartProgram
-.ArgError:
-        mov dx, .Msg
-        call PutString
-        call PutCrLf
+; Get address from command line to DX:AX
+; returns carry clear on success
+CGetAddress:
+        call CGetNum
+        jc .Done
+        cmp byte [si], ':'
+        je .GetOffset
+        mov dx, [Prog_CS] ; No segment means use current CS
+.OK:
+        clc
+.Done:
         ret
-.Msg: db 'Arguments to T not implemented$'
+.GetOffset:
+        inc si
+        mov dx, ax
+        call CGetNum
+        jnc .OK
+        jmp InvalidCommmand
 
+CGetStartAddress:
+        cmp byte [si], '='
+        je .GetAddr
+        ret
+.GetAddr:
+        inc si
+        call CGetAddress
+        jnc .OK
+        jmp InvalidCommmand
+.OK:
+        call CSkipSpaces
+        mov [Prog_CS], dx
+        mov [Prog_IP], ax
+        ret
+
+; T(race) [=address] [number]
+Trace:
+        mov word [TraceCount], 0
+        call CGetStartAddress
+        call CGetNum
+        jc StartTrace
+        and ax, ax
+        jnz .CntOK
+        jmp InvalidCommmand
+.CntOK:
+        dec ax
+        mov [TraceCount], ax
+StartTrace:
+        or byte [Prog_F+1], 1 ; Set trap flag
+        jmp short StartProgram
+
+; G(o) [=address] [breakpoints...]
 Go:
+        call CGetStartAddress
         cmp byte [si], ' '
         jbe StartProgram
         mov dx, .Msg
         call PutString
         call PutCrLf
         ret
-.Msg: db 'Arguments to G not implemented$'
+.Msg: db 'Breakpoints not implemented$'
 
 StartProgram:
         cli
@@ -624,31 +683,26 @@ Regs:
 
 ; U(nassemble) [range]
 Unassemble:
+        call CGetAddress
+        jnc .HasAddr
         mov es, [Prog_CS]
         mov bp, [DisOff]
         add bp, DEFAULT_DIS_SIZE
-        call CGetNum
-        jc .U
-        cmp byte [si], ':'
-        jne .WasOffset
-        inc si
-        mov es, ax
-        call CGetNum
-        jnc .WasOffset
-        jmp InvalidCommmand
-.WasOffset:
+        jmp short .U
+.HasAddr:
+        mov es, dx
         mov [DisOff], ax
+        add ax, DEFAULT_DIS_SIZE
         mov bp, ax
-        add bp, DEFAULT_DIS_SIZE
         call CSkipSpaces
         call CGetNum
         jc .U
         mov bp, ax
 .U:
-        ; Unassemble from DisOff..BP
+        ; Unassemble from ES:DisOff..ES:BP (inclusive)
         mov ax, [DisOff]
         cmp ax, bp
-        jae .Done
+        ja .Done
         mov dx, es
         call PutHexDword
         call PutSpace
@@ -1727,6 +1781,7 @@ BssStart:
 OldInt1:         resw 2
 DbgSP:           resw 1 ; Debugger stack pointer when program running
 CodeSeg:         resw 1 ; PSP segment of lodaded program
+TraceCount:      resw 1
 Prog_AX:         resw 1
 Prog_CX:         resw 1
 Prog_DX:         resw 1
