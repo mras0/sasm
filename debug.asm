@@ -16,6 +16,8 @@
 STACK_SIZE       equ 512
 DEFAULT_DIS_SIZE equ 0x20 ; Note: ranges are inclusive, so atleast this many bytes are unassembled
 
+PSP_OLDINT22     equ 0x0A ; DWORD Old Int22 (Termination handler)
+
 BP_OFF           equ 0  ; WORD Breakpoint offset
 BP_SEG           equ 2  ; WORD Breakpoint segment
 BP_OLDVAL        equ 4  ; BYTE Previous byte at breakpoint position
@@ -140,8 +142,8 @@ Start:
 
         ; Set termination handler
         mov es, bx
-        mov word [es:0x0a], TerminateHandler
-        mov [es:0x0c], cs
+        mov word [es:PSP_OLDINT22], TerminateHandler
+        mov [es:PSP_OLDINT22+2], cs
 
         ; Initialize program registers etc.
         mov ax, 0x100
@@ -170,6 +172,7 @@ CommandLoop:
         mov [TraceCount], ax
         mov [ProceedCount], ax
         mov [BPCount], al
+        mov [LastCause], al
 
         ; Print prompt
         mov al, '-'
@@ -259,6 +262,11 @@ Exit:
         mov ax, [OldInt1+2]
         mov bl, 1
         call SetIntVec
+        ; Restore old Int3 handler
+        mov dx, [OldInt3]
+        mov ax, [OldInt3+2]
+        mov bl, 3
+        call SetIntVec
         pop ax
         mov ah, 0x4C
         int 0x21
@@ -275,6 +283,11 @@ SetIntVec:
         ret
 
 TerminateHandler:
+        cmp byte [cs:LastCause], 'Q'
+        jne .NotQuit
+        mov ax, 0x4c00
+        int 0x21
+.NotQuit:
         cli
         mov ax, cs
         mov ds, ax
@@ -447,6 +460,7 @@ CommandDispatch:
 .CmdT:  jmp Trace
 .CmdU:  jmp Unassemble
 .CmdQ: ; Q(uit)
+        mov byte [LastCause], 'Q'
         xor al, al
         jmp Exit
 
@@ -2069,7 +2083,7 @@ TraceCount:      resw 1
 ProceedCount:    resw 1
 BPCount:         resb 1 ; Number of active breakpoints
 BreakPoints:     resb BP_SIZE * BP_MAX
-LastCause:       resb 1 ; Last interrupt (1 or 3)
+LastCause:       resb 1 ; Last interrupt (1 or 3) or 'Q' when quitting
 
 Prog_AX:         resw 1
 Prog_CX:         resw 1
