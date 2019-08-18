@@ -67,6 +67,19 @@ FF_FDATE         equ 0x18 ; WORD     File date
 FF_FSIZE         equ 0x1A ; DWORD    File size
 FF_FNAME         equ 0x1E ; BYTE[13] File name and extension (ASCIIZ with dot)
 
+; Program Segment Prefix offsets
+PSP_INT20        equ 0x00 ; WORD  int 0x20 instruction
+PSP_MAXSEG       equ 0x02 ; WORD  Segment of first byte beyond memory allocated to program
+PSP_OLDINT22     equ 0x0A ; DWORD Old Int22 (Termination handler)
+PSP_OLDINT23     equ 0x0E ; DWORD Old Int23 (Ctrl+C handler)
+PSP_OLDINT24     equ 0x12 ; DWORD Old Int24 (Critical error handler)
+PSP_PARENTPSP    equ 0x16 ; WORD  Parent PSP segment
+PSP_OLDSP        equ 0x42 ; WORD  Old SP (0x42-0x4F are reserved)
+PSP_OLDSS        equ 0x44 ; WORD  Old SS
+PSP_CMDLEN       equ 0x80 ; BYTE  Number of byte in command line
+PSP_CMDDAT       equ 0x81 ; BYTE[0x7F] Command Line
+PSP_SIZE         equ 0x100
+
 ; DOS error codes
 ERR_NONE         equ 0x00 ; No error
 ERR_FUNC_INV     equ 0x01 ; Function number invalid
@@ -79,6 +92,13 @@ ERR_NO_MEM       equ 0x08 ; Insufficient memory
 ERR_NO_FILES     equ 0x12 ; No more files
 
 NOT_FOUND        equ 0xFFFF ; Returned when entry/pointer not found
+
+INT20_OFF        equ 0x20*4
+INT20_SEG        equ 0x20*4+2
+INT21_OFF        equ 0x21*4
+INT21_SEG        equ 0x21*4+2
+INT22_OFF        equ 0x22*4
+INT22_SEG        equ 0x22*4+2
 
 Main:
         ; Save boot drive (passed by boot loader)
@@ -117,13 +137,14 @@ Main:
         push cs
         pop ds
 
-        ; Set INT 20 vector
-        mov word [0x80], Int20Dispatch
-        mov word [0x82], 0x00
-
-        ; Set INT 21 vector
-        mov word [0x84], Int21Dispatch
-        mov word [0x86], 0x00
+        ; Set intterupt vectors
+        xor ax, ax
+        mov word [INT20_OFF], Int20Dispatch
+        mov word [INT20_SEG], ax
+        mov word [INT21_OFF], Int21Dispatch
+        mov word [INT21_SEG], ax
+        mov word [INT22_OFF], DefaultTerminate
+        mov word [INT22_SEG], ax
 
         mov ax, SECTOR_SIZE
         mov bx, [BPB+BPB_SECSPERFAT]
@@ -478,27 +499,50 @@ MallocOOM:
 ; Returns AX=Loaded segment (0 on error)
 ; Assumes CS=DS
 LoadProgram:
-        ; Allocate room
-        mov ax, 0x1000
-        call Malloc
-        mov [LastProcSeg], ax
-
         call FindFileInRoot
         cmp bx, NOT_FOUND
         jne .Found
         xor ax, ax
         ret
 .Found:
-        ; Open file and read
+        push bx
+        push es
 
+        ; Allocate room
+        mov ax, 0x1000
+        call Malloc
+
+        ; Build PSP (TODO: More...)
+        mov es, ax
+        mov word [es:PSP_INT20], 0x20CD ; Int 20h
+        mov bx, [MaxSeg]
+        mov word [es:PSP_MAXSEG], bx     ; Segment of first byte beyond memory allocated by program
+        mov byte [es:PSP_CMDLEN], 0      ; No command line arguments
+        mov bx, [CurrentPSP]
+        mov [es:PSP_PARENTPSP], bx       ; Store parent PSP
+        ; Store old interrupt vectors
+        mov si, INT22_OFF
+        mov di, PSP_OLDINT22
+        mov cx, 3*2
+        rep movsw
+
+        ; Point DTA at PSP:80h
+        mov [DTA+2], es
+        mov word [DTA], PSP_CMDLEN
+
+        ; Update CurrentPSP
+        mov [CurrentPSP], es
+        pop es
+        pop bx
+
+        ; Open file and read
         call OpenFileFromDE
 
         mov bx, ax
         push bx
         push ds
-        mov ax, [LastProcSeg]
-        mov ds, ax
-        mov dx, 0x0100
+        mov ds, [CurrentPSP]
+        mov dx, PSP_SIZE
         mov cx, 0xFF00
         call ReadFile
         pop ds
@@ -508,42 +552,19 @@ LoadProgram:
         ; Close again
         call CloseFileHandle
 
-        ; Build PSP (TODO: More...)
-        mov ax, [LastProcSeg]
-        mov es, ax
-        mov word [es:0], 0x20CD ; Int 20h
-        mov bx, [MaxSeg]
-        mov word [es:2], bx     ; Segment of first byte beyond memory allocated by program
-        mov byte [es:0x80], 0   ; No command line arguments
-
-        ; Point DTA at PSP:80h
-        mov [DTA+2], ax
-        mov word [DTA], 0x80
-
         ; Return with segment in ax
+        mov ax, [CurrentPSP]
         ret
 
 ; Start loaded program at segment AX
 StartProgram:
         cli
-        mov bx, cs
-        mov ds, bx
-
-        ; Push current program segment
-        push ax
-        ; Push last stack pointer
-        mov bx, [LastProcStack]
-        push bx
-        mov bx, [LastProcStack+2]
-        push bx
-        mov bx, .Done ; Local return in Int21_4C should go here
-        push bx
+        mov ds, ax
         ; Save stack pointer
-        mov [LastProcStack], sp
-        mov [LastProcStack+2], ss
+        mov [PSP_OLDSP], sp
+        mov [PSP_OLDSS], ss
         ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
         mov ss, ax
-        mov ds, ax
         mov es, ax
         mov dx, ax
         mov sp, 0xFFFE
@@ -559,22 +580,7 @@ StartProgram:
         push dx
         push si
         iret
-.Done:
-        ; Take care to preserve return code in AL
-
-        ; Restore LastProcStack
-        pop bx
-        mov [cs:LastProcStack+2], bx
-        pop bx
-        mov [cs:LastProcStack], bx
-
-        ; Restore free segment pointer
-        ; This only works because TSR arent't supported
-        pop bx
-        mov [cs:FreeSeg], bx
-
         ret
-
 
 ; Return carry clear if cluster index in AX is valid
 ClusterValid:
@@ -1508,6 +1514,8 @@ Int21Dispatch:
         dw Int21_4B
         db  0x4C
         dw Int21_4C
+        db  0x4D
+        dw Int21_4D
         db  0x4E
         dw Int21_4E
         db  0x4F
@@ -1849,7 +1857,7 @@ Int21_41:
 Int21_4A:
         push bx
         ; HACK: Only allow resize of last loaded program
-        mov ax, [cs:LastProcSeg]
+        mov ax, [cs:CurrentPSP]
         mov bx, es
         cmp bx, ax
         je .OK
@@ -1933,7 +1941,8 @@ Int21_4B:
         and bl, bl
         jnz .RetOK ; Only load requested
         call StartProgram
-        mov word [cs:LastProcSeg], 0 ; TODO handle this better
+        ; Local return in DefaultTerminate goes here
+        mov al, [cs:LastRetVal]
 .RetOK:
         ; Leave return code in AL
         clc
@@ -1954,14 +1963,49 @@ Int21_4C:
         ; TODO: Ensure files are closed and other
         ;       book keeping is done
 
-        ; Preserve value of AL
-        mov bx, cs
-        mov ds, bx
-        mov bx, [LastProcStack]
-        mov sp, bx
-        mov bx, [LastProcStack+2]
-        mov ss, bx
-        ret ; local return assumed to be to StartProgram
+        push cs
+        pop ds
+
+        ; Save return code
+        xor ah, ah ; termination type: normal
+        mov [LastRetVal], ax
+
+        mov es, [CurrentPSP]
+
+        ; Restore stack
+        mov sp, [es:PSP_OLDSP]
+        mov ss, [es:PSP_OLDSS]
+
+        ; Restore old PSP
+        mov bx, [es:PSP_PARENTPSP]
+        mov [CurrentPSP], bx
+
+        ; Get termination handler
+        mov cx, [es:PSP_OLDINT22+2]
+        mov bx, [es:PSP_OLDINT22]
+        ; And restore it
+        mov [INT22_OFF], bx
+        mov [INT22_SEG], cx
+
+        ; TODO: Restore Int23/Int24
+
+        ; Restore free segment pointer
+        ; This only works because TSR arent't supported
+        mov [FreeSeg], es
+
+        ; Call termination handler
+        push cx
+        push bx
+        retf
+
+; Int 21/AH=4Dh Get return code (errorlevel)
+; Returns AH = terminatin type (0=normal, 1=ctrl+c, 2=critical error,3=TSR)
+;         AL = return code
+;         carry clear
+Int21_4D:
+        mov ax, [cs:LastRetVal]
+        clc
+        jmp IRETC
 
 ; Int 21/AH=4Eh Find first matching file
 ; CX    File attribute mask (bits 0 and 5 ignored)
@@ -2113,13 +2157,16 @@ Int21_56:
 ; Int 21/AH=56h Get current PSP address
 ; Returns BX=segment of current process (maybe loaded by Int21/AX=4B01h)
 Int21_62:
-        mov bx, [cs:LastProcSeg]
+        mov bx, [cs:CurrentPSP]
         iret
 
 Int20Dispatch:
         ; INT 20 is the same as INT 21/AX=4C00h
         mov ax, 0x4c00
         jmp Int21Dispatch
+
+DefaultTerminate:
+        ret ; Local return (usually to Int21_4B)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants and data
@@ -2151,9 +2198,9 @@ FATSeg:          resw 1
 FileInfoSeg:     resw 1
 RootSeg:         resw 1
 CmdpSeg:         resw 1
-LastProcSeg:     resw 1  ; Segment of last started process
-LastProcStack:   resw 2  ; Stack before StartProgram
+CurrentPSP:      resw 1  ; Segment of last started process
 DTA:             resw 2  ; Disk Transfer Area (defaults to PSP:80h)
+LastRetVal:      resw 1  ; Last return value/termination type (errorlevel)
 
 CurFileName:     resb 11
 

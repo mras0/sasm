@@ -91,14 +91,6 @@ Start:
         mov [OldInt1], ax
         mov [OldInt1+2], dx
 
-        ; Install terminatation handler
-        ; Called when the program exits
-        ; Note: Must be installed before loading program
-        mov ax, TerminateHandler
-        mov dx, cs
-        mov bl, 0x22
-        call SetIntVec
-
         ; TODO: Pass command line to loaded program
         xor bx, bx
         mov bl, [0x80]
@@ -130,6 +122,11 @@ Start:
         mov ah, 0x62
         int 0x21
         mov [CodeSeg], bx
+
+        ; Set termination handler
+        mov es, bx
+        mov word [es:0x0a], TerminateHandler
+        mov [es:0x0c], cs
 
         ; Initialize program registers
         mov ax, 0x100
