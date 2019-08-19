@@ -508,9 +508,31 @@ LoadProgram:
         push bx
         push es
 
+        mov ax, [MaxSeg]
+        sub ax, [FreeSeg]
+        cmp ax, 0x20
+        jb MallocOOM
+        mov bx, 0x1000
+        cmp ax, bx
+        jbe .SizeLimited
+        mov ax, bx
+.SizeLimited:
+        mov bp, ax
+        sub bp, PSP_SIZE/0x10 + 1 ; Need room for PSP and a little stack
+        mov cl, 4
+        shl bp, cl ; BP = Maximum bytes to read
+
+        mov bx, ax
+        shl bx, cl
+        sub bx, 2 ; 'Push' 0 (see below)
+        mov [ChildSSSP], bx
+
         ; Allocate room
-        mov ax, 0x1000
         call Malloc
+
+        mov [ChildSSSP+2], ax
+        mov word [ChildCSIP], 0x0100
+        mov [ChildCSIP+2], ax
 
         ; Build PSP (TODO: More...)
         mov es, ax
@@ -525,6 +547,11 @@ LoadProgram:
         mov di, PSP_OLDINT22
         mov cx, 3*2
         rep movsw
+
+        ; Ensure there's a 0 at the bottom of the stack
+        ; So a local return will execute the INT 20 instruction at [cs:0]
+        mov bx, [ChildSSSP]
+        mov word [es:bx], 0
 
         ; Point DTA at PSP:80h
         mov [DTA+2], es
@@ -543,8 +570,23 @@ LoadProgram:
         push ds
         mov ds, [CurrentPSP]
         mov dx, PSP_SIZE
-        mov cx, 0xFF00
+        mov cx, bp
         call ReadFile
+        jnc .ReadOK
+.ReadErr:
+        mov bx, MsgErrRead
+        jmp Fatal
+.ReadOK:
+        cmp ax, bp ; Read maximum bytes?
+        jb .ReadDone
+        mov cx, 1  ; Check that we're at EOF
+        call ReadFile
+        jc .ReadErr
+        and ax, ax
+        jz .ReadDone
+        mov bx, MsgErrProgLoad ; File not completely read
+        jmp Fatal
+.ReadDone:
         pop ds
         pop bx
         ; AX = bytes read
@@ -564,16 +606,15 @@ StartProgram:
         mov [PSP_OLDSP], sp
         mov [PSP_OLDSS], ss
         ; Match some of the register values (see http://www.fysnet.net/yourhelp.htm)
-        mov ss, ax
+        mov ss, [cs:ChildSSSP+2]
         mov es, ax
-        mov dx, ax
-        mov sp, 0xFFFE
-        xor bx, bx
+        mov dx, [cs:ChildCSIP+2]
+        mov sp, [cs:ChildSSSP]
         mov cx, 0x00FF
-        mov si, 0x0100
+        mov si, [cs:ChildCSIP]
         mov di, sp
         mov bp, 0x0900
-        push bx ; So a local return will execute the INT 20 instruction at [cs:0]
+        xor bx, bx
         mov ax, 0x0202 ; Interrupts enabled
         push ax ; Push flags
         xor ax, ax
@@ -1900,6 +1941,8 @@ Int21_4B:
         push es
 
         push ax
+        push bx ; Push parameter block
+        push es
 
         ; Push command line
         mov ax, [es:bx+2]
@@ -1917,7 +1960,7 @@ Int21_4B:
         pop si ; Command line offset
         and ax, ax
         jnz .LoadOK
-        add sp, 2 ; Discard AX from stack
+        add sp, 6 ; Discard ES/BX/AX from stack
         mov ax, ERR_FILE_NOT_FND ; Assume this is the cause...
         stc
         jmp short .Ret
@@ -1937,9 +1980,23 @@ Int21_4B:
         inc cl
         rep movsb
         mov byte [es:di], 0x0D ; Make sure the string is always CR terminated
-        pop bx
+        pop es ; Pop parameter block
+        pop di ; and offset
+        pop bx ; argument (BL=0: load&execute, BL=1: load only)
         and bl, bl
-        jnz .RetOK ; Only load requested
+        jz .Start
+        ; Only load requested, save CS/IP, SS/SP to parameter block
+        add di, 0x0e ; Point at SS:SP
+        mov ax, [ChildSSSP]
+        stosw
+        mov ax, [ChildSSSP+2]
+        stosw
+        mov ax, [ChildCSIP]
+        stosw
+        mov ax, [ChildCSIP+2]
+        stosw
+        jmp short .RetOK
+.Start:
         call StartProgram
         ; Local return in DefaultTerminate goes here
         mov al, [cs:LastRetVal]
@@ -2183,6 +2240,7 @@ MsgErrFileMax:   db 'Too many open files', 0
 MsgErrFNotOpen:  db 'Invalid file handle', 0
 MsgErrRootFull:  db 'Root directory full', 0
 MsgErrCmdpRet:   db 'Command processor returned', 0
+MsgErrProgLoad:  db 'Error loading program', 0
 MsgReboot:       db 'Press any key to reboot', 13, 10, 0
 CmdpFName:       db 'CMDP.COM', 0
 
@@ -2201,7 +2259,8 @@ CmdpSeg:         resw 1
 CurrentPSP:      resw 1  ; Segment of last started process
 DTA:             resw 2  ; Disk Transfer Area (defaults to PSP:80h)
 LastRetVal:      resw 1  ; Last return value/termination type (errorlevel)
-
+ChildSSSP:       resw 2  ; SS:SP of just loaded program
+ChildCSIP:       resw 2  ; CS:IP of same
 CurFileName:     resb 11
 
 ProgramEnd:

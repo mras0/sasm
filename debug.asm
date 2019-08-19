@@ -126,6 +126,8 @@ Start:
         cmp al, ' '
         je .SkipSpace
         dec si
+        push ds
+        pop es
         mov dx, si
         mov bx, ParameterBlock
         mov ax, 0x4B01
@@ -146,7 +148,8 @@ Start:
         mov [es:PSP_OLDINT22+2], cs
 
         ; Initialize program registers etc.
-        mov ax, 0x100
+        mov ax, [PB_ChildCSIP]
+        mov bx, [PB_ChildCSIP+2]
         mov [DisOff], ax
         mov [DisSeg], bx
         mov [DumpOff], ax
@@ -156,15 +159,16 @@ Start:
         mov [Prog_IP], ax ; IP=0x0100
         mov [Prog_ES], bx ; ES=CS
         mov [Prog_CS], bx
-        mov [Prog_SS], bx ; SS=CS
         mov [Prog_DS], bx ; DS=CS
+        mov bx, [PB_ChildSSSP+2]
+        mov [Prog_SS], bx ; SS
         xor ax, ax
         mov [Prog_AX], ax ; AX=0x0000
         mov [Prog_BX], ax ; BX=0x0000 (TODO: DOS DEBUG.COM stores file size in BX:CX)
         mov word [Prog_CX], 0x00FF ; CX=0x00FF
-        mov ax, 0xFFFE
+        mov ax, [PB_ChildSSSP]
         mov [Prog_DI], ax ; DI=SP
-        mov [Prog_SP], ax ; SP=0xFFFE
+        mov [Prog_SP], ax ; SP=0xFFFE (usually)
         mov word [Prog_F], 0x0202 ; Interrupts enabled
 
 CommandLoop:
@@ -612,7 +616,6 @@ Dump:
         add bp, 0x80 ; Default length (round up to get paragraph aligned)
         call CGetAddress
         jc .DoDump
-.GotAddr:
         mov [DumpSeg], dx
         mov [DumpOff], ax
         call CSkipSpaces
@@ -2134,8 +2137,8 @@ ParameterBlock:  resw 1 ; 0x00 WORD  Segment of environment to copy (0 = use cal
 PB_ArgPtr:       resw 2 ; 0x02 DWORD Pointer to arguments
                  resw 2 ; 0x06 DWORD Pointer to first FCB
                  resw 2 ; 0x0A DWORD Pointer second first FCB
-                 resw 2 ; 0x0E DWORD Initial child SS:SP
-                 resw 2 ; 0x12 DWORD Initial child CS:IP
+PB_ChildSSSP:    resw 2 ; 0x0E DWORD Initial child SS:SP
+PB_ChildCSIP:    resw 2 ; 0x12 DWORD Initial child CS:IP
 
 CmdBuffer:       resb 2+0x7F
 
