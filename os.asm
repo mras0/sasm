@@ -49,8 +49,8 @@ FILE_INFO_BUFSZ  equ 8  ; WORD  Number of valid bytes in buffer
 FILE_INFO_CLUST  equ 10 ; WORD  Next cluster to get / Last cluster written
 FILE_INFO_DIRENT equ 12 ; WORD  Offset into RootSeg of file entry
 FILE_INFO_MODE   equ 14 ; BYTE  Mode (0 = Closed, 1 = Open for reading, 2 = Open for writing)
-; Spare          equ 15
-FILE_INFO_SIZE   equ 16 ; Size of file info
+FILE_INFO_PSP    equ 15 ; WORD  Owning process PSP
+FILE_INFO_SIZE   equ 17 ; Size of file info
 
 ; Legal values for FILE_INFO_MODE
 FMODE_CLOSED     equ 0
@@ -193,6 +193,7 @@ Main:
         mov [es:bx+FILE_INFO_CLUST], ax
         mov word [es:bx+FILE_INFO_DIRENT], NOT_FOUND
         mov [es:bx+FILE_INFO_MODE], al
+        mov [es:bx+FILE_INFO_PSP], ax
         push es
         push bx
         push cx
@@ -300,7 +301,7 @@ PutString:
         inc bx
         jmp PutString
 
-%if 0
+%if 1
 ; Print word in AX
 PutHexWord:
         push ax
@@ -1106,6 +1107,9 @@ OpenFileFromDE:
         mov [es:bx+FILE_INFO_FOFF+2], cx
         mov [es:bx+FILE_INFO_BUFOFF], cx
         mov [es:bx+FILE_INFO_BUFSZ], cx
+        ; Set owner
+        mov cx, [cs:CurrentPSP]
+        mov [es:bx+FILE_INFO_PSP], cx
         ; Make sure some other mode than FMODE_CLOSED is set
         mov byte [es:bx+FILE_INFO_MODE], FMODE_READ_ONLY
         ; Return file handle in AX
@@ -1115,8 +1119,7 @@ OpenFileFromDE:
 
 ; Return new file handle in AX and file info in ES:BX
 GetFileHandle:
-        mov bx, [FileInfoSeg]
-        mov es, bx
+        mov es, [FileInfoSeg]
         xor bx, bx
         xor cx, cx
 .Search:
@@ -1135,23 +1138,25 @@ GetFileHandle:
 ; Close file handle in BX
 CloseFileHandle:
         cmp bx, MAX_FILES
-        jae .Error
+        jae CloseFileError
         mov ax, [FileInfoSeg]
         mov es, ax
         mov ax, FILE_INFO_SIZE
         mul bx
         mov bx, ax
+; Close file with info at ES:BX
+CloseFileInfo:
         xor ax, ax
         xchg al, [es:bx+FILE_INFO_MODE] ; Mark file closed
         and al, al
-        jz .Error ;Not open
+        jz CloseFileError ;Not open
         cmp al, FMODE_READ_ONLY
         je .Done
         call FlushFileBuffer
         call WriteFSMeta
 .Done:
         ret
-.Error:
+CloseFileError:
         mov bx, MsgErrFNotOpen
         jmp Fatal
 
@@ -2017,9 +2022,6 @@ Int21_4B:
 ; Int 21/AH=4Ch Terminate with return code
 ; AL    Return code
 Int21_4C:
-        ; TODO: Ensure files are closed and other
-        ;       book keeping is done
-
         push cs
         pop ds
 
@@ -2027,7 +2029,32 @@ Int21_4C:
         xor ah, ah ; termination type: normal
         mov [LastRetVal], ax
 
-        mov es, [CurrentPSP]
+        ;
+        ; Close all files owned by process
+        ;
+        mov dx, [CurrentPSP]
+
+        mov es, [FileInfoSeg]
+        xor bx, bx
+.Check:
+        cmp byte [es:bx+FILE_INFO_MODE], FMODE_CLOSED
+        je .Next
+        cmp [es:bx+FILE_INFO_PSP], dx
+        jne .Next
+        push bx
+        push dx
+        push es
+        call CloseFileInfo
+        pop es
+        pop dx
+        pop bx
+.Next:
+        add bx, FILE_INFO_SIZE
+        cmp bx, MAX_FILES*FILE_INFO_SIZE
+        jb .Check
+
+
+        mov es, dx
 
         ; Restore stack
         mov sp, [es:PSP_OLDSP]
