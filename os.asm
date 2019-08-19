@@ -1992,13 +1992,13 @@ Int21_4B:
         jz .Start
         ; Only load requested, save CS/IP, SS/SP to parameter block
         add di, 0x0e ; Point at SS:SP
-        mov ax, [ChildSSSP]
+        mov ax, [cs:ChildSSSP]
         stosw
-        mov ax, [ChildSSSP+2]
+        mov ax, [cs:ChildSSSP+2]
         stosw
-        mov ax, [ChildCSIP]
+        mov ax, [cs:ChildCSIP]
         stosw
-        mov ax, [ChildCSIP+2]
+        mov ax, [cs:ChildCSIP+2]
         stosw
         jmp short .RetOK
 .Start:

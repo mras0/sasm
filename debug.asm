@@ -126,6 +126,11 @@ Start:
         cmp al, ' '
         je .SkipSpace
         dec si
+
+        ; Empty arguments for now
+        mov word [PB_ArgPtr], EmptyArgsLen
+        mov [PB_ArgPtr+2], ds
+
         push ds
         pop es
         mov dx, si
@@ -2075,7 +2080,8 @@ MN_7: db 'BX$'
 MemNames:
     dw MN_0, MN_1, MN_2, MN_3, MN_4, MN_5, MN_6, MN_7
 
-EmptyArgs: db 0x0D
+EmptyArgsLen:    db 0x00 ; Keep together with EmptyArgs
+EmptyArgs:       db 0x0D
 
 MsgProgramExit:  db 'Program exited with error code $'
 
