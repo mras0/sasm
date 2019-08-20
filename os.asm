@@ -301,7 +301,7 @@ PutString:
         inc bx
         jmp PutString
 
-%if 1
+%if 0
 ; Print word in AX
 PutHexWord:
         push ax
@@ -525,7 +525,7 @@ LoadProgram:
 
         mov bx, ax
         shl bx, cl
-        sub bx, 2 ; 'Push' 0 (see below)
+        sub bx, 4 ; 'Push' 0xFFFF/0x0000 (see below)
         mov [ChildSSSP], bx
 
         ; Allocate room
@@ -551,8 +551,10 @@ LoadProgram:
 
         ; Ensure there's a 0 at the bottom of the stack
         ; So a local return will execute the INT 20 instruction at [cs:0]
+        ; And the initial value of AX
         mov bx, [ChildSSSP]
-        mov word [es:bx], 0
+        mov word [es:bx], 0xFFFF
+        mov word [es:bx+2], 0
 
         ; Point DTA at PSP:80h
         mov [DTA+2], es
@@ -615,10 +617,11 @@ StartProgram:
         mov si, [cs:ChildCSIP]
         mov di, sp
         mov bp, 0x0900
-        xor bx, bx
+        pop bx ; Get initial value of AX
         mov ax, 0x0202 ; Interrupts enabled
         push ax ; Push flags
         xor ax, ax
+        xchg ax, bx
         push dx
         push si
         iret
@@ -1990,15 +1993,17 @@ Int21_4B:
         pop bx ; argument (BL=0: load&execute, BL=1: load only)
         and bl, bl
         jz .Start
+        push cs
+        pop ds
         ; Only load requested, save CS/IP, SS/SP to parameter block
         add di, 0x0e ; Point at SS:SP
-        mov ax, [cs:ChildSSSP]
+        mov ax, [ChildSSSP]
         stosw
-        mov ax, [cs:ChildSSSP+2]
+        mov ax, [ChildSSSP+2]
         stosw
-        mov ax, [cs:ChildCSIP]
+        mov ax, [ChildCSIP]
         stosw
-        mov ax, [cs:ChildCSIP+2]
+        mov ax, [ChildCSIP+2]
         stosw
         jmp short .RetOK
 .Start:

@@ -194,15 +194,18 @@ Start:
         mov [Prog_ES], bx ; ES=CS
         mov [Prog_CS], bx
         mov [Prog_DS], bx ; DS=CS
-        mov bx, [PB_ChildSSSP+2]
-        mov [Prog_SS], bx ; SS
+        mov es, [PB_ChildSSSP+2]
+        mov [Prog_SS], es ; SS
         xor ax, ax
-        mov [Prog_AX], ax ; AX=0x0000
         mov [Prog_BX], ax ; BX=0x0000 (TODO: DOS DEBUG.COM stores file size in BX:CX)
         mov word [Prog_CX], 0x00FF ; CX=0x00FF
-        mov ax, [PB_ChildSSSP]
-        mov [Prog_DI], ax ; DI=SP
-        mov [Prog_SP], ax ; SP=0xFFFE (usually)
+        mov bx, [PB_ChildSSSP]
+        ; DOS pushes initial AX onto stack when using AX=4E01
+        mov ax, [es:bx]
+        mov [Prog_AX], ax
+        add bx, 2 ; Pop it off
+        mov [Prog_DI], bx ; DI=SP
+        mov [Prog_SP], bx ; SP=0xFFFE (usually)
         mov word [Prog_F], 0x0202 ; Interrupts enabled
 
 CommandLoop:
