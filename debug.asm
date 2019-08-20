@@ -508,12 +508,16 @@ CommandDispatch:
         je .CmdH
         cmp al, 'I'
         je .CmdI
+        cmp al, 'M'
+        je .CmdM
         cmp al, 'O'
         je .CmdO
         cmp al, 'P'
         je .CmdP
         cmp al, 'R'
         je .CmdR
+        cmp al, 'S'
+        je .CmdS
         cmp al, 'T'
         je .CmdT
         cmp al, 'U'
@@ -530,7 +534,7 @@ CommandDispatch:
 .CmdH:  jmp Hex
 .CmdI:  jmp InPort
 ; TODO: L(oad)
-; TODO: M(ove)
+.CmdM:  jmp Move
 ; TODO: N(ame)
 .CmdO:  jmp OutPort
 .CmdP:  jmp Proceed
@@ -538,8 +542,8 @@ CommandDispatch:
         mov byte [LastCause], 'Q'
         xor al, al
         jmp Exit
-;TODO: S(earch)
 .CmdR:  jmp Regs
+.CmdS:  jmp Search
 .CmdT:  jmp Trace
 .CmdU:  jmp Unassemble
 ;TODO: W(rite)
@@ -904,6 +908,104 @@ Fill:
         jnz .F
         ret
 
+; M(ove) range address
+Move:
+        call CGetAddress
+        jc .Invalid
+        push dx
+        push ax
+        mov di, ax
+        call CSkipSpaces
+        call CGetNum
+        jc .Invalid
+        inc ax
+        sub ax, di
+        jbe .Invalid
+        push ax ; Push length
+        call CSkipSpaces
+        call CGetAddress
+        jc .Invalid
+        mov es, dx
+        mov di, ax
+        pop cx
+        pop si
+        pop ds
+        ; TODO: Check for overlap...
+        rep movsb
+        push cs
+        pop ds
+        ret
+.Invalid:
+        jmp InvalidCommmand
+
+; S(earch) range list
+Search:
+        call CGetAddress
+        jc .Invalid
+        push dx
+        push ax
+        mov di, ax
+        call CSkipSpaces
+        call CGetNum
+        jc .Invalid
+        inc ax
+        sub ax, di
+        jbe .Invalid
+        push ax ; Push length
+        ; Copy list to CmdBuffer (we'll never catch up to SI)
+        push ds
+        pop es
+        mov di, CmdBuffer
+        call CopyListFromCmd
+        mov bx, di
+        sub bx, CmdBuffer
+        pop dx
+        pop di
+        pop es
+        xchg bx, bx
+.Search:
+        ; BX=Pattern length
+        ; DX=Range length
+        cmp dx, bx
+        jb .Done ; Can't match
+        ; Search for first byte in pattern
+        mov si, CmdBuffer
+        mov cx, dx
+        sub cx, bx
+        push cx
+        lodsb
+        repne scasb
+        pop ax
+        je .CheckMatch
+.Done:
+        push cs
+        pop ds
+        ret
+.CheckMatch:
+        sub ax, cx
+        sub dx, ax ; We consumed this many characters in the scasb loop
+        ; Now check if the last BX-1 bytes match
+        mov cx, bx
+        dec cx
+        jz .HasMatch
+        push cx
+        rep cmpsb
+        pop ax
+        je .HasMatch
+        sub ax, cx
+        sub dx, ax
+        jmp .Search
+.HasMatch:
+        push dx
+        mov dx, es
+        mov ax, di
+        sub ax, bx ; Subtract pattern length
+        call PutHexDword
+        call PutCrLf
+        pop dx
+        jmp .Search
+.Invalid:
+        jmp InvalidCommmand
 
 ; T(race) [=address] [number]
 Trace:
