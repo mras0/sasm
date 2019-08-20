@@ -108,32 +108,61 @@ Start:
         mov [OldInt3], ax
         mov [OldInt3+2], dx
 
-        ; TODO: Pass command line to loaded program
-        xor bx, bx
-        mov bl, [0x80]
-        and bl, bl
-        jz .Usage
-        mov si, 0x81
-        mov byte [si+bx], 0 ; Change CR to NUL
-.SkipSpace:
-        lodsb
-        and al, al
-        jnz .CheckSpace
-.Usage:
-        mov dx, MsgErrUsage
-        jmp Fatal
-.CheckSpace:
-        cmp al, ' '
-        je .SkipSpace
-        dec si
+        ;
+        ; Handle command line
+        ;
 
-        ; Empty arguments for now
-        mov word [PB_ArgPtr], EmptyArgsLen
+        ; Command line arguments always need DS
         mov [PB_ArgPtr+2], ds
 
         push ds
         pop es
-        mov dx, si
+        mov si, 0x81
+.SkipSpace:
+        lodsb
+        cmp al, 0x0D
+        jne .NotDone
+;.Usage:
+        mov dx, MsgErrUsage
+        jmp Fatal
+.NotDone:
+        cmp al, ' '
+        jbe .SkipSpace
+        ; Copy filename
+        mov di, FileName
+        stosb
+        ; TODO: Limit to 12...
+.CopyFname:
+        lodsb
+        cmp al, ' '
+        jbe .CopyDone
+        stosb
+        jmp .CopyFname
+.CopyDone:
+        mov ah, al
+        xor al, al
+        stosb ; Ensure NUL terimnated
+
+        cmp ah, 0x0D
+        jne .ProcessArgs
+        ; No additional arguments
+        mov si, EmptyArgsLen
+        jmp .GotArgs
+.ProcessArgs:
+        ; Adjust length
+        mov bx, si
+        sub bx, 0x81
+        xor ah, ah
+        mov al, [0x80]
+        sub ax, bx
+        dec si
+        mov [si], al
+.GotArgs:
+        mov [PB_ArgPtr], si
+
+        push ds
+        pop es
+        mov dx, FileName
         mov bx, ParameterBlock
         mov ax, 0x4B01
         int 0x21
@@ -2138,6 +2167,8 @@ DumpBuf: ; Abuse same buffer for hexdump
 RMText:          resb 30
 
 ; Command handling state
+
+FileName:        resb 13
 
 ParameterBlock:  resw 1 ; 0x00 WORD  Segment of environment to copy (0 = use caller's)
 PB_ArgPtr:       resw 2 ; 0x02 DWORD Pointer to arguments
