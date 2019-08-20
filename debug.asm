@@ -147,7 +147,7 @@ Start:
         jne .ProcessArgs
         ; No additional arguments
         mov si, EmptyArgsLen
-        jmp .GotArgs
+        jmp short .GotArgs
 .ProcessArgs:
         ; Adjust length
         mov bx, si
@@ -444,13 +444,28 @@ ReadCommand:
 
         mov si, CmdBuffer+2
         ; Convert to upper case
-        xor ch, ch
         mov cl, [si-1]
         and cl, cl
         jz .Blank
         xor bx, bx
+        xor ch, ch
 .ToUpper:
         mov al, [si+bx]
+        cmp al, ch
+        jne .NotEndQ
+        xor ch, ch
+        jmp short .Next
+.NotEndQ:
+        cmp al, 0x27 ; quote character
+        je .Q
+        cmp al, '"'
+        jne .NotQ
+.Q:
+        mov ch, al
+        jmp short .Next
+.NotQ:
+        and ch, ch ; In quoted string? Then don't modify
+        jnz .Next
         cmp al, 'a'
         jb .Next
         cmp al, 'z'
@@ -461,6 +476,11 @@ ReadCommand:
         inc bx
         cmp bl, cl
         jne .ToUpper
+        ; Unterminated string?
+        and ch, ch
+        jz .NotInString
+        jmp short InvalidCommmand
+.NotInString:
         call CSkipSpaces
         cmp byte [si], ' '
         jbe .Blank
@@ -478,6 +498,10 @@ CommandDispatch:
         pop ax
         cmp al, 'D'
         je .CmdD
+        cmp al, 'E'
+        je .CmdE
+        cmp al, 'F'
+        je .CmdF
         cmp al, 'G'
         je .CmdG
         cmp al, 'H'
@@ -500,8 +524,8 @@ CommandDispatch:
 ; TODO: A(ssemble)
 ; TODO: C(ompare)
 .CmdD:  jmp Dump
-; TODO: E(nter)
-; TODO: F(ill)
+.CmdE:  jmp Enter
+.CmdF:  jmp Fill
 .CmdG:  jmp Go
 .CmdH:  jmp Hex
 .CmdI:  jmp InPort
@@ -794,6 +818,92 @@ Dump:
         dec cl
         jnz .Pr
         jmp PutCrLf
+
+; E(nter) address [list]
+Enter:
+        call CGetAddress
+        jnc .AddrOK
+        jmp InvalidCommmand
+.AddrOK:
+        mov es, dx
+        mov di, ax
+        ; Fall through
+
+; Copy list from command line in DS:SI to ES:DI
+CopyListFromCmd:
+        call CSkipSpaces
+        lodsb
+        cmp al, 0x0D
+        jne .NotDone
+        ret
+.NotDone:
+        cmp al, 0x27
+        je .CopyLit
+        cmp al, '"'
+        je .CopyLit
+        dec si
+        call CGetNum
+        jc .Invalid
+        and ah, ah
+        jnz .Invalid
+        stosb
+        jmp CopyListFromCmd
+.CopyLit:
+        mov ah, al ; Save opening quote char
+.CopyLoop:
+        lodsb
+        cmp al, ah
+        je CopyListFromCmd
+        stosb
+        jmp .CopyLoop
+.Invalid:
+        jmp InvalidCommmand
+
+; F(ill) range list
+Fill:
+        call CGetAddress
+        jnc .AddrOK
+.Invalid:
+        jmp InvalidCommmand
+.AddrOK:
+        ; Store address for later
+        push dx
+        push ax
+        mov di, ax
+        call CSkipSpaces
+        call CGetNum
+        jc .Invalid
+        inc ax
+        sub ax, di
+        jbe .Invalid
+        push ax ; Push length to fill
+
+        ; Copy list to CmdBuffer (we'll never catch up to SI)
+        push ds
+        pop es
+        mov di, CmdBuffer
+        call CopyListFromCmd
+        ; How many bytes is the pattern?
+        mov bx, di
+        sub bx, CmdBuffer
+        pop dx
+        pop di
+        pop es
+.F:
+        ; BX: Bytes in pattern
+        ; DX: Bytes to fill
+        mov si, CmdBuffer
+        mov cx, dx
+        cmp cx, bx
+        jbe .DoFill
+        mov cx, bx
+.DoFill:
+        sub dx, cx
+        rep movsb
+        and dx, dx
+        jnz .F
+        ret
+
 
 ; T(race) [=address] [number]
 Trace:
