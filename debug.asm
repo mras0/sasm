@@ -9,6 +9,11 @@
 ;; for DOS does.
 ;;
 ;; The disassembly functions assumes ES points to DisSeg
+;;
+;; TODO: Implement missing commands
+;; TODO: Unify range handling (and allow for ffff as end..)
+;; TODO: Allow starting without file
+;;
 
         org 0x100
         cpu 8086
@@ -479,7 +484,7 @@ ReadCommand:
         ; Unterminated string?
         and ch, ch
         jz .NotInString
-        jmp short InvalidCommmand
+        jmp InvalidCommmand
 .NotInString:
         call CSkipSpaces
         cmp byte [si], ' '
@@ -496,6 +501,8 @@ CommandDispatch:
         push ax
         call CSkipSpaces
         pop ax
+        cmp al, 'C'
+        je .CmdC
         cmp al, 'D'
         je .CmdD
         cmp al, 'E'
@@ -526,7 +533,7 @@ CommandDispatch:
         je .CmdQ
         jmp short InvalidCommmand
 ; TODO: A(ssemble)
-; TODO: C(ompare)
+.CmdC:  jmp Compare
 .CmdD:  jmp Dump
 .CmdE:  jmp Enter
 .CmdF:  jmp Fill
@@ -538,15 +545,18 @@ CommandDispatch:
 ; TODO: N(ame)
 .CmdO:  jmp OutPort
 .CmdP:  jmp Proceed
-.CmdQ: ; Q(uit)
-        mov byte [LastCause], 'Q'
-        xor al, al
-        jmp Exit
+.CmdQ:  jmp short Quit
 .CmdR:  jmp Regs
 .CmdS:  jmp Search
 .CmdT:  jmp Trace
 .CmdU:  jmp Unassemble
 ;TODO: W(rite)
+
+; Q(uit)
+Quit:
+        mov byte [LastCause], 'Q'
+        xor al, al
+        jmp Exit
 
 InvalidCommmand:
         mov dx, MsgErrInvCmd
@@ -717,14 +727,12 @@ OutPort:
 
 ; (hex)D(ump) [range] / [address] [length]
 Dump:
-        mov bp, [DumpOff]
-        neg bp
-        and bp, 0x0F
-        add bp, 0x80 ; Default length (round up to get paragraph aligned)
+        call .GetDefaultRange
         call CGetAddress
         jc .DoDump
         mov [DumpSeg], dx
         mov [DumpOff], ax
+        call .GetDefaultRange
         call CSkipSpaces
         mov al, [si]
         cmp al, ' '
@@ -740,6 +748,12 @@ Dump:
         jmp short .DoDump
 .Err:
         jmp InvalidCommmand
+.GetDefaultRange:
+        mov bp, [DumpOff]
+        neg bp
+        and bp, 0x0F
+        add bp, 0x80 ; Default length (round up to get paragraph aligned)
+        ret
 .CheckRange:
         call CGetNum
         jc .DoDump
@@ -1004,6 +1018,61 @@ Search:
         call PutCrLf
         pop dx
         jmp .Search
+.Invalid:
+        jmp InvalidCommmand
+
+; C(ompare) range address
+Compare:
+        call CGetAddress
+        jc .Invalid
+        push dx
+        push ax
+        mov di, ax
+        call CSkipSpaces
+        call CGetNum
+        jc .Invalid
+        inc ax
+        sub ax, di
+        jbe .Invalid
+        push ax
+        call CSkipSpaces
+        call CGetAddress
+        jc .Invalid
+        mov ds, dx
+        mov si, ax
+        pop cx
+        pop di
+        pop es
+.L:
+        repe cmpsb
+        je .Done
+        push cx
+        mov dx, es
+        mov ax, di
+        dec ax
+        call PutHexDword
+        call PutSpace
+        call PutSpace
+        mov al, [es:di-1]
+        call PutHexByte
+        call PutSpace
+        call PutSpace
+        mov al, [si-1]
+        call PutHexByte
+        call PutSpace
+        call PutSpace
+        mov dx, ds
+        mov ax, si
+        dec ax
+        call PutHexDword
+        call PutCrLf
+        pop cx
+        and cx, cx
+        jnz .L
+.Done:
+        push cs
+        pop ds
+        ret
 .Invalid:
         jmp InvalidCommmand
 
