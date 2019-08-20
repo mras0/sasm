@@ -69,6 +69,7 @@ OTYPE_R16        equ 0x43
 OTYPE_SREG       equ 0x44
 OTYPE_RTAB       equ 0x45 ; /r selects opcode from table
 OTYPE_MOFF       equ 0x80
+OTYPE_PTR32      equ 0x81
 OTYPE_NONE       equ 0xFF
 
 OTYPE_MASK_IMM   equ 0x20
@@ -1612,12 +1613,25 @@ GetInstruction:
 ; AL/AH are operands
 GetRM:
         mov di, RMText
+        cmp al, OTYPE_PTR32
+        je .Ptr32
         cmp al, OTYPE_MOFF
         je .Moff
         cmp ah, OTYPE_MOFF
         je .Moff
         cmp byte [HasModRM], 0
         jne .ModRM
+        ret
+.Ptr32:
+        call GetIWord
+        push ax
+        call GetIWord
+        call .CvtRMWord
+        mov byte [di], ':'
+        inc di
+        pop ax
+        call .CvtRMWord
+        mov byte [di], '$'
         ret
 .Moff:
         call .MemStart
@@ -1793,6 +1807,8 @@ PutOp:
         cmp al, OTYPE_RM16
         je .M
         cmp al, OTYPE_MOFF
+        je .M
+        cmp al, OTYPE_PTR32
         je .M
         ; R8/R16/SREG
         xor bh, bh
@@ -2033,7 +2049,7 @@ MainTab:
     dw N_MOV    , OTYPE_RM16   | OTYPE_SREG  << 8 ; 8C
     dw N_LEA    , OTYPE_R16    | OTYPE_RM16  << 8 ; 8D
     dw N_MOV    , OTYPE_SREG   | OTYPE_RM16  << 8 ; 8E
-    dw 0        , 0                               ; 8F
+    dw Tab_8F   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; 8F
     ; 0x90
     dw N_NOP    , OTYPE_NONE   | OTYPE_NONE  << 8 ; 90
     dw N_XCHG   , OTYPE_CX     | OTYPE_AX    << 8 ; 91
@@ -2045,7 +2061,7 @@ MainTab:
     dw N_XCHG   , OTYPE_DI     | OTYPE_AX    << 8 ; 97
     dw N_CBW    , OTYPE_NONE   | OTYPE_NONE  << 8 ; 98
     dw N_CWD    , OTYPE_NONE   | OTYPE_NONE  << 8 ; 99
-    dw 0        , 0                               ; 9A
+    dw N_CALLF  , OTYPE_PTR32  | OTYPE_NONE  << 8 ; 9A
     dw 0        , 0                               ; 9B
     dw N_PUSHF  , OTYPE_NONE   | OTYPE_NONE  << 8 ; 9C
     dw N_POPF   , OTYPE_NONE   | OTYPE_NONE  << 8 ; 9D
@@ -2130,7 +2146,7 @@ MainTab:
     dw N_OUT    , OTYPE_IMM8   | OTYPE_AX    << 8 ; E7
     dw N_CALL   , OTYPE_REL16  | OTYPE_NONE  << 8 ; E8
     dw N_JMP    , OTYPE_REL16  | OTYPE_NONE  << 8 ; E9
-    dw 0        , 0                               ; EA
+    dw N_JMPF   , OTYPE_PTR32  | OTYPE_NONE  << 8 ; EA
     dw N_JMP    , OTYPE_REL8   | OTYPE_NONE  << 8 ; EB
     dw N_IN     , OTYPE_AL     | OTYPE_DX    << 8 ; EC
     dw N_IN     , OTYPE_AX     | OTYPE_DX    << 8 ; ED
@@ -2183,6 +2199,16 @@ Tab_83:
     dw N_SUB    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /5
     dw N_XOR    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /6
     dw N_CMP    , OTYPE_RM16   | OTYPE_IMM8  << 8 ; /7
+
+Tab_8F:
+    dw N_POP    , OTYPE_RM16   | OTYPE_NONE  << 8 ; /0
+    dw 0        , 0                               ; /1
+    dw 0        , 0                               ; /2
+    dw 0        , 0                               ; /3
+    dw 0        , 0                               ; /4
+    dw 0        , 0                               ; /5
+    dw 0        , 0                               ; /6
+    dw 0        , 0                               ; /7
 
 Tab_C0:
     dw N_ROL    , OTYPE_RM8    | OTYPE_IMM8  << 8 ; /0

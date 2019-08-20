@@ -908,9 +908,9 @@ static void GetOperand(void)
             if (OperandValue != R_INVALID) {
                 OperandType = OP_REG;
                 return;
-            } else if (!strcmp(UTokenText, "BYTE") || !strcmp(UTokenText, "WORD")) {
+            } else if (!strcmp(UTokenText, "BYTE") || !strcmp(UTokenText, "WORD") || !strcmp(UTokenText, "FAR")) {
                 assert(ExplicitSize == NO_SIZE);
-                ExplicitSize = UTokenText[0] == 'W';
+                ExplicitSize = UTokenText[0] != 'B';
                 GetOperandMem();
                 return;
             } else if (!strcmp(UTokenText, "SHORT")) {
@@ -1599,7 +1599,9 @@ static void InstPUSH(U1 arg)
             OutputImm8();
         }
     } else {
-        Error("Invalid / unsupported argument to PUSH");
+        OutputByte(0xFF);
+        SwapOperands();
+        OutputModRM(6);
     }
 }
 
@@ -1607,7 +1609,13 @@ static void InstPOP(U1 arg)
 {
     (void)arg;
     GetOperand();
-    if (OperandType != OP_REG || OperandValue < R_AX) {
+    if (OperandType < OP_REG) {
+        OutputByte(0x8F);
+        SwapOperands();
+        OutputModRM(0);
+        return;
+    }
+    if (OperandValue < R_AX) {
         Error("Invalid/unsupported POP");
     }
     if (OperandValue >= R_ES) {
@@ -1629,16 +1637,36 @@ static void HandleRel16(bool CouldBeShort)
     OutputWord((U2)(OperandValue - (CurrentAddress + 2)));
 }
 
+static bool HandleFar(U1 inst)
+{
+    if (OperandType != OP_LIT || !TryConsume(':')) {
+        return false;
+    }
+    OutputByte(inst);
+    const U2 Saved = OperandValue;
+    OutputWord(GetNumber());
+    OutputWord(Saved);
+    return true;
+}
+
 static void InstCALL(U1 arg)
 {
     (void)arg;
     GetOperand();
-    if (OperandType == OP_REG) {
-        if (OperandValue/8 != 1) {
-            Error("Invalid register operand to CALL");
-        }
+    if (HandleFar(0x9A)) {
+        return;
+    }
+    if (OperandType <= OP_REG) {
         OutputByte(0xFF);
-        OutputByte(0xC0 | (2<<3) | (OperandValue&7));
+        if (OperandType == OP_REG) {
+            if (OperandValue/8 != 1) {
+                Error("Invalid register operand to CALL");
+            }
+            OutputByte(0xC0 | (2<<3) | (OperandValue&7));
+        } else {
+            SwapOperands();
+            OutputModRM(ExplicitSize == 1 ? 3 : 2); // far call?
+        }
         return;
     }
     OutputByte(0xE8);
@@ -1647,7 +1675,6 @@ static void InstCALL(U1 arg)
 
 static bool HandleShortRel(U1 inst, bool force)
 {
-    GetOperand();
     if (ExplicitSize == 1) {
         force = true;
     }
@@ -1680,6 +1707,23 @@ static bool HandleShortRel(U1 inst, bool force)
 static void InstJMP(U1 arg)
 {
     (void)arg;
+    GetOperand();
+    if (HandleFar(0xEA)) {
+        return;
+    }
+    if (OperandType <= OP_REG) {
+        OutputByte(0xFF);
+        if (OperandType == OP_REG) {
+            if (OperandValue>>3 != 1) {
+                Error("Invalid register operand to JMP");
+            }
+            OutputByte(0xC0 | 4<<3 | (OperandValue&7));
+        } else {
+            SwapOperands();
+            OutputModRM(ExplicitSize == 1 ? 5 : 4); // far jump?
+        }
+        return;
+    }
     if (!HandleShortRel(0xEB, false)) {
         OutputByte(0xE9);
         HandleRel16(true);
@@ -1688,6 +1732,7 @@ static void InstJMP(U1 arg)
 
 static void InstJcc(U1 cc) {
     assert(cc < 16);
+    GetOperand();
     if (!HandleShortRel(0x70|cc, CpuLevel < 3)) {
         OutputWord(0x800F | cc<<8);
         HandleRel16(true);
@@ -1696,6 +1741,7 @@ static void InstJcc(U1 cc) {
 
 static void HandleJ8(U1 inst)
 {
+    GetOperand();
     HandleShortRel(inst, true);
 }
 

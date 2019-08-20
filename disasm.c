@@ -32,6 +32,7 @@ enum {
     OTYPE_REL8,
     OTYPE_REL16,
     OTYPE_MOFF,
+    OTYPE_PTR32,
     OTYPE_RM8 = 0x40,        // r/m part of MODRM
     OTYPE_RM16,
     OTYPE_R8,                // /r of ModRM
@@ -158,6 +159,7 @@ static void GetOp(U1 op)
     case OTYPE_RM8:
     case OTYPE_RM16:
     case OTYPE_MOFF:
+    case OTYPE_PTR32:
         printf("%s", RMText);
         break;
     case OTYPE_R8:
@@ -314,6 +316,10 @@ static const struct InstructionInfo Instructions_83[8] = {
     [0x05] = { N_SUB    , OTYPE_RM16  , OTYPE_IMM8  },
     [0x06] = { N_XOR    , OTYPE_RM16  , OTYPE_IMM8  },
     [0x07] = { N_CMP    , OTYPE_RM16  , OTYPE_IMM8  },
+};
+
+static const struct InstructionInfo Instructions_8F[8] = {
+    [0x00] = { N_POP    , OTYPE_RM16  , OTYPE_NONE  },
 };
 
 static const struct InstructionInfo Instructions_C0[8] = {
@@ -569,10 +575,12 @@ static const struct InstructionInfo Instructions[256] = {
     [0x8C] = { N_MOV    , OTYPE_RM16  , OTYPE_SREG  },
     [0x8D] = { N_LEA    , OTYPE_R16   , OTYPE_RM16  },
     [0x8E] = { N_MOV    , OTYPE_SREG  , OTYPE_RM16  },
+    [0x8F] = { (char*)Instructions_8F , OTYPE_RTAB  , OTYPE_NONE  },
     // 0x90
     [0x90] = { N_NOP    , OTYPE_NONE  , OTYPE_NONE  },
     [0x98] = { N_CBW    , OTYPE_NONE  , OTYPE_NONE  },
     [0x99] = { N_CWD    , OTYPE_NONE  , OTYPE_NONE  },
+    [0x9A] = { N_CALLF  , OTYPE_PTR32 , OTYPE_NONE  },
     [0x9C] = { N_PUSHF  , OTYPE_NONE  , OTYPE_NONE  },
     [0x9D] = { N_POPF   , OTYPE_NONE  , OTYPE_NONE  },
     [0x9E] = { N_SAHF   , OTYPE_NONE  , OTYPE_NONE  },
@@ -643,6 +651,7 @@ static const struct InstructionInfo Instructions[256] = {
     [0xE7] = { N_OUT     , OTYPE_IMM8  , R_AX        },
     [0xE8] = { N_CALL    , OTYPE_REL16 , OTYPE_NONE  },
     [0xE9] = { N_JMP     , OTYPE_REL16 , OTYPE_NONE  },
+    [0xEA] = { N_JMPF    , OTYPE_PTR32 , OTYPE_NONE  },
     [0xEB] = { N_JMP     , OTYPE_REL8  , OTYPE_NONE  },
     [0xEC] = { N_IN      , R_AL        , R_DX        },
     [0xED] = { N_IN      , R_AX        , R_DX        },
@@ -704,6 +713,13 @@ static void ReadPrefixes(void)
 
 static void GetRMText(void)
 {
+    if (II->op1 == OTYPE_PTR32) {
+        const U2 off = ReadU2();
+        const U2 seg = ReadU2();
+        snprintf(RMText, sizeof(RMText), "%04X:%04X", seg, off);
+        return;
+    }
+
     U1 SegOverride = 0;
     const char* SegOverrideStr = "";
     if (Prefixes & PREFIX_ES) {

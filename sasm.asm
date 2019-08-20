@@ -1390,30 +1390,40 @@ GetOperand:
         je .ContinueExpr
         ret
 .NotRegOrNumber:
-        ; Check for word/byte [mem]
-        cmp byte [TokenLen], 4
-        jne .CheckShort
         mov ax, [UToken]
         mov bx, [UToken+2]
+        mov cl, [TokenLen]
+        ; Check for word/byte [mem]
+        cmp cl, 4
+        jne .CheckFar
         cmp ax, 'BY'
         jne .CheckWord
         cmp bx, 'TE'
-        jne .CheckShort
+        jne .CheckNamedLit
         mov byte [ExplicitSize], 1
         jmp GetOperandMem
 .CheckWord:
         cmp ax, 'WO'
-        jne .CheckShort
+        jne .CheckNamedLit
         cmp bx, 'RD'
-        jne .CheckShort
+        jne .CheckNamedLit
         mov byte [ExplicitSize], 2
-        jmp short GetOperandMem
+        jmp GetOperandMem
+.CheckFar:
+        cmp cl, 3
+        jne .CheckShort
+        cmp ax, 'FA'
+        jne .CheckNamedLit
+        cmp bl, 'R'
+        jne .CheckNamedLit
+        mov byte [ExplicitSize], 2
+        jmp GetOperandMem
 .CheckShort:
-        cmp byte [TokenLen], 5
+        cmp cl, 5
         jne .CheckNamedLit
-        cmp word [UToken], 'SH'
+        cmp ax, 'SH'
         jne .CheckNamedLit
-        cmp word [UToken+2], 'OR'
+        cmp bx, 'OR'
         jne .CheckNamedLit
         cmp byte [UToken+4], 'T'
         jne .CheckNamedLit
@@ -2820,9 +2830,39 @@ InstINT:
 .Err:
         jmp InvalidOperand
 
+; Output instruction in AL if ptr16:16
+HandleFar:
+        cmp byte [OperandType], OP_LIT
+        jne .DontHandle
+        push ax
+        mov al, ':'
+        call TryConsume
+        pop ax
+        jnc .Handle
+.DontHandle:
+        stc
+        ret
+.Handle:
+        call OutputByte
+        push word [OperandValue]
+        call GetToken
+        call GetTokenNumber
+        mov ax, [OperandValue]
+        call OutputWord
+        pop ax
+        call OutputWord
+        clc
+        ret
+
 InstCALL:
         call GetOperand
+        mov al, 0x9A
+        call HandleFar
+        jc .NotFar
+        ret
+.NotFar:
         cmp byte [OperandType], OP_REG
+        jb .CallM
         je .CallR
         mov al, 0xE8
         call OutputByte
@@ -2834,13 +2874,27 @@ InstCALL:
         and al, 7
         or al, 0xD0 ; 0xC0 | (2<<3)
         jmp OutputByte
+.CallM:
+        mov al, 0xFF
+        call OutputByte
+        call SwapOperands
+        mov al, 2
+        cmp byte [ExplicitSize], 2
+        jne .DoRM
+        inc al ; far CALL
+.DoRM:
+        jmp OutputModRM
 
 InstPUSH:
         call GetOperand
         cmp byte [OperandType], OP_REG
         je .PushR
         ja .PushL
-        jmp InvalidOperand
+        mov al, 0xFF
+        call OutputByte
+        call SwapOperands
+        mov al, 6
+        jmp OutputModRM
 .PushL:
         mov al, 1
         call CheckCPU
@@ -2876,6 +2930,7 @@ InstPUSH:
 InstPOP:
         call GetOperand
         cmp byte [OperandType], OP_REG
+        jb .PopM
         jne .InvalidOp
         mov al, [OperandValue]
         sub al, R_AX
@@ -2892,14 +2947,17 @@ InstPOP:
         jmp OutputByte
 .InvalidOp:
         jmp InvalidOperand
+.PopM:
+        mov al, 0x8F
+        call OutputByte
+        call SwapOperands
+        xor al, al
+        jmp OutputModRM
 
 ; Output instruction byte in AL and Rel8 if OperandValue is a short
 ; (known) jump or forced by AH=1 or SHORT in the program text.
 ; Returns carry clear on success
 HandleShortRel:
-        push ax
-        call GetOperand
-        pop ax
         cmp byte [ExplicitSize], 1 ; SHORT?
         jne .HasOperand
         mov ah, 1
@@ -2946,6 +3004,15 @@ HandleShortRel:
         ret
 
 InstJMP:
+        call GetOperand
+        mov al, 0xEA
+        call HandleFar
+        jc .NotFar
+        ret
+.NotFar:
+        cmp byte [OperandType], OP_REG
+        je .JmpR
+        jb .JmpM
         xor ah, ah
         mov al, 0xEB
         call HandleShortRel
@@ -2955,14 +3022,43 @@ InstJMP:
         mov al, 0xE9
         call OutputByte
         jmp HandleRel16
+.JmpR:
+        mov al, 0xFF
+        call OutputByte
+        mov al, [OperandValue]
+        cmp al, R_AX
+        jb .InvOp
+        cmp al, R_DI
+        ja .InvOp
+        and al, 0x07
+        or al, 0xC0 | 4<<3
+        jmp OutputByte
+.JmpM:
+        mov al, 0xFF
+        call OutputByte
+        call SwapOperands
+        mov al, 4
+        cmp byte [ExplicitSize], 2
+        jne .DoRM
+        inc al ; far JMP
+.DoRM:
+        jmp OutputModRM
+.InvOp:
+        jmp InvalidOperand
 
 ; AL contains opcode
 InstJ8:
+        push ax
+        call GetOperand
+        pop ax
         mov ah, 1 ; Force short jump
         jmp HandleShortRel
 
 ; AL contains the condition code
 InstJCC:
+        push ax
+        call GetOperand
+        pop ax
         push ax
         xor ah, ah
         cmp byte [CpuLevel], 3
