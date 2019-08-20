@@ -482,6 +482,10 @@ CommandDispatch:
         je .CmdG
         cmp al, 'H'
         je .CmdH
+        cmp al, 'I'
+        je .CmdI
+        cmp al, 'O'
+        je .CmdO
         cmp al, 'P'
         je .CmdP
         cmp al, 'R'
@@ -493,17 +497,28 @@ CommandDispatch:
         cmp al, 'Q'
         je .CmdQ
         jmp short InvalidCommmand
+; TODO: A(ssemble)
+; TODO: C(ompare)
 .CmdD:  jmp Dump
+; TODO: E(nter)
+; TODO: F(ill)
 .CmdG:  jmp Go
 .CmdH:  jmp Hex
+.CmdI:  jmp InPort
+; TODO: L(oad)
+; TODO: M(ove)
+; TODO: N(ame)
+.CmdO:  jmp OutPort
 .CmdP:  jmp Proceed
-.CmdR:  jmp Regs
-.CmdT:  jmp Trace
-.CmdU:  jmp Unassemble
 .CmdQ: ; Q(uit)
         mov byte [LastCause], 'Q'
         xor al, al
         jmp Exit
+;TODO: S(earch)
+.CmdR:  jmp Regs
+.CmdT:  jmp Trace
+.CmdU:  jmp Unassemble
+;TODO: W(rite)
 
 InvalidCommmand:
         mov dx, MsgErrInvCmd
@@ -643,6 +658,33 @@ Hex:
         call PutHexWord
         jmp PutCrLf
 .Err:
+        jmp InvalidCommmand
+
+; I(n) port (Only byte input supported)
+InPort:
+        call CGetNum
+        jnc .PortOK
+        jmp InvalidCommmand
+.PortOK:
+        mov dx, ax
+        in al, dx
+        call PutHexByte
+        jmp PutCrLf
+
+; O(ut) port val (Only byte output supported)
+OutPort:
+        call CGetNum
+        jc .Invalid
+        push ax
+        call CSkipSpaces
+        call CGetNum
+        jc .Invalid
+        and ah, ah
+        jnz .Invalid
+        pop dx
+        out dx, al
+        ret
+.Invalid:
         jmp InvalidCommmand
 
 ; (hex)D(ump) [range] / [address] [length]
