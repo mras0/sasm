@@ -330,17 +330,19 @@ SetIntVec:
         ret
 
 TerminateHandler:
-        cmp byte [cs:LastCause], 'Q'
-        jne .NotQuit
-        mov ax, 0x4c00
-        int 0x21
-.NotQuit:
         cli
+        ; Take care to ensure a valid stack
+        ; Even when exiting
         mov ax, cs
         mov ds, ax
         mov ss, ax
         mov sp, [DbgSP]
         sti
+        cmp byte [LastCause], 'Q'
+        jne .NotQuit
+        mov ax, 0x4c00
+        int 0x21
+.NotQuit:
         mov dx, MsgProgramExit
         call PutString
         mov ah, 0x4d

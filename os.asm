@@ -2058,12 +2058,15 @@ Int21_4C:
         cmp bx, MAX_FILES*FILE_INFO_SIZE
         jb .Check
 
-
+        ; Point ES at PSP of exiting process
         mov es, dx
 
         ; Restore stack
         mov sp, [es:PSP_OLDSP]
         mov ss, [es:PSP_OLDSS]
+
+        ; NOTE: Don't use stack here as it may be invalid
+        ; if the program was started manually after Int21/AX=4B01
 
         ; Restore old PSP
         mov bx, [es:PSP_PARENTPSP]
@@ -2083,9 +2086,7 @@ Int21_4C:
         mov [FreeSeg], es
 
         ; Call termination handler
-        push cx
-        push bx
-        retf
+        jmp far [INT22_OFF]
 
 ; Int 21/AH=4Dh Get return code (errorlevel)
 ; Returns AH = terminatin type (0=normal, 1=ctrl+c, 2=critical error,3=TSR)
