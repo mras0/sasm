@@ -797,6 +797,28 @@ CmdDir:
         mov dx, MsgBytesTotal
         mov ah, 9
         int 0x21
+        ;
+        ; Print free disk space
+        ;
+
+        ; Get disk
+        mov ah, 0x19
+        int 0x21
+        ; Get free disk space
+        mov dl, al
+        mov ah, 0x36
+        int 0x21
+        cmp ax, 0xffff ; Invalid drive/unable to get info
+        jne .PrintDiskSpace
+        ret
+.PrintDiskSpace:
+        xor dx, dx
+        mul bx
+        mul cx
+        call PutDec9
+        mov dx, MsgBytesFree
+        mov ah, 9
+        int 0x21
         ret
 
 CmdEcho:
@@ -1169,6 +1191,7 @@ MsgErrDiskWrite:  db 'Error writing to disk$'
 MsgPrompt:        db '# $'
 MsgPressAnyKey:   db 'Press any key$'
 MsgBytesTotal:    db ' bytes total', 13, 10, '$'
+MsgBytesFree:     db ' bytes free', 13, 10, '$'
 Autoexec:         db 'AUTOEXEC.BAT', 0
 
 BssStart:

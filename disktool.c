@@ -65,7 +65,7 @@ struct DirEntry {
 #define FAT_SECTOR          (DiskBPB.ReservedSectors)
 #define ROOT_SECTOR         (FAT_SECTOR + DiskBPB.NumFats * DiskBPB.SectorsPerFat)
 #define DATA_SECTOR         (ROOT_SECTOR + NUM_ROOT_SECTORS)
-#define CLUSTER_MAX         ((DiskBPB.TotalSectors - DATA_SECTOR) / DiskBPB.SectorsPerCluster)
+#define CLUSTER_MAX         (2 + (DiskBPB.TotalSectors - DATA_SECTOR) / DiskBPB.SectorsPerCluster)
 #define CLUSTER_SIZE        (DiskBPB.BytesPerSector * DiskBPB.SectorsPerCluster)
 
 static FILE* DiskImg;

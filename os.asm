@@ -175,6 +175,7 @@ Main:
         xor bh, bh
         mov bl, [BPB+BPB_SECSPERCLUST]
         div bx
+        add ax, 2 ; +2 since (valid) data clusters are offset by 2
         mov [MaxCluster], ax
 
         mov ax, MAX_FILES
@@ -629,7 +630,7 @@ StartProgram:
 
 ; Return carry clear if cluster index in AX is valid
 ClusterValid:
-        cmp ax, 0xFF0
+        cmp ax, [cs:MaxCluster]
         jae .Invalid
         cmp ax, 2
         jb .Invalid
@@ -1545,6 +1546,8 @@ Int21Dispatch:
         dw Int21_1A
         db  0x2F
         dw Int21_2F
+        db  0x36
+        dw Int21_36
         db  0x3C
         dw Int21_3C
         db  0x3D
@@ -1718,6 +1721,49 @@ Int21_2F:
         mov bx, [cs:DTA+2]
         mov es, bx
         mov bx, [cs:DTA]
+        iret
+
+; Int 21/AH=36h Get free disk space
+; Returns AX=sectors per cluster, BX=number of free clusters
+;         CX=bytes per cluster, DX=total clusters on drive
+Int21_36:
+        cmp dl, [cs:BootDrive]
+        je .DriveOK
+        mov ax, 0xffff
+        iret
+.DriveOK:
+        push ds
+        push es
+        push cs
+        pop ds
+        ; Count free clusters
+        mov es, [FATSeg]
+        xor ax, ax
+        xor bx, bx
+        xor cx, cx
+        mov dx, [MaxCluster]
+.Count:
+        test word [es:bx], 0x0fff
+        jnz .C1
+        inc ax
+.C1:
+        inc bx
+        inc cx
+        test word [es:bx], 0xfff0
+        jnz .C2
+        inc ax
+.C2:
+        add bx, 2
+        inc cx
+        cmp cx, dx
+        jb .Count
+        mov bx, ax
+        xor ah, ah
+        mov al, [BPB+BPB_SECSPERCLUST]
+        mov cx, SECTOR_SIZE
+        sub dx, 2
+        pop es
+        pop ds
         iret
 
 ; Int 21/AH=3Ch Create or truncate file
@@ -2281,7 +2327,7 @@ BootDrive:       resb 1
 BPB:             resb BPB_SIZE
 DataSector:      resw 1
 ClusterBytes:    resw 1
-MaxCluster:      resw 1
+MaxCluster:      resw 1  ; Note: +2 compared to max cluster index
 RootMaxIdx:      resw 1
 MaxSeg:          resw 1
 FreeSeg:         resw 1
