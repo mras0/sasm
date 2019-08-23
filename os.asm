@@ -526,7 +526,7 @@ LoadProgram:
 
         mov bx, ax
         shl bx, cl
-        sub bx, 4 ; 'Push' 0xFFFF/0x0000 (see below)
+        sub bx, 4 ; Make room for 2 words on stack (see below)
         mov [ChildSSSP], bx
 
         ; Allocate room
@@ -553,9 +553,10 @@ LoadProgram:
         ; Ensure there's a 0 at the bottom of the stack
         ; So a local return will execute the INT 20 instruction at [cs:0]
         ; And the initial value of AX
-        mov bx, [ChildSSSP]
-        mov word [es:bx], 0xFFFF
-        mov word [es:bx+2], 0
+        mov di, [ChildSSSP]
+        xor ax, ax
+        stosw ; initial AX=0 is more compatible
+        stosw
 
         ; Point DTA at PSP:80h
         mov [DTA+2], es
