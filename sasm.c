@@ -1191,7 +1191,6 @@ static void InstMOV(U1 arg)
 {
     (void)arg;
     Get2Operands();
-    // TODO: Use optimized opcodes when moving to from AL/AX
 
     if (OperandLType == OP_REG) {
         // LHS is register
@@ -1302,10 +1301,15 @@ static void InstXCHG(U1 arg)
 {
     (void)arg;
     Get2Operands();
-    // TODO: Could use 0x90+r if either operand is AX
     if (OperandLType == OP_REG) {
         if (OperandType == OP_REG) {
-            OutputRR(0x86);
+            if (OperandLValue == R_AX) {
+                OutputByte(0x90 | (OperandValue&7));
+            } else if (OperandValue == R_AX) {
+                OutputByte(0x90 | (OperandLValue&7));
+            } else {
+                OutputRR(0x86);
+            }
             return;
         } else if (OperandType < OP_REG) {
             SwapOperands();
@@ -1325,7 +1329,6 @@ static void InstTEST(U1 arg)
     (void)arg;
     Get2Operands();
 
-    // TODO: Use A8/A9 when OperandLType==OP_REG && (OperandValue == R_AL || OperandValue == R_AX)
     if (OperandType == OP_LIT) {
         bool is16bit = false;
         if (OperandLType == OP_LIT) {
@@ -1333,6 +1336,15 @@ static void InstTEST(U1 arg)
         } else if (OperandLType == OP_REG) {
             if (OperandLValue >= R_ES) {
                 goto Invalid;
+            }
+            if (OperandLValue == R_AL) {
+                OutputByte(0xA8);
+                OutputImm8();
+                return;
+            } else if (OperandLValue == R_AX) {
+                OutputByte(0xA9);
+                OutputImm16();
+                return;
             }
             is16bit = (OperandLValue/8==1?1:0);
             OutputByte(0xF6 | is16bit);

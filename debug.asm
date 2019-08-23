@@ -2054,13 +2054,13 @@ MainTab:
     dw Tab_8F   , OTYPE_RTAB   | OTYPE_NONE  << 8 ; 8F
     ; 0x90
     dw N_NOP    , OTYPE_NONE   | OTYPE_NONE  << 8 ; 90
-    dw N_XCHG   , OTYPE_CX     | OTYPE_AX    << 8 ; 91
-    dw N_XCHG   , OTYPE_DX     | OTYPE_AX    << 8 ; 92
-    dw N_XCHG   , OTYPE_BX     | OTYPE_AX    << 8 ; 93
-    dw N_XCHG   , OTYPE_SP     | OTYPE_AX    << 8 ; 94
-    dw N_XCHG   , OTYPE_BP     | OTYPE_AX    << 8 ; 95
-    dw N_XCHG   , OTYPE_SI     | OTYPE_AX    << 8 ; 96
-    dw N_XCHG   , OTYPE_DI     | OTYPE_AX    << 8 ; 97
+    dw N_XCHG   , OTYPE_AX     | OTYPE_CX    << 8 ; 91
+    dw N_XCHG   , OTYPE_AX     | OTYPE_DX    << 8 ; 92
+    dw N_XCHG   , OTYPE_AX     | OTYPE_BX    << 8 ; 93
+    dw N_XCHG   , OTYPE_AX     | OTYPE_SP    << 8 ; 94
+    dw N_XCHG   , OTYPE_AX     | OTYPE_BP    << 8 ; 95
+    dw N_XCHG   , OTYPE_AX     | OTYPE_SI    << 8 ; 96
+    dw N_XCHG   , OTYPE_AX     | OTYPE_DI    << 8 ; 97
     dw N_CBW    , OTYPE_NONE   | OTYPE_NONE  << 8 ; 98
     dw N_CWD    , OTYPE_NONE   | OTYPE_NONE  << 8 ; 99
     dw N_CALLF  , OTYPE_PTR32  | OTYPE_NONE  << 8 ; 9A
@@ -2078,8 +2078,8 @@ MainTab:
     dw N_MOVSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; A5
     dw N_CMPSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; A6
     dw N_CMPSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; A7
-    dw 0        , 0                               ; A8
-    dw 0        , 0                               ; A9
+    dw N_TEST   , OTYPE_AL     | OTYPE_IMM8  << 8 ; A8
+    dw N_TEST   , OTYPE_AX     | OTYPE_IMM16 << 8 ; A9
     dw N_STOSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; AA
     dw N_STOSW  , OTYPE_NONE   | OTYPE_NONE  << 8 ; AB
     dw N_LODSB  , OTYPE_NONE   | OTYPE_NONE  << 8 ; AC

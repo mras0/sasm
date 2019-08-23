@@ -2396,6 +2396,20 @@ InstXCHG:
         call SwapOperands
         jmp .XCHGmr
 .XCHGrr:
+        cmp byte [OperandLValue], R_AX
+        jne .X1
+        mov al, [OperandValue]
+        and al, 7
+        or al, 0x90
+        jmp OutputByte
+.X1:
+        cmp byte [OperandValue], R_AX
+        jne .X2
+        mov al, [OperandLValue]
+        and al, 7
+        or al, 0x90
+        jmp OutputByte
+.X2:
         mov al, 0x86
         jmp OutputRR
 .InvalidOp:
@@ -2428,6 +2442,10 @@ InstTEST:
         mov al, [OperandLValue]
         cmp al, R_ES
         jae .InvalidOp
+        cmp al, R_AL
+        je .TESTalImm
+        cmp al, R_AX
+        je .TESTaxImm
         mov ah, al
         mov cl, 3
         shr al, cl
@@ -2438,6 +2456,14 @@ InstTEST:
         call OutputWord
         pop ax
         jmp OutputImm
+.TESTalImm:
+        mov al, 0xA8
+        call OutputByte
+        jmp OutputImm8
+.TESTaxImm:
+        mov al, 0xA9
+        call OutputByte
+        jmp OutputImm16
 .TESTr:
         ; TEST xxx, reg
         cmp byte [OperandValue], R_ES
