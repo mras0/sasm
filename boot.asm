@@ -31,7 +31,7 @@ DIR_ENTRY_SIZE   equ 0x20
         jmp short Start     ; Use well known
         nop                 ; instruction sequence
 
-        db 'SDOS 1.0'       ; OEM Name
+        db 'SDOS 1.1'       ; OEM Name
 
         ;
         ; 1440 FD BPB (Overwritten by insboot/disktool)
@@ -268,7 +268,7 @@ ReadSectors:
         mov si, MsgDiskErr
         jmp Error
 
-MsgLoading:    db 'Loading SDOS 1.0', 0
+MsgLoading:    db 'Loading SDOS 1.1', 0
 MsgDiskErr:    db 13, 10, 'Error reading from disk', 0
 MsgBootDskErr: db 13, 10, 'Could not load OS.SYS', 0
 MsgReboot:     db 13, 10, 'Press any key to reboot', 13, 10, 0

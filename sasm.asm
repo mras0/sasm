@@ -1417,7 +1417,7 @@ GetOperand:
         cmp bl, 'R'
         jne .CheckNamedLit
         mov byte [ExplicitSize], 2
-        jmp GetOperandMem
+        jmp short GetOperandMem
 .CheckShort:
         cmp cl, 5
         jne .CheckNamedLit
@@ -3122,7 +3122,7 @@ OutputByte186:
 ;; Constants
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-MsgHello:         db 'SASM 1.0 Processing ', 0
+MsgHello:         db 'SASM 1.1 Processing ', 0
 MsgHello2:        db ' to ', 0
 MsgCurToken:      db 'Current token: "', 0
 MsgErrInLine:     db 'Error in line ', 0

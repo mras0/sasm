@@ -320,7 +320,7 @@ static const U1 DefaultBootCode[] = {
   0x0d,0x0a,0x00
 };
 
-static const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '0' };
+static const U1 OEMName[8] = { 'S', 'D', 'O', 'S', ' ', '1', '.', '1' };
 
 static const struct BPB DiskBPB_360 = {
     .BytesPerSector    = 512,

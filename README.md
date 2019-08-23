@@ -44,7 +44,7 @@ RAM is necessary to be useful (though the bootstrapping process runs
 with around 100K you won't be able to edit the larger files).
 
 You can also try out the disk image online at [PCjs
-Machines](https://www.pcjs.org/) (Tested 2019-08-13).
+Machines](https://www.pcjs.org/) (Tested 2019-08-23).
 
 - Find a compatible configuration
   (e.g.  [IBM PC (Model 5150), 256Kb RAM, Color Display](https://www.pcjs.org/devices/pcx86/machine/5150/cga/256kb/))
@@ -109,6 +109,7 @@ Copy required files to the disk:
 
     copy *.asm a:
     copy *.bat a:
+    copy LICENSE.md a:
     copy sasm.com a:
 
 Perform bootstrap:
@@ -135,3 +136,9 @@ insert `short` for `jmp` (`-Wshort`).
 `Disktool` can be used to create FAT12 floppy disk images, install
 bootloaders to them and insert / extract files. Call it without
 arguments to see a list of command line options.
+
+
+### Disasm
+
+Simple disassembler. Serves as test bed for the disassembler in
+`debug.asm`.
