@@ -235,13 +235,19 @@ static U1 ToUpper(U1 ch)
 static U2 GetNumberFromToken(void)
 {
     U2 num = 0;
+    const char* text;
+    unsigned len;
+
     if (TokenLen > 2 && UTokenText[0] == '0' && UTokenText[1] == 'X') {
-        if (TokenLen > 6) {
+        len = TokenLen - 2;
+        text = UTokenText + 2;
+    HexVal:
+        if (len > 4) {
             Error("Hexnumber too large");
         }
-        for (unsigned i = 2; i < TokenLen; ++i) {
+        while (len--) {
             num <<= 4;
-            U1 ch = UTokenText[i];
+            U1 ch = *text++;
             if (ch >= '0' && ch <= '9') {
                 num |= ch - '0';
             } else if (ch >= 'A' && ch <= 'F') {
@@ -250,6 +256,16 @@ static U2 GetNumberFromToken(void)
                 Error("Invalid hex digit in number");
             }
         }
+    } else if (UTokenText[0] == '0' && UTokenText[1] == 'H') {
+        return 0;
+    } else if (UTokenText[TokenLen - 1] == 'H') {
+        len = TokenLen - 1;
+        text = UTokenText;
+        if (UTokenText[0] == '0') {
+            ++text;
+            --len;
+        }
+        goto HexVal;
     } else {
         for (int i = 0; i < TokenLen; ++i) {
             const U1 val = UTokenText[i] - '0';
@@ -1967,7 +1983,7 @@ static void ParserFini(void)
 
 static char* GetOutputFileName(const char* InputFileName)
 {
-    int l = strlen(InputFileName);
+    int l = (int)strlen(InputFileName);
     char* OutputFileName = malloc(l + 4);
     if (!OutputFileName) {
         Error("Out of memory");

@@ -833,11 +833,19 @@ Expect:
 
 ; Get number from Token to AX
 GetTokenNumber:
-        cmp word [UToken], '0X'
-        je .Hex
-        ; Decimal number
         xor ax, ax
         mov bx, UToken
+        cmp word [bx], '0X'
+        je .Hex
+        ; Check for 'H' suffix
+        xor cx, cx
+        mov cl, [TokenLen]
+        push si
+        mov si, cx
+        cmp byte [bx+si-1], 'H'
+        pop si
+        je .HexSuffix
+        ; Decimal number
         xor ch, ch
 .Dec:
         mov cl, [bx]
@@ -855,14 +863,21 @@ GetTokenNumber:
         ja .Error
         add ax, cx
         jmp .Dec
+.HexSuffix:
+        dec cl
+        cmp byte [bx], '0'
+        jne .HexCheckLen
+        inc bx
+        dec cl
+        jnz .HexCheckLen
+        ret
 .Hex:
+        add bx, 2
         mov cl, [TokenLen]
         sub cl, 2
+.HexCheckLen:
         cmp cl, 4
         ja .Error
-        xor ax, ax
-        mov bx, UToken
-        add bx, 2
 .HexCvt:
         shl ax, 1
         shl ax, 1
