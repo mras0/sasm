@@ -1880,6 +1880,7 @@ static const struct {
     { "SAHF"   , &OutputByte      , 0x9E },
     { "LAHF"   , &OutputByte      , 0x9F },
     { "XLATB"  , &OutputByte      , 0xD7 },
+    { "XLAT"   , &OutputByte      , 0xD7 },
     { "HLT"    , &OutputByte      , 0xF4 },
     { "CMC"    , &OutputByte      , 0xF5 },
     { "CLC"    , &OutputByte      , 0xF8 },
@@ -1919,8 +1920,10 @@ static const struct {
     { "JPE"    , &InstJcc         , JPE  },
     { "JPO"    , &InstJcc         , JPO  },
     { "JL"     , &InstJcc         , JL   },
+    { "JGE"    , &InstJcc         , JNL  },
     { "JNL"    , &InstJcc         , JNL  },
     { "JNG"    , &InstJcc         , JNG  },
+    { "JLE"    , &InstJcc         , JNG  },
     { "JG"     , &InstJcc         , JG   },
     };
 

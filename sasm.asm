@@ -2,7 +2,7 @@
 ;; SASM - Simple/Stupid/Self-hosting Assembler   ;;
 ;;        for 16-bit x86 DOS-like Systems.       ;;
 ;;                                               ;;
-;; Copyright 2019 Michael Rasmussen              ;;
+;; Copyright 2019-2024 Michael Rasmussen         ;;
 ;; See LICENSE.md for details                    ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
@@ -3137,7 +3137,7 @@ OutputByte186:
 ;; Constants
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-MsgHello:         db 'SASM 1.1 Processing ', 0
+MsgHello:         db 'SASM 1.2a Processing ', 0
 MsgHello2:        db ' to ', 0
 MsgCurToken:      db 'Current token: "', 0
 MsgErrInLine:     db 'Error in line ', 0
@@ -3287,6 +3287,8 @@ DispatchList:
     db 'LAHF',0,0,   0x9F
     dw OutputByte
     db 'XLATB',0,    0xD7
+    dw OutputByte
+    db 'XLAT',0,0,   0xD7
     dw OutputByte
 
     ; I/O
@@ -3456,9 +3458,13 @@ DispatchList:
     dw InstJCC
     db 'JL',0,0,0,0, CC_L
     dw InstJCC
+    db 'JGE',0,0,0,  CC_NL
+    dw InstJCC
     db 'JNL',0,0,0,  CC_NL
     dw InstJCC
     db 'JNG',0,0,0,  CC_NG
+    dw InstJCC
+    db 'JLE',0,0,0,  CC_NG
     dw InstJCC
     db 'JG',0,0,0,0, CC_G
     dw InstJCC
