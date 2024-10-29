@@ -2,7 +2,7 @@
 ;; CMDP.COM - Very limited command processor for ;;
 ;;            bootstrapping SASM.                ;;
 ;;                                               ;;
-;; Copyright 2019 Michael Rasmussen              ;;
+;; Copyright 2019-2024 Michael Rasmussen         ;;
 ;; See LICENSE.md for details                    ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -26,7 +26,7 @@ Main:
         mov cx, ProgramEnd
         sub cx, di
         xor al, al
-        rep movsb
+        rep stosb
 
         ; Free unused memory
 
